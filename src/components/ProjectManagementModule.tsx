@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { Project, ProjectExpenseItem, ProjectSalesItem } from '../types';
-import { FolderKanban, Plus, Search, Filter, TrendingUp, TrendingDown, DollarSign, Receipt, CheckCircle2, Clock, Briefcase, Layers, Edit2, Trash2, ChevronDown, ChevronUp, FileSpreadsheet, Printer, Calendar, User, Phone, BookOpen, PieChart, Tag, CreditCard, Wallet, Landmark, } from 'lucide-react';
+import { FolderKanban, Plus, Search, Filter, TrendingUp, TrendingDown, DollarSign, Receipt, CheckCircle2, Clock, Briefcase, Layers, Edit2, Trash2, ChevronDown, ChevronUp, FileSpreadsheet, Printer, Calendar, User, Phone, BookOpen, PieChart, Tag, CreditCard, Wallet, Landmark, Banknote, Smartphone, History, } from 'lucide-react';
+import { getPaymentMethodLiveBalance, isInvoiceMatchingCustomer } from '../utils/accountUtils';
 export interface SalesPaymentRow {
     id: string;
     method: string;
@@ -19,7 +20,7 @@ export interface ExpenseBreakdownRow {
     paymentMethod?: string;
 }
 export const ProjectManagementModule: React.FC = () => {
-    const { projects, addProject, updateProject, deleteProject, addProjectSales, collectProjectDue, addProjectExpense, addProjectExpenses, deleteProjectSales, deleteProjectExpense, syncProjectsWithAccounting, journalEntries = [], chartOfAccounts = [], expenseHeads = [], language, profile, paymentMethods = [], invoices = [], linkInvoiceToProject, unlinkInvoiceFromProject, createProjectFromInvoice, } = useApp();
+    const { projects, addProject, updateProject, deleteProject, addProjectSales, collectProjectDue, addProjectExpense, addProjectExpenses, deleteProjectSales, deleteProjectExpense, syncProjectsWithAccounting, journalEntries = [], chartOfAccounts = [], expenseHeads = [], language, profile, paymentMethods = [], invoices = [], linkInvoiceToProject, unlinkInvoiceFromProject, createProjectFromInvoice, customers = [], transactions = [], accountBalances, } = useApp();
     const isBn = language === 'bn';
     const [searchTerm, setSearchType] = useState('');
     const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -34,6 +35,7 @@ export const ProjectManagementModule: React.FC = () => {
         sale: ProjectSalesItem;
         dueAmount: number;
     } | null>(null);
+    const [adjustAdvanceAmount, setAdjustAdvanceAmount] = useState<number>(0);
     const [collectDueForm, setCollectDueForm] = useState({
         amount: '' as number | '',
         paymentMethod: 'Cash in Hand',
@@ -68,6 +70,16 @@ export const ProjectManagementModule: React.FC = () => {
     const activePaymentMethods = useMemo(() => {
         return (paymentMethods || []).filter((p) => p.isEnabled);
     }, [paymentMethods]);
+    const depositPaymentMethods = useMemo(() => {
+        const filtered = activePaymentMethods.filter(pm => {
+            const m = (pm.name || '').toLowerCase();
+            return !m.includes('due') && !m.includes('receivable');
+        });
+        if (filtered.length > 0) return filtered;
+        return [
+            { id: 'Cash', name: 'Cash in Hand', nameBn: 'হাতে নগদ', isEnabled: true, type: 'Cash' as const },
+        ];
+    }, [activePaymentMethods]);
     const paymentMethodOptions = useMemo(() => {
         if (activePaymentMethods.length === 0) {
             return [
@@ -409,9 +421,11 @@ export const ProjectManagementModule: React.FC = () => {
 
     const handleOpenCollectDue = (project: Project, sale: ProjectSalesItem, dueAmount: number) => {
         setCollectingDueSale({ project, sale, dueAmount });
+        setAdjustAdvanceAmount(0);
+        const defaultMethod = depositPaymentMethods[0]?.name || 'Cash in Hand';
         setCollectDueForm({
             amount: dueAmount,
-            paymentMethod: collectPaymentAccounts[0] || 'Cash in Hand',
+            paymentMethod: defaultMethod,
             date: new Date().toISOString().split('T')[0],
             referenceNo: '',
             note: '',
@@ -421,20 +435,24 @@ export const ProjectManagementModule: React.FC = () => {
     const handleConfirmCollectDue = (e: React.FormEvent) => {
         e.preventDefault();
         if (!collectingDueSale) return;
-        const amt = Number(collectDueForm.amount) || 0;
-        if (amt <= 0) return;
+        const cashAmt = Number(collectDueForm.amount) || 0;
+        const advAmt = Number(adjustAdvanceAmount) || 0;
+        const totalSettling = cashAmt + advAmt;
+        if (totalSettling <= 0) return;
 
         collectProjectDue(
             collectingDueSale.project.id,
             collectingDueSale.sale.id,
-            amt,
+            cashAmt,
             collectDueForm.paymentMethod,
             collectDueForm.date,
             collectDueForm.note,
-            collectDueForm.referenceNo
+            collectDueForm.referenceNo,
+            advAmt
         );
 
         setCollectingDueSale(null);
+        setAdjustAdvanceAmount(0);
     };
 
     const handleAddExpenseRow = () => {
@@ -729,13 +747,11 @@ export const ProjectManagementModule: React.FC = () => {
                     ? 'border-amber-300 shadow-md ring-1 ring-amber-400/20'
                     : 'border-slate-200 shadow-2xs hover:border-slate-300 hover:shadow-sm'}`}>
                 {/* Main Card Header Bar (Compact ~50% Height) */}
-                <div onClick={() => setExpandedProjectId(isExpanded ? null : project.id)} className="p-3 sm:px-4 sm:py-2.5 flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-slate-50/40 hover:bg-slate-50/80 transition-colors cursor-pointer select-none">
-                  <div className="min-w-0 flex-1 space-y-1">
-                    <div className="flex items-center gap-2 min-w-0">
+                <div onClick={() => setExpandedProjectId(isExpanded ? null : project.id)} className="p-3 sm:px-4 sm:py-3 flex flex-col xl:flex-row xl:items-center justify-between gap-3 bg-slate-50/40 hover:bg-slate-50/80 transition-colors cursor-pointer select-none">
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <div className="flex items-center gap-2 flex-wrap min-w-0">
                       <h2
-                        className={`text-sm sm:text-base font-extrabold text-slate-900 group-hover:text-amber-800 transition-colors min-w-0 ${
-                          isExpanded ? 'break-words' : 'truncate'
-                        }`}
+                        className="text-sm sm:text-base font-extrabold text-slate-900 group-hover:text-amber-800 transition-colors line-clamp-1 sm:line-clamp-2"
                         title={isBn && project.nameBn ? project.nameBn : project.name}
                       >
                         {isBn && project.nameBn ? project.nameBn : project.name}
@@ -755,7 +771,7 @@ export const ProjectManagementModule: React.FC = () => {
                       </span>
 
                       {/* Mark 1 & 2: Project Code, Invoice & Unified COA Badges */}
-                      <div className={`items-center gap-1.5 shrink-0 transition-all duration-200 ${isExpanded ? 'flex' : 'hidden group-hover:flex'}`}>
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-mono text-[10px] font-bold text-slate-600 bg-slate-200/80 px-1.5 py-0.5 rounded-md shrink-0">
                           {project.code}
                         </span>
@@ -772,7 +788,7 @@ export const ProjectManagementModule: React.FC = () => {
                           const code = coa?.code || '4051';
                           const name = coa?.name || 'Project Sales Income';
                           return (
-                            <span className="font-mono text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md shrink-0" title={`Unified Chart of Accounts Revenue Account #${code} (${name})`}>
+                            <span className={`font-mono text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md shrink-0 ${isExpanded ? 'inline-block' : 'hidden md:inline-block'}`} title={`Unified Chart of Accounts Revenue Account #${code} (${name})`}>
                               COA: [{code}] {name}
                             </span>
                           );
@@ -780,7 +796,7 @@ export const ProjectManagementModule: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-3 text-xs text-slate-500 min-w-0 truncate">
+                    <div className="flex items-center gap-x-3 gap-y-1.5 text-xs text-slate-500 flex-wrap">
                       <span className="flex items-center gap-1 font-semibold text-slate-700 shrink-0">
                         <User className="w-3.5 h-3.5 text-slate-400"/>
                         <span className="truncate max-w-[160px] sm:max-w-none">{project.clientName}</span>
@@ -804,7 +820,7 @@ export const ProjectManagementModule: React.FC = () => {
                   </div>
 
                   {/* Right Column: Profitability Numbers Bar + Actions */}
-                  <div className="flex items-center gap-3 sm:gap-4 shrink-0 justify-between lg:justify-end flex-wrap sm:flex-nowrap">
+                  <div className="flex items-center gap-2.5 sm:gap-3 shrink-0 justify-between xl:justify-end flex-wrap xl:flex-nowrap">
                     {/* Profitability Numbers Bar (Compact & Sleek) */}
                     <div className="flex items-center gap-3 sm:gap-4 bg-white px-3 py-1.5 rounded-xl border border-slate-200/90 shadow-2xs">
                       <div>
@@ -1802,167 +1818,444 @@ export const ProjectManagementModule: React.FC = () => {
           </form>
         </div>)}
 
-      {/* COLLECT PROJECT DUE MODAL */}
-      {collectingDueSale && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-          <form onSubmit={handleConfirmCollectDue} className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-8">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700">
-                  <DollarSign className="w-5 h-5"/>
-                </div>
+      {/* COLLECT PROJECT DUE MODAL (Sales Invoice Style) */}
+      {collectingDueSale && (() => {
+        const modalCustomer = customers.find(c => {
+          if (collectingDueSale.sale.invoiceNo) {
+            const inv = invoices.find(i => i.invoiceNo === collectingDueSale.sale.invoiceNo);
+            if (inv && isInvoiceMatchingCustomer(inv, c)) return true;
+          }
+          if (collectingDueSale.project.invoiceNo || collectingDueSale.project.invoiceId) {
+            const inv = invoices.find(i => (collectingDueSale.project.invoiceId && i.id === collectingDueSale.project.invoiceId) || (collectingDueSale.project.invoiceNo && i.invoiceNo === collectingDueSale.project.invoiceNo));
+            if (inv && isInvoiceMatchingCustomer(inv, c)) return true;
+          }
+          const cName = (c.name || '').toLowerCase().trim();
+          const pClient = (collectingDueSale.project.clientName || '').toLowerCase().trim();
+          if (pClient && cName && (cName === pClient || cName.includes(pClient) || pClient.includes(cName))) return true;
+          const cPhone = (c.phone || '').replace(/\D/g, '');
+          const pPhone = (collectingDueSale.project.clientPhone || '').replace(/\D/g, '');
+          if (pPhone && cPhone && cPhone === pPhone) return true;
+          if (c.company && collectingDueSale.project.name && collectingDueSale.project.name.toLowerCase().includes(c.company.toLowerCase())) return true;
+          return false;
+        });
+
+        const availableAdvance = Number(modalCustomer?.advanceBalance) || 0;
+        const maxAdvanceCanUse = Math.min(availableAdvance, collectingDueSale.dueAmount);
+        const remainingDueForChannel = Math.max(0, collectingDueSale.dueAmount - adjustAdvanceAmount);
+        const cashAmountNum = Number(collectDueForm.amount) || 0;
+        const totalSettling = cashAmountNum + (adjustAdvanceAmount || 0);
+
+        // Prior payments list (from item collections and initial non-due breakdown payments)
+        const priorCollections = (collectingDueSale.sale.collections || []).map(col => ({
+          id: col.id,
+          channel: col.paymentMethod,
+          amount: col.amount,
+          date: col.date,
+          description: col.note || (col.referenceNo ? `Ref: ${col.referenceNo}` : ''),
+        }));
+
+        const initialNonDueBreakdowns = (collectingDueSale.sale.paymentBreakdown || []).filter(pb => {
+          const m = (pb.method || '').toLowerCase();
+          return !m.includes('due') && !m.includes('receivable') && Number(pb.amount) > 0;
+        }).map((pb, idx) => ({
+          id: `initial-pb-${idx}`,
+          channel: pb.method,
+          amount: Number(pb.amount) || 0,
+          date: collectingDueSale.sale.date,
+          description: pb.note || 'Initial Payment at Billing',
+        }));
+
+        const allPaymentHistory = [...initialNonDueBreakdowns, ...priorCollections];
+        const totalPaidSoFar = Math.max(0, (Number(collectingDueSale.sale.amount) || 0) - collectingDueSale.dueAmount);
+
+        const selectedPm = depositPaymentMethods.find(p => p.name === collectDueForm.paymentMethod || p.id === collectDueForm.paymentMethod) || depositPaymentMethods[0];
+        const selectedBal = selectedPm ? getPaymentMethodLiveBalance(selectedPm, chartOfAccounts, transactions, invoices, accountBalances) : 0;
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+            <form onSubmit={handleConfirmCollectDue} className="bg-white rounded-2xl max-w-lg w-full max-h-[92vh] flex flex-col p-5 sm:p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 shrink-0">
                 <div>
-                  <h3 className="font-bold text-slate-900 text-sm">
-                    {'Collect Project Due / বকেয়া আদায় ও সমন্বয়'}
+                  <h3 className="font-black text-slate-900 text-base flex items-center gap-2">
+                    <Receipt className="w-5 h-5 text-emerald-600" />
+                    <span>Collect Project Due / বকেয়া আদায়</span>
                   </h3>
-                  <p className="text-[11px] text-slate-500">
-                    {collectingDueSale.project.name} ({collectingDueSale.project.code})
-                  </p>
+                  <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                    Project: {collectingDueSale.project.code} • {collectingDueSale.project.name}
+                  </div>
                 </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCollectingDueSale(null)}
-                className="text-slate-400 hover:text-slate-700 text-sm font-bold p-1 rounded-lg hover:bg-slate-100 cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Outstanding Due Summary Banner */}
-            <div className="bg-amber-50/80 p-4 rounded-xl border border-amber-200/90 flex items-center justify-between">
-              <div>
-                <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
-                  {'Remaining Due (বকেয়া)'}
-                </p>
-                <p className="text-xl font-black text-amber-900 mt-0.5">
-                  {profile.currencySymbol}{collectingDueSale.dueAmount.toLocaleString()}
-                </p>
-                <p className="text-[11px] text-slate-600 mt-0.5">
-                  Client: <span className="font-semibold">{collectingDueSale.project.clientName}</span>
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Billed</p>
-                <p className="text-sm font-extrabold text-slate-700 font-mono mt-0.5">
-                  {profile.currencySymbol}{collectingDueSale.sale.amount.toLocaleString()}
-                </p>
-                {collectingDueSale.sale.invoiceNo && (
-                  <p className="text-[10px] text-slate-400 mt-0.5">
-                    {collectingDueSale.sale.invoiceNo}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {/* Inputs */}
-            <div className="space-y-3">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    {'Collection Amount (Tk) *'}
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={collectingDueSale.dueAmount}
-                    required
-                    value={collectDueForm.amount}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setCollectDueForm(prev => ({
-                        ...prev,
-                        amount: val === '' ? '' : Math.min(collectingDueSale.dueAmount, Number(val))
-                      }));
-                    }}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-black text-emerald-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
-                    placeholder="Enter collected amount"
-                  />
-                  <span className="text-[10px] text-slate-400 mt-1 block">
-                    Max: {profile.currencySymbol}{collectingDueSale.dueAmount.toLocaleString()}
-                  </span>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    {'Collection Date *'}
-                  </label>
-                  <input
-                    type="date"
-                    required
-                    value={collectDueForm.date}
-                    onChange={(e) => setCollectDueForm(prev => ({ ...prev, date: e.target.value }))}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-medium focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {'Receive Into Account (Payment Channel) *'}
-                </label>
-                <select
-                  value={collectDueForm.paymentMethod}
-                  onChange={(e) => setCollectDueForm(prev => ({ ...prev, paymentMethod: e.target.value }))}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500 bg-white cursor-pointer"
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCollectingDueSale(null);
+                    setAdjustAdvanceAmount(0);
+                  }}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors font-bold text-sm cursor-pointer"
                 >
-                  {collectPaymentAccounts.map((accName, idx) => (
-                    <option key={idx} value={accName}>
-                      {accName}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[10px] text-slate-500 mt-1">
-                  • <strong>Debit:</strong> Selected Cash/Bank Account | • <strong>Credit:</strong> 1003 Accounts Receivable - Customers
-                </p>
+                  ✕
+                </button>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {'Reference / Cheque / TrxID (Optional)'}
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Cheque #58129 / Trx-Nagad-9382"
-                  value={collectDueForm.referenceNo}
-                  onChange={(e) => setCollectDueForm(prev => ({ ...prev, referenceNo: e.target.value }))}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-medium focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
-                />
+              <div className="overflow-y-auto flex-1 pr-1 my-3 space-y-4 text-xs scrollbar-thin">
+                {/* Customer & Billing Financial Overview */}
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-2.5">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="font-extrabold text-slate-900 text-sm">
+                        {collectingDueSale.project.clientName}
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-500">
+                        {collectingDueSale.project.clientPhone && (
+                          <div className="flex items-center gap-1 font-mono">
+                            <Phone className="w-3 h-3 text-slate-400" />
+                            <span>{collectingDueSale.project.clientPhone}</span>
+                          </div>
+                        )}
+                        {collectingDueSale.sale.invoiceNo && (
+                          <span className="font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 px-1 rounded">
+                            Inv: #{collectingDueSale.sale.invoiceNo}
+                          </span>
+                        )}
+                      </div>
+                      {collectingDueSale.sale.description && (
+                        <div className="text-[11px] text-slate-600 mt-1 font-medium">
+                          Item: {collectingDueSale.sale.description}
+                        </div>
+                      )}
+                    </div>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold border shrink-0 ${
+                      collectingDueSale.dueAmount <= 0
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : 'bg-amber-50 text-amber-700 border-amber-200'
+                    }`}>
+                      {collectingDueSale.dueAmount <= 0 ? 'Fully Paid' : 'Due Pending'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-200/70 text-center">
+                    <div className="bg-white p-2 rounded-lg border border-slate-200/60">
+                      <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Total Billed</div>
+                      <div className="text-xs sm:text-sm font-black text-slate-900 mt-0.5">
+                        {profile.currencySymbol}{Number(collectingDueSale.sale.amount).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="bg-white p-2 rounded-lg border border-slate-200/60">
+                      <div className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider">Total Paid</div>
+                      <div className="text-xs sm:text-sm font-black text-emerald-700 mt-0.5">
+                        {profile.currencySymbol}{totalPaidSoFar.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="bg-white p-2 rounded-lg border border-rose-200/70 bg-rose-50/30">
+                      <div className="text-[10px] text-rose-600 font-bold uppercase tracking-wider">Current Due</div>
+                      <div className="text-xs sm:text-sm font-black text-rose-600 mt-0.5">
+                        {profile.currencySymbol}{collectingDueSale.dueAmount.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Prior Payments Breakdown / Channels Used */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
+                      <History className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Payment History ({allPaymentHistory.length} receipts)</span>
+                    </div>
+                    <span className="text-[10.5px] font-semibold text-slate-500">
+                      Collected: {profile.currencySymbol}{totalPaidSoFar.toLocaleString()}
+                    </span>
+                  </div>
+
+                  {allPaymentHistory.length === 0 ? (
+                    <div className="p-3 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400 text-xs">
+                      No prior payments received for this project billing.
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1 scrollbar-thin">
+                      {allPaymentHistory.map((item, idx) => (
+                        <div key={item.id || idx} className="flex items-center justify-between p-2 rounded-lg bg-slate-50 hover:bg-slate-100/70 border border-slate-200 transition-colors">
+                          <div className="flex items-center gap-2">
+                            <span className="p-1 rounded-md bg-white border border-slate-200 text-slate-700">
+                              {item.channel.toLowerCase().includes('advance') ? (
+                                <Landmark className="w-3.5 h-3.5 text-indigo-600" />
+                              ) : item.channel.toLowerCase().includes('cash') ? (
+                                <Banknote className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : item.channel.toLowerCase().includes('bkash') || item.channel.toLowerCase().includes('nagad') ? (
+                                <Smartphone className="w-3.5 h-3.5 text-pink-600" />
+                              ) : (
+                                <Landmark className="w-3.5 h-3.5 text-blue-600" />
+                              )}
+                            </span>
+                            <div>
+                              <div className="font-extrabold text-slate-800 text-[11.5px]">
+                                {item.channel}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {item.date} {item.description ? `• ${item.description}` : ''}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="font-black text-emerald-700 text-xs whitespace-nowrap">
+                            +{profile.currencySymbol}{item.amount.toLocaleString()}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Customer Advance Adjustment Box */}
+                {availableAdvance > 0 && (
+                  <div className="p-3.5 bg-indigo-50/70 rounded-xl border border-indigo-200 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="p-1.5 rounded-lg bg-indigo-100 text-indigo-700">
+                          <Landmark className="w-4 h-4" />
+                        </span>
+                        <div>
+                          <div className="font-extrabold text-slate-800 text-xs">Customer Advance Balance</div>
+                          <div className="text-[11px] text-indigo-700 font-bold">
+                            Available Credit: {profile.currencySymbol}{availableAdvance.toLocaleString()}
+                          </div>
+                        </div>
+                      </div>
+                      {maxAdvanceCanUse > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAdjustAdvanceAmount(maxAdvanceCanUse);
+                            setCollectDueForm(prev => ({
+                              ...prev,
+                              amount: Math.max(0, collectingDueSale.dueAmount - maxAdvanceCanUse)
+                            }));
+                          }}
+                          className="text-[10.5px] font-extrabold text-indigo-700 hover:text-indigo-900 bg-white border border-indigo-200 hover:border-indigo-300 px-2.5 py-1 rounded-lg cursor-pointer transition-colors shadow-2xs"
+                        >
+                          Use Full Advance ({profile.currencySymbol}{maxAdvanceCanUse.toLocaleString()})
+                        </button>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="font-bold text-slate-700 block text-[11px]">
+                          Adjust from Advance ({profile.currencySymbol})
+                        </label>
+                        {adjustAdvanceAmount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAdjustAdvanceAmount(0);
+                              setCollectDueForm(prev => ({
+                                ...prev,
+                                amount: collectingDueSale.dueAmount
+                              }));
+                            }}
+                            className="text-[10px] text-rose-600 hover:underline font-bold cursor-pointer"
+                          >
+                            Clear Advance
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        max={maxAdvanceCanUse}
+                        value={adjustAdvanceAmount === 0 ? '' : adjustAdvanceAmount}
+                        onChange={(e) => {
+                          const val = Math.min(maxAdvanceCanUse, Math.max(0, Number(e.target.value) || 0));
+                          setAdjustAdvanceAmount(val);
+                          const curCash = Number(collectDueForm.amount) || 0;
+                          if (curCash + val > collectingDueSale.dueAmount) {
+                            setCollectDueForm(prev => ({
+                              ...prev,
+                              amount: Math.max(0, collectingDueSale.dueAmount - val)
+                            }));
+                          }
+                        }}
+                        placeholder="0"
+                        className="w-full px-3 py-2 border border-indigo-200 rounded-xl font-black text-sm text-indigo-700 bg-white focus:ring-1 focus:ring-indigo-400 focus:outline-hidden"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* New Due Collection Form Controls */}
+                <div className="p-3.5 bg-amber-50/50 rounded-xl border border-amber-200/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800 text-xs">
+                      {adjustAdvanceAmount > 0 ? 'Additional Cash / Channel Collection' : 'New Collection Details'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (availableAdvance > 0 && adjustAdvanceAmount === 0) {
+                          setAdjustAdvanceAmount(maxAdvanceCanUse);
+                          setCollectDueForm(prev => ({
+                            ...prev,
+                            amount: Math.max(0, collectingDueSale.dueAmount - maxAdvanceCanUse)
+                          }));
+                        } else {
+                          setCollectDueForm(prev => ({
+                            ...prev,
+                            amount: remainingDueForChannel
+                          }));
+                        }
+                      }}
+                      className="text-[10.5px] font-extrabold text-amber-700 hover:text-amber-800 underline cursor-pointer"
+                    >
+                      {adjustAdvanceAmount > 0
+                        ? `Collect Remaining (${profile.currencySymbol}${remainingDueForChannel.toLocaleString()})`
+                        : `Collect Full Due (${profile.currencySymbol}${collectingDueSale.dueAmount.toLocaleString()})`}
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">
+                      {adjustAdvanceAmount > 0 ? 'Amount to Collect from Channel' : 'Amount to Collect *'}
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      max={remainingDueForChannel}
+                      value={collectDueForm.amount === 0 && adjustAdvanceAmount > 0 ? 0 : (collectDueForm.amount || '')}
+                      onChange={(e) => {
+                        const val = Math.max(0, Number(e.target.value) || 0);
+                        setCollectDueForm(prev => ({
+                          ...prev,
+                          amount: Math.min(remainingDueForChannel, val)
+                        }));
+                      }}
+                      placeholder="0"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl font-black text-base text-emerald-700 bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="font-bold text-slate-700 block">
+                        Deposit Into Payment Channel *
+                      </label>
+                      {selectedPm && (
+                        <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                          Live: {profile.currencySymbol}{selectedBal.toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                    <select
+                      value={collectDueForm.paymentMethod}
+                      onChange={(e) => setCollectDueForm(prev => ({ ...prev, paymentMethod: e.target.value }))}
+                      disabled={cashAmountNum <= 0 && adjustAdvanceAmount > 0}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium text-xs bg-white cursor-pointer disabled:bg-slate-100 disabled:text-slate-400"
+                    >
+                      {depositPaymentMethods.map((pm) => {
+                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                        return (
+                          <option key={pm.id} value={pm.name}>
+                            {pm.name} {pm.nameBn ? `(${pm.nameBn})` : ''} — [{profile.currencySymbol}{bal.toLocaleString()}]
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">
+                        Collection Date *
+                      </label>
+                      <input
+                        type="date"
+                        required
+                        value={collectDueForm.date}
+                        onChange={(e) => setCollectDueForm(prev => ({ ...prev, date: e.target.value }))}
+                        className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs font-medium bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">
+                        Reference / Cheque No
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Cheque #58129 / Trx-9382"
+                        value={collectDueForm.referenceNo}
+                        onChange={(e) => setCollectDueForm(prev => ({ ...prev, referenceNo: e.target.value }))}
+                        className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs font-medium bg-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">
+                      Note / Remarks (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Paid via mobile banking"
+                      value={collectDueForm.note}
+                      onChange={(e) => setCollectDueForm(prev => ({ ...prev, note: e.target.value }))}
+                      className="w-full px-3 py-1.5 border border-slate-200 rounded-xl text-xs font-medium bg-white"
+                    />
+                  </div>
+
+                  {/* Settlement Summary Breakdown */}
+                  <div className="bg-white p-2.5 rounded-lg border border-amber-200/60 text-xs space-y-1">
+                    {adjustAdvanceAmount > 0 && (
+                      <div className="flex justify-between text-indigo-700 font-bold">
+                        <span>Advance Adjusted:</span>
+                        <span>+{profile.currencySymbol}{adjustAdvanceAmount.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {cashAmountNum > 0 && (
+                      <div className="flex justify-between text-emerald-700 font-bold">
+                        <span>Channel Collection ({collectDueForm.paymentMethod}):</span>
+                        <span>+{profile.currencySymbol}{cashAmountNum.toLocaleString()}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between text-slate-900 font-black pt-1 border-t border-slate-100">
+                      <span>Total Payment Applied:</span>
+                      <span className="text-emerald-700">+{profile.currencySymbol}{totalSettling.toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between text-slate-500 font-semibold text-[11px]">
+                      <span>Remaining Due After Settlement:</span>
+                      <span className={collectingDueSale.dueAmount - totalSettling > 0 ? 'text-rose-600 font-bold' : 'text-emerald-600 font-bold'}>
+                        {profile.currencySymbol}{Math.max(0, collectingDueSale.dueAmount - totalSettling).toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {'Note / Remarks (Optional)'}
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Paid via bank transfer"
-                  value={collectDueForm.note}
-                  onChange={(e) => setCollectDueForm(prev => ({ ...prev, note: e.target.value }))}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-medium focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
-                />
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCollectingDueSale(null);
+                    setAdjustAdvanceAmount(0);
+                  }}
+                  className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={totalSettling <= 0}
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold shadow-2xs cursor-pointer transition-colors"
+                >
+                  {adjustAdvanceAmount > 0 && cashAmountNum <= 0
+                    ? `Confirm Advance Adjustment (${profile.currencySymbol}${adjustAdvanceAmount.toLocaleString()})`
+                    : adjustAdvanceAmount > 0 && cashAmountNum > 0
+                    ? `Confirm Collection & Adjustment`
+                    : `Confirm Collection (${profile.currencySymbol}${cashAmountNum.toLocaleString()})`}
+                </button>
               </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setCollectingDueSale(null)}
-                className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
-              >
-                {'Cancel'}
-              </button>
-              <button
-                type="submit"
-                disabled={!collectDueForm.amount || Number(collectDueForm.amount) <= 0}
-                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer transition-all"
-              >
-                {`Confirm Collection (${profile.currencySymbol}${Number(collectDueForm.amount || 0).toLocaleString()})`}
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
+            </form>
+          </div>
+        );
+      })()}
 
       {/* LINK SALES INVOICE TO PROJECT MODAL */}
       {linkingProject && (

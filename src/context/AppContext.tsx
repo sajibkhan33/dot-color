@@ -141,7 +141,7 @@ interface AppContextType {
     updateProject: (id: string, updates: Partial<Project>) => void;
     deleteProject: (id: string) => void;
     addProjectSales: (projectId: string, sales: Omit<ProjectSalesItem, 'id'>) => void;
-    collectProjectDue: (projectId: string, salesItemId: string, amount: number, paymentMethod: string, date?: string, note?: string, referenceNo?: string) => void;
+    collectProjectDue: (projectId: string, salesItemId: string, amount: number, paymentMethod: string, date?: string, note?: string, referenceNo?: string, advanceAdjustAmount?: number) => void;
     addProjectExpense: (projectId: string, expense: Omit<ProjectExpenseItem, 'id'>) => void;
     addProjectExpenses: (projectId: string, expenses: Omit<ProjectExpenseItem, 'id'>[]) => void;
     deleteProjectSales: (projectId: string, salesId: string) => void;
@@ -4632,10 +4632,13 @@ export const AppProvider: React.FC<{
         paymentMethod: string,
         date?: string,
         note?: string,
-        referenceNo?: string
+        referenceNo?: string,
+        advanceAdjustAmount: number = 0
     ) => {
-        const collectAmount = Math.max(0, Number(amount) || 0);
-        if (collectAmount <= 0) return;
+        const advanceAdjust = Math.max(0, Number(advanceAdjustAmount) || 0);
+        const cashCollect = Math.max(0, Number(amount) || 0);
+        const totalPaymentApplied = cashCollect + advanceAdjust;
+        if (totalPaymentApplied <= 0) return;
 
         const currentProjects = latestStateRef.current.projects || projects;
         const targetProj = currentProjects.find((p: Project) => p.id === projectId);
@@ -4661,22 +4664,41 @@ export const AppProvider: React.FC<{
 
         if (currentItemDue <= 0) return;
 
-        const finalCollectAmount = Math.min(collectAmount, currentItemDue);
+        const safeAdvance = Math.min(advanceAdjust, currentItemDue);
+        const remainingDueAfterAdvance = Math.max(0, currentItemDue - safeAdvance);
+        const safeCash = Math.min(cashCollect, remainingDueAfterAdvance);
+        const finalTotalApplied = safeAdvance + safeCash;
+        if (finalTotalApplied <= 0) return;
+
         const colDate = date || new Date().toISOString().slice(0, 10);
         const ref = referenceNo || targetSale.invoiceNo || `${targetProj.code}-${colDate}`;
 
-        const newCollection: ProjectSalesCollection = {
-            id: `col-prj-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
-            date: colDate,
-            amount: finalCollectAmount,
-            paymentMethod,
-            note: note?.trim() || undefined,
-            referenceNo: ref,
-            createdBy: activeStaff?.name || 'Managing Director',
-        };
+        const newCollectionsToAdd: ProjectSalesCollection[] = [];
+        if (safeAdvance > 0) {
+            newCollectionsToAdd.push({
+                id: `col-prj-adv-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+                date: colDate,
+                amount: safeAdvance,
+                paymentMethod: 'Customer Advance',
+                note: note ? `Advance Adjustment: ${note.trim()}` : 'Adjusted from Customer Advance',
+                referenceNo: ref,
+                createdBy: activeStaff?.name || 'Managing Director',
+            });
+        }
+        if (safeCash > 0) {
+            newCollectionsToAdd.push({
+                id: `col-prj-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+                date: colDate,
+                amount: safeCash,
+                paymentMethod,
+                note: note?.trim() || undefined,
+                referenceNo: ref,
+                createdBy: activeStaff?.name || 'Managing Director',
+            });
+        }
 
-        const updatedCollections = [...(targetSale.collections || []), newCollection];
-        const newDueAmount = Math.max(0, currentItemDue - finalCollectAmount);
+        const updatedCollections = [...(targetSale.collections || []), ...newCollectionsToAdd];
+        const newDueAmount = Math.max(0, currentItemDue - finalTotalApplied);
         const newPaidAmount = Math.max(0, (Number(targetSale.amount) || 0) - newDueAmount);
 
         // 1. Update Project in state and local storage
@@ -4702,66 +4724,122 @@ export const AppProvider: React.FC<{
             projects: updatedProjects,
         };
 
-        // 2. Accounting Double-Entry (Journal Entry)
-        // Debit: Selected Cash/Bank/MFS Asset Account
-        // Credit: Accounts Receivable - Customers (1003)
-        const debitAcc = resolvePaymentAssetAccount(paymentMethod);
+        // 2. Accounting Double-Entry (Journal Entries)
         const creditAcc = resolvePaymentAssetAccount('Due');
+        const newJournals: JournalEntry[] = [];
 
-        const newJnl: JournalEntry = {
-            id: `jnl-pcol-${Date.now()}`,
-            entryNo: `JNL-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}`,
-            date: colDate,
-            refNo: ref,
-            debitAccountId: debitAcc.id,
-            debitAccountName: debitAcc.name,
-            creditAccountId: creditAcc.id,
-            creditAccountName: creditAcc.name,
-            amount: finalCollectAmount,
-            narration: `Project Due Collection: [${targetProj.code}] ${targetProj.name} - Collected via ${paymentMethod} (Inv: ${targetSale.invoiceNo || 'N/A'})${note ? ` - ${note}` : ''}`,
-            source: 'PROJECT_SALES',
-            createdBy: activeStaff?.name || 'Managing Director',
-        };
+        // Cash/Bank/MFS journal if safeCash > 0
+        let debitAcc = resolvePaymentAssetAccount(paymentMethod);
+        if (safeCash > 0) {
+            newJournals.push({
+                id: `jnl-pcol-${Date.now()}`,
+                entryNo: `JNL-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}`,
+                date: colDate,
+                refNo: ref,
+                debitAccountId: debitAcc.id,
+                debitAccountName: debitAcc.name,
+                creditAccountId: creditAcc.id,
+                creditAccountName: creditAcc.name,
+                amount: safeCash,
+                narration: `Project Due Collection: [${targetProj.code}] ${targetProj.name} - Collected via ${paymentMethod} (Inv: ${targetSale.invoiceNo || 'N/A'})${note ? ` - ${note}` : ''}`,
+                source: 'PROJECT_SALES',
+                createdBy: activeStaff?.name || 'Managing Director',
+            });
+        }
 
-        setJournalEntries(prev => {
-            const next = [newJnl, ...prev];
-            try { localStorage.setItem(`${STORAGE_KEY}_JOURNALS`, JSON.stringify(next)); } catch {}
-            return next;
-        });
+        // Advance Adjustment journal if safeAdvance > 0
+        const advanceLiabilityAcc = chartOfAccounts.find(a => a.classification === 'Liability' && (
+            a.code === '2020' ||
+            a.code === '2002' ||
+            a.id === 'coa-2020' ||
+            a.name.toLowerCase().includes('advance') ||
+            a.name.toLowerCase().includes('deposit') ||
+            a.nameBn?.includes('অগ্রিম')
+        )) || chartOfAccounts.find(a => a.classification === 'Liability') || { id: 'coa-2020', name: 'Customer Advance', code: '2020', classification: 'Liability' as const, normalBalance: 'Credit' as const, currentBalance: 0 };
 
-        // 3. Accounting Transaction (Cash/Bank in-flow)
-        const isBank = paymentMethod.toLowerCase().includes('bank') || paymentMethod.toLowerCase().includes('plc');
-        const isMobile = paymentMethod.toLowerCase().includes('bkash') || paymentMethod.toLowerCase().includes('nagad') || paymentMethod.toLowerCase().includes('rocket');
-        const newTx: AccountingTransaction = {
-            id: generateUniqueId('tx-prj-col'),
-            date: colDate,
-            type: 'INCOME',
-            category: 'Project Due Collection',
-            account: isBank ? (paymentMethod.includes('City') ? 'City Bank PLC' : paymentMethod.includes('Southeast') ? 'Southeast Bank' : 'Bank Account') : isMobile ? paymentMethod : 'Cash in Hand',
-            accountHead: debitAcc.name,
-            paymentMethod: paymentMethod,
-            paymentAccount: debitAcc.name,
-            refNo: ref,
-            customerOrSupplier: targetProj.clientName,
-            description: `Project Due Collected: [${targetProj.code}] ${targetProj.name} - ${targetSale.description || 'Billing'} (${paymentMethod})`,
-            amount: finalCollectAmount,
-        };
+        if (safeAdvance > 0) {
+            newJournals.push({
+                id: `jnl-pcol-adv-${Date.now()}-${Math.floor(10 + Math.random() * 90)}`,
+                entryNo: `JNL-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}B`,
+                date: colDate,
+                refNo: ref,
+                debitAccountId: advanceLiabilityAcc.id,
+                debitAccountName: advanceLiabilityAcc.name,
+                creditAccountId: creditAcc.id,
+                creditAccountName: creditAcc.name,
+                amount: safeAdvance,
+                narration: `Project Due Advance Adjustment: [${targetProj.code}] ${targetProj.name} - Adjusted from Customer Advance (Inv: ${targetSale.invoiceNo || 'N/A'})${note ? ` - ${note}` : ''}`,
+                source: 'PROJECT_SALES',
+                createdBy: activeStaff?.name || 'Managing Director',
+            });
+        }
 
-        setTransactions(prev => {
-            const next = ensureUniqueTransactions([newTx, ...prev]);
-            try { localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(next)); } catch {}
-            return next;
-        });
+        if (newJournals.length > 0) {
+            setJournalEntries(prev => {
+                const next = [...newJournals, ...prev];
+                try { localStorage.setItem(`${STORAGE_KEY}_JOURNALS`, JSON.stringify(next)); } catch {}
+                return next;
+            });
+        }
+
+        // 3. Accounting Transactions (Cash/Bank in-flow & Advance adjustment)
+        const newTxs: AccountingTransaction[] = [];
+        if (safeCash > 0) {
+            const isBank = paymentMethod.toLowerCase().includes('bank') || paymentMethod.toLowerCase().includes('plc');
+            const isMobile = paymentMethod.toLowerCase().includes('bkash') || paymentMethod.toLowerCase().includes('nagad') || paymentMethod.toLowerCase().includes('rocket');
+            newTxs.push({
+                id: generateUniqueId('tx-prj-col'),
+                date: colDate,
+                type: 'INCOME',
+                category: 'Project Due Collection',
+                account: isBank ? (paymentMethod.includes('City') ? 'City Bank PLC' : paymentMethod.includes('Southeast') ? 'Southeast Bank' : 'Bank Account') : isMobile ? paymentMethod : 'Cash in Hand',
+                accountHead: debitAcc.name,
+                paymentMethod: paymentMethod,
+                paymentAccount: debitAcc.name,
+                refNo: ref,
+                customerOrSupplier: targetProj.clientName,
+                description: `Project Due Collected: [${targetProj.code}] ${targetProj.name} - ${targetSale.description || 'Billing'} (${paymentMethod})`,
+                amount: safeCash,
+            });
+        }
+        if (safeAdvance > 0) {
+            newTxs.push({
+                id: generateUniqueId('tx-prj-adv'),
+                date: colDate,
+                type: 'INCOME',
+                category: 'Customer Advance Adjustment',
+                account: 'Customer Advance',
+                accountHead: advanceLiabilityAcc.name,
+                paymentMethod: 'Customer Advance',
+                paymentAccount: 'Customer Advance',
+                refNo: ref,
+                customerOrSupplier: targetProj.clientName,
+                description: `Project Advance Adjusted: [${targetProj.code}] ${targetProj.name} - Adjusted Tk ${safeAdvance.toLocaleString()} from Customer Advance`,
+                amount: safeAdvance,
+            });
+        }
+
+        if (newTxs.length > 0) {
+            setTransactions(prev => {
+                const next = ensureUniqueTransactions([...newTxs, ...prev]);
+                try { localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(next)); } catch {}
+                return next;
+            });
+        }
 
         // 4. Update Chart of Accounts balances directly
         setChartOfAccounts(prev => {
             const next = prev.map(acc => {
-                if (acc.id === debitAcc.id) {
-                    const delta = acc.normalBalance === 'Debit' ? finalCollectAmount : -finalCollectAmount;
+                if (safeCash > 0 && acc.id === debitAcc.id) {
+                    const delta = acc.normalBalance === 'Debit' ? safeCash : -safeCash;
                     return { ...acc, currentBalance: acc.currentBalance + delta };
                 }
                 if (acc.id === creditAcc.id) {
-                    const delta = acc.normalBalance === 'Debit' ? -finalCollectAmount : finalCollectAmount;
+                    const delta = acc.normalBalance === 'Debit' ? -finalTotalApplied : finalTotalApplied;
+                    return { ...acc, currentBalance: acc.currentBalance + delta };
+                }
+                if (safeAdvance > 0 && acc.id === advanceLiabilityAcc.id) {
+                    const delta = acc.normalBalance === 'Credit' ? -safeAdvance : safeAdvance;
                     return { ...acc, currentBalance: acc.currentBalance + delta };
                 }
                 return acc;
@@ -4776,17 +4854,22 @@ export const AppProvider: React.FC<{
         // 4b. Sync to linked Sales Invoice and Customer Due
         const linkedInvNo = targetSale.invoiceNo || targetProj.invoiceNo;
         const linkedInvId = targetProj.invoiceId;
+        let updatedInvs = latestStateRef.current.invoices || invoices;
         if (linkedInvNo || linkedInvId) {
-            const currentInvs = latestStateRef.current.invoices || invoices;
-            const updatedInvs = currentInvs.map(inv => {
+            updatedInvs = updatedInvs.map(inv => {
                 if ((linkedInvId && inv.id === linkedInvId) || (linkedInvNo && inv.invoiceNo === linkedInvNo)) {
-                    const newPaid = Math.min(Number(inv.grandTotal) || 0, (Number(inv.paidAmount) || 0) + finalCollectAmount);
+                    const newPaid = Math.min(Number(inv.grandTotal) || 0, (Number(inv.paidAmount) || 0) + finalTotalApplied);
                     const newDue = Math.max(0, (Number(inv.grandTotal) || 0) - newPaid);
                     const newStatus: PaymentStatus = newDue <= 0 ? 'Paid' : 'Partial';
                     const existingSplits = { ...(inv.splitPayments || {}) };
-                    existingSplits[paymentMethod] = (existingSplits[paymentMethod] || 0) + finalCollectAmount;
+                    if (safeCash > 0) {
+                        existingSplits[paymentMethod] = (existingSplits[paymentMethod] || 0) + safeCash;
+                    }
+                    if (safeAdvance > 0) {
+                        existingSplits['Customer Advance'] = (existingSplits['Customer Advance'] || 0) + safeAdvance;
+                    }
                     if (existingSplits['Due'] !== undefined) {
-                        existingSplits['Due'] = Math.max(0, existingSplits['Due'] - finalCollectAmount);
+                        existingSplits['Due'] = Math.max(0, existingSplits['Due'] - finalTotalApplied);
                     }
                     return {
                         ...inv,
@@ -4800,44 +4883,62 @@ export const AppProvider: React.FC<{
             });
             setInvoices(updatedInvs);
             try { localStorage.setItem(`${STORAGE_KEY}_INVOICES`, JSON.stringify(updatedInvs)); } catch {}
-
-            const currentCusts = latestStateRef.current.customers || customers;
-            const updatedCusts = currentCusts.map(c => {
-                const isMatch = (targetProj.clientName && c.name && c.name.toLowerCase().trim() === targetProj.clientName.toLowerCase().trim()) ||
-                                (targetProj.clientPhone && c.phone && c.phone === targetProj.clientPhone) ||
-                                (c.company && targetProj.name && targetProj.name.toLowerCase().includes(c.company.toLowerCase()));
-                if (isMatch) {
-                    const clientInvoices = updatedInvs.filter(inv => isInvoiceMatchingCustomer(inv, c));
-                    const dueAmount = clientInvoices.length > 0
-                        ? clientInvoices.reduce((s, inv) => s + (Number(inv.dueAmount) || 0), 0)
-                        : Math.max(0, (Number(c.dueAmount) || 0) - finalCollectAmount);
-                    return { ...c, dueAmount };
-                }
-                return c;
-            });
-            setCustomers(updatedCusts);
-            try { localStorage.setItem(`${STORAGE_KEY}_CUSTOMERS`, JSON.stringify(updatedCusts)); } catch {}
-
-            latestStateRef.current = {
-                ...latestStateRef.current,
-                invoices: updatedInvs,
-                customers: updatedCusts,
-            };
         }
 
-        // 5. Add Audit Log
-        addAuditLog({
-            staffId: activeStaff?.id || 'staff-admin',
-            staffName: activeStaff?.name || 'Staff',
-            staffRole: activeStaff?.role || 'Managing Director',
-            location: 'Office',
-            actionType: 'PROJECT_DUE_COLLECTED' as any,
-            entityType: 'Projects',
-            refNo: targetProj.code,
-            details: `Collected Project Due of Tk ${finalCollectAmount.toLocaleString()} via ${paymentMethod} for Project ${targetProj.code} (${targetProj.name})`,
-            amount: finalCollectAmount,
-            severity: 'success',
+        const currentCusts = latestStateRef.current.customers || customers;
+        const updatedCusts = currentCusts.map(c => {
+            const isMatch = (targetProj.clientName && c.name && c.name.toLowerCase().trim() === targetProj.clientName.toLowerCase().trim()) ||
+                            (targetProj.clientPhone && c.phone && c.phone === targetProj.clientPhone) ||
+                            (c.company && targetProj.name && targetProj.name.toLowerCase().includes(c.company.toLowerCase()));
+            if (isMatch) {
+                const clientInvoices = updatedInvs.filter(inv => isInvoiceMatchingCustomer(inv, c));
+                const dueAmount = clientInvoices.length > 0
+                    ? clientInvoices.reduce((s, inv) => s + (Number(inv.dueAmount) || 0), 0)
+                    : Math.max(0, (Number(c.dueAmount) || 0) - finalTotalApplied);
+                const currentAdv = Number(c.advanceBalance) || 0;
+                const newAdv = Math.max(0, currentAdv - safeAdvance);
+                return { ...c, dueAmount, advanceBalance: newAdv };
+            }
+            return c;
         });
+        setCustomers(updatedCusts);
+        try { localStorage.setItem(`${STORAGE_KEY}_CUSTOMERS`, JSON.stringify(updatedCusts)); } catch {}
+
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            invoices: updatedInvs,
+            customers: updatedCusts,
+        };
+
+        // 5. Add Audit Log
+        if (safeAdvance > 0) {
+            addAuditLog({
+                staffId: activeStaff?.id || 'staff-admin',
+                staffName: activeStaff?.name || 'Staff',
+                staffRole: activeStaff?.role || 'Managing Director',
+                location: 'Office',
+                actionType: 'ADVANCE_ADJUSTED' as any,
+                entityType: 'Projects',
+                refNo: targetProj.code,
+                details: `Adjusted payment of Tk ${safeAdvance.toLocaleString()} from Customer Advance for Project ${targetProj.code} (${targetProj.name})`,
+                amount: safeAdvance,
+                severity: 'success',
+            });
+        }
+        if (safeCash > 0) {
+            addAuditLog({
+                staffId: activeStaff?.id || 'staff-admin',
+                staffName: activeStaff?.name || 'Staff',
+                staffRole: activeStaff?.role || 'Managing Director',
+                location: 'Office',
+                actionType: 'PROJECT_DUE_COLLECTED' as any,
+                entityType: 'Projects',
+                refNo: targetProj.code,
+                details: `Collected Project Due of Tk ${safeCash.toLocaleString()} via ${paymentMethod} for Project ${targetProj.code} (${targetProj.name})`,
+                amount: safeCash,
+                severity: 'success',
+            });
+        }
 
         triggerImmediatePush();
     };
