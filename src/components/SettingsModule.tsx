@@ -496,10 +496,10 @@ export const SettingsModule: React.FC = () => {
         cleanModuleData(mappedKey);
         setCleanConfirmModule(null);
         if (moduleKey === 'WIPE_ALL_EXCEPT_PRODUCTS' || moduleKey === 'RESET_ALL_TRANSACTIONS') {
-            setCleanFeedback('All transactional data (sales, purchases, cash txns, journals, projects, stock, dues & advances) reset successfully. / সকল ট্রানজ্যাকশনাল ডেটা (লেনদেন, স্টক, বকেয়া ও অগ্রিম) সফলভাবে রিসেট করা হয়েছে।');
+            setCleanFeedback('All transactional data (sales, purchases, cash txns, journals, projects, stock, dues & advances) reset successfully.');
         }
         else if (moduleKey === 'invoices' || moduleKey === 'SALES_RESET' || moduleKey === 'SALES') {
-            setCleanFeedback('All sales data (invoices, POS orders, quotes, customer dues & sales revenue) reset successfully. / সকল সেলস ডেটা সফলভাবে রিসেট করা হয়েছে।');
+            setCleanFeedback('All sales data (invoices, POS orders, quotes, customer dues & sales revenue) reset successfully.');
         }
         else {
             setCleanFeedback(`Module '${moduleKey}' data purged successfully.`);
@@ -1673,28 +1673,24 @@ export const SettingsModule: React.FC = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Sales / POS Invoices Clean */}
-            <div className="bg-white p-5 rounded-2xl border-2 border-rose-100 hover:border-rose-300 shadow-2xs space-y-3 transition-all">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
               <div className="flex items-center justify-between">
-                <span className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
+                <span className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
                   <RotateCcw className="w-4 h-4 text-rose-600"/>
-                  {'1. Reset All Sales Data (সকল সেলস ডেটা রিসেট)'}
+                  {'1. Reset All Sales Data'}
                 </span>
-                <span className="text-xs font-mono font-bold text-rose-600 bg-rose-50 px-2.5 py-0.5 rounded-full border border-rose-200">POS & Sales</span>
+                <span className="text-xs font-mono text-slate-500">POS & Sales</span>
               </div>
-              <p className="text-xs text-slate-600 leading-relaxed font-medium">
-                {'Deletes all sales invoices, POS counter sales, quotes, sales revenue entries, and resets customer sales dues to 0. Product and customer catalogs remain intact.'}
+              <p className="text-xs text-slate-500">
+                {'Deletes all sales invoices, POS counter sales, quotes, sales revenue entries, and resets customer sales dues to 0. Master catalogs remain intact.'}
               </p>
-              <div className="bg-rose-50/70 rounded-xl p-2.5 border border-rose-100 text-[11px] text-rose-800 font-semibold flex items-center gap-2">
-                <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0"/>
-                <span>{'সকল সেলস ইনভয়েস, POS বিক্রয়, কোটেশন, কাস্টমার বকেয়া/ডিউ এবং সেলস আয় মুছে সম্পূর্ণ সেলস ডেটা রিসেট হবে।'}</span>
-              </div>
               <button
                 type="button"
                 onClick={() => setCleanConfirmModule('SALES_RESET')}
-                className="w-full py-2.5 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl border border-rose-200 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
               >
-                <RotateCcw className="w-4 h-4"/>
-                <span>{'Reset All Sales Data (সকল সেলস ডেটা রিসেট)'}</span>
+                <RotateCcw className="w-3.5 h-3.5"/>
+                <span>{'Reset All Sales Data'}</span>
               </button>
             </div>
 
@@ -1767,31 +1763,27 @@ export const SettingsModule: React.FC = () => {
             </div>
 
             {/* Reset All Transactional Data */}
-            <div className="bg-rose-50/70 p-5 rounded-2xl border-2 border-rose-300 shadow-2xs space-y-3 col-span-1 md:col-span-2">
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
               <div className="flex items-center justify-between">
-                <span className="font-extrabold text-rose-950 text-sm flex items-center gap-2">
+                <span className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
                   <AlertOctagon className="w-4 h-4 text-rose-600"/>
-                  {'6. Reset All Transactional Data (সকল ট্রানজ্যাকশনাল ডেটা রিসেট)'}
+                  {'6. Reset All Transactional Data'}
                 </span>
-                <span className="text-xs font-mono font-bold text-rose-700 bg-rose-200/80 px-2.5 py-0.5 rounded-full">
-                  ALL TRANSACTIONS WIPE
+                <span className="text-xs font-mono text-slate-500">
+                  All Transactions
                 </span>
               </div>
-              <p className="text-xs text-rose-900 leading-relaxed font-medium">
-                {'Wipes all operational transactions: sales invoices, quotes, purchase orders, cash/bank transactions, journal entries, project financials, and stock movements. Resets all customer & supplier due balances to 0, customer advance balances to 0, product stock to 0, and account balances to 0. Product catalog, customer directory, supplier directory, and accounts remain intact.'}
+              <p className="text-xs text-slate-500">
+                {'Wipes all sales, quotes, purchase orders, ledger entries, and stock history. Resets all dues and stock to 0 while preserving catalogs.'}
               </p>
-              <div className="bg-white/80 rounded-xl p-3 border border-rose-200 text-xs text-rose-900 font-bold flex items-start gap-2">
-                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5"/>
-                <span>{'সকল লেনদেন (সেলস, পারচেজ, ক্যাশ ট্রানজ্যাকশন, জার্নাল, প্রজেক্ট ও স্টক হিস্ট্রি) সম্পূর্ণ মুছে রিসেট হবে। কাস্টমার ও সাপ্লায়ার বকেয়া, কাস্টমার অগ্রিম (Advance) এবং স্টক ০ হবে। তবে আপনার কাস্টমার, সাপ্লায়ার ও প্রোডাক্ট তালিকা অক্ষত থাকবে।'}</span>
-              </div>
               <button
                 type="button"
                 onClick={() => setCleanConfirmModule('RESET_ALL_TRANSACTIONS')}
-                className="w-full py-3 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl border border-rose-200 transition-all flex items-center justify-center gap-1.5 cursor-pointer"
               >
-                <RotateCcw className="w-4 h-4"/>
+                <RotateCcw className="w-3.5 h-3.5"/>
                 <span>
-                  {'Reset All Transactional Data (সকল ট্রানজ্যাকশনাল ডেটা রিসেট)'}
+                  {'Reset All Transactional Data'}
                 </span>
               </button>
             </div>
@@ -1975,9 +1967,9 @@ export const SettingsModule: React.FC = () => {
             <div className="text-center space-y-2">
               <h3 className="font-extrabold text-slate-900 text-base">
                 {cleanConfirmModule === 'invoices' || cleanConfirmModule === 'SALES_RESET' || cleanConfirmModule === 'SALES'
-                  ? 'Confirm Sales Data Reset (সেলস ডেটা রিসেট নিশ্চিতকরণ)'
+                  ? 'Confirm Sales Data Reset'
                   : cleanConfirmModule === 'RESET_ALL_TRANSACTIONS' || cleanConfirmModule === 'WIPE_ALL_EXCEPT_PRODUCTS'
-                  ? 'Confirm All Transactional Data Reset (সকল ট্রানজ্যাকশনাল ডেটা রিসেট)'
+                  ? 'Confirm All Transactional Data Reset'
                   : 'Confirm Data Deletion'}
               </h3>
               <div className="text-xs text-slate-600 space-y-1.5 leading-relaxed text-left sm:text-center">
@@ -1989,9 +1981,6 @@ export const SettingsModule: React.FC = () => {
                     <p className="text-slate-500 text-[11px] text-center">
                       {'This will wipe all sales invoices, quotes, purchase orders, cash transactions, journal entries, project records, and stock movements. Customer & supplier dues, customer advances will be zeroed out, inventory stock reset to 0, and accounts reset to zero. Product, customer, and supplier master directories will remain intact.'}
                     </p>
-                    <div className="bg-rose-50 p-2.5 rounded-xl border border-rose-200 text-rose-800 font-bold text-[11px] text-center">
-                      {'আপনি কি নিশ্চিত যে সমস্ত লেনদেনের ডেটা রিসেট করতে চান? সেলস, পারচেজ, ক্যাশ লেনদেন, প্রজেক্ট, কাস্টমার বকেয়া ও অগ্রিম (Advance), এবং স্টক হিস্ট্রি রিসেট হবে; তবে প্রোডাক্ট এবং কাস্টমার তালিকা সুরক্ষিত থাকবে।'}
-                    </div>
                   </>
                 ) : (cleanConfirmModule === 'invoices' || cleanConfirmModule === 'SALES_RESET' || cleanConfirmModule === 'SALES') ? (<>
                     <p className="font-semibold text-slate-800 text-center">
@@ -2000,9 +1989,6 @@ export const SettingsModule: React.FC = () => {
                     <p className="text-slate-500 text-[11px] text-center">
                       {'This will delete all sales invoices, POS counter sales, quotation records, sales revenue journal entries, and reset customer sales dues to 0. Product catalog and customer contacts will be safely preserved.'}
                     </p>
-                    <div className="bg-rose-50 p-2.5 rounded-xl border border-rose-200 text-rose-800 font-bold text-[11px] text-center">
-                      {'আপনি কি নিশ্চিত যে সকল সেলস ডেটা রিসেট করতে চান? ইনভয়েস, POS বিক্রয়, কোটেশন ও কাস্টমার বকেয়া মুছে ফেলা হবে।'}
-                    </div>
                   </>) : (<span>
                     {(<>Are you sure you want to permanently delete all records from the <strong className="text-slate-900">{cleanConfirmModule}</strong> module?</>)}
                   </span>)}
@@ -2011,15 +1997,15 @@ export const SettingsModule: React.FC = () => {
 
             <div className="flex gap-2.5 pt-2">
               <button type="button" onClick={() => setCleanConfirmModule(null)} className="flex-1 py-2.5 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer transition-all">
-                {'Cancel / বাতিল'}
+                {'Cancel'}
               </button>
               <button type="button" onClick={() => handleExecuteClean(cleanConfirmModule)} className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-extrabold shadow-sm cursor-pointer flex items-center justify-center gap-1.5 transition-all">
                 <RotateCcw className="w-3.5 h-3.5"/>
                 <span>
                   {cleanConfirmModule === 'invoices' || cleanConfirmModule === 'SALES_RESET' || cleanConfirmModule === 'SALES'
-                    ? 'Yes, Reset / রিসেট করুন'
+                    ? 'Yes, Reset'
                     : cleanConfirmModule === 'RESET_ALL_TRANSACTIONS' || cleanConfirmModule === 'WIPE_ALL_EXCEPT_PRODUCTS'
-                    ? 'Yes, Reset All / সকল লেনদেন রিসেট'
+                    ? 'Yes, Reset All'
                     : 'Yes, Delete'}
                 </span>
               </button>

@@ -465,15 +465,7 @@ export const AppProvider: React.FC<{
     const pushToCloudRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
     const triggerImmediatePush = () => {
-        if (!isCloudLoadedRef.current) return;
-        if (syncTimeoutRef.current) {
-            clearTimeout(syncTimeoutRef.current);
-        }
-        syncTimeoutRef.current = setTimeout(() => {
-            if (pushToCloudRef.current) {
-                pushToCloudRef.current();
-            }
-        }, 150);
+        // Disabled auto-push to ensure zero-lag instant responsiveness
     };
 
     // Sync to LocalStorage
@@ -2149,7 +2141,7 @@ export const AppProvider: React.FC<{
                             category: 'Raw Materials',
                             unit: item.unit || 'pcs',
                             costPrice: item.unitCost,
-                            sellingPrice: Math.round(item.unitCost * 1.2),
+                            unitPrice: Math.round(item.unitCost * 1.2),
                             stockOffice: data.destination === 'Office' ? item.qty : 0,
                             stockFactory: data.destination === 'Factory' ? item.qty : 0,
                             minStockAlert: 5,
@@ -2263,7 +2255,7 @@ export const AppProvider: React.FC<{
                             category: 'Raw Materials',
                             unit: item.unit || 'pcs',
                             costPrice: item.unitCost,
-                            sellingPrice: Math.round(item.unitCost * 1.2),
+                            unitPrice: Math.round(item.unitCost * 1.2),
                             stockOffice: po.destination === 'Office' ? rQty : 0,
                             stockFactory: po.destination === 'Factory' ? rQty : 0,
                             minStockAlert: 5,
@@ -3652,6 +3644,7 @@ export const AppProvider: React.FC<{
             ...proj,
             id: newId,
             code,
+            budget: Number(proj.budget) || 0,
             salesItems: proj.salesItems || [],
             expenseItems: proj.expenseItems || [],
             totalSales: 0,
@@ -3662,7 +3655,17 @@ export const AppProvider: React.FC<{
             projectAccountCode: proj.projectAccountCode || revAcc?.code || '4051',
         };
         const calculated = recalculateProject(baseProject);
-        setProjects((prev) => [calculated, ...prev]);
+        setProjects((prev) => {
+            const next = [calculated, ...prev];
+            try {
+                localStorage.setItem(`${STORAGE_KEY}_PROJECTS`, JSON.stringify(next));
+            } catch {}
+            return next;
+        });
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            projects: [calculated, ...(latestStateRef.current.projects || [])],
+        };
         addAuditLog({
             staffId: activeStaff?.id || 'staff-admin',
             staffName: activeStaff?.name || 'Staff',
@@ -3671,7 +3674,7 @@ export const AppProvider: React.FC<{
             actionType: 'PROJECT_CREATED',
             entityType: 'Projects',
             refNo: code,
-            details: `Created new project: ${calculated.name} for ${calculated.clientName} (COA Linked: [${revAcc?.code || '4051'}] ${revAcc?.name || 'Project Sales Income'})`,
+            details: `Created new project: ${calculated.name} for ${calculated.clientName} (Budget: Tk ${(calculated.budget || 0).toLocaleString()})`,
             detailsBn: undefined,
             severity: 'info',
         });
@@ -3679,13 +3682,22 @@ export const AppProvider: React.FC<{
     };
 
     const updateProject = (id: string, updates: Partial<Project>) => {
-        setProjects((prev) => prev.map((p) => {
-            if (p.id === id) {
-                const updated = recalculateProject({ ...p, ...updates });
-                return updated;
-            }
-            return p;
-        }));
+        setProjects((prev) => {
+            const next = prev.map((p) => {
+                if (p.id === id) {
+                    return recalculateProject({ ...p, ...updates });
+                }
+                return p;
+            });
+            try {
+                localStorage.setItem(`${STORAGE_KEY}_PROJECTS`, JSON.stringify(next));
+            } catch {}
+            return next;
+        });
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            projects: (latestStateRef.current.projects || []).map((p: Project) => p.id === id ? recalculateProject({ ...p, ...updates }) : p),
+        };
     };
 
     const deleteProject = (id: string) => {
@@ -3693,23 +3705,45 @@ export const AppProvider: React.FC<{
         if (target) {
             const targetJournals = (journalEntries || []).filter(j => j.refNo === target.code);
             if (targetJournals.length > 0) {
-                setChartOfAccounts(prev => prev.map(acc => {
-                    let balChange = 0;
-                    targetJournals.forEach(j => {
-                        if (acc.id === j.debitAccountId) {
-                            balChange -= (acc.normalBalance === 'Debit' ? j.amount : -j.amount);
-                        }
-                        if (acc.id === j.creditAccountId) {
-                            balChange -= (acc.normalBalance === 'Credit' ? j.amount : -j.amount);
-                        }
+                setChartOfAccounts(prev => {
+                    const next = prev.map(acc => {
+                        let balChange = 0;
+                        targetJournals.forEach(j => {
+                            if (acc.id === j.debitAccountId) {
+                                balChange -= (acc.normalBalance === 'Debit' ? j.amount : -j.amount);
+                            }
+                            if (acc.id === j.creditAccountId) {
+                                balChange -= (acc.normalBalance === 'Credit' ? j.amount : -j.amount);
+                            }
+                        });
+                        return balChange !== 0 ? { ...acc, currentBalance: acc.currentBalance + balChange } : acc;
                     });
-                    return balChange !== 0 ? { ...acc, currentBalance: acc.currentBalance + balChange } : acc;
-                }));
+                    try { localStorage.setItem(`${STORAGE_KEY}_COA`, JSON.stringify(next)); } catch {}
+                    return next;
+                });
             }
-            setJournalEntries(prev => prev.filter(j => j.refNo !== target.code));
-            setTransactions(prev => prev.filter(t => t.refNo !== target.code));
+            setJournalEntries(prev => {
+                const next = prev.filter(j => j.refNo !== target.code);
+                try { localStorage.setItem(`${STORAGE_KEY}_JOURNALS`, JSON.stringify(next)); } catch {}
+                return next;
+            });
+            setTransactions(prev => {
+                const next = prev.filter(t => t.refNo !== target.code);
+                try { localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(next)); } catch {}
+                return next;
+            });
         }
-        setProjects((prev) => prev.filter((p) => p.id !== id));
+        setProjects((prev) => {
+            const next = prev.filter((p) => p.id !== id);
+            try {
+                localStorage.setItem(`${STORAGE_KEY}_PROJECTS`, JSON.stringify(next));
+            } catch {}
+            return next;
+        });
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            projects: (latestStateRef.current.projects || []).filter((p: Project) => p.id !== id),
+        };
     };
 
     const addProjectSales = (projectId: string, sales: Omit<ProjectSalesItem, 'id'>) => {
@@ -3797,13 +3831,27 @@ export const AppProvider: React.FC<{
             linkedAccountId: revAcc.id,
         };
 
-        setProjects((prev) => prev.map((p) => {
-            if (p.id === projectId) {
-                const updatedSales = [...p.salesItems, newItem];
-                return recalculateProject({ ...p, salesItems: updatedSales });
-            }
-            return p;
-        }));
+        setProjects((prev) => {
+            const next = prev.map((p) => {
+                if (p.id === projectId) {
+                    const updatedSales = [...p.salesItems, newItem];
+                    return recalculateProject({ ...p, salesItems: updatedSales });
+                }
+                return p;
+            });
+            try { localStorage.setItem(`${STORAGE_KEY}_PROJECTS`, JSON.stringify(next)); } catch {}
+            return next;
+        });
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            projects: (latestStateRef.current.projects || []).map((p: Project) => {
+                if (p.id === projectId) {
+                    const updatedSales = [...(p.salesItems || []), newItem];
+                    return recalculateProject({ ...p, salesItems: updatedSales });
+                }
+                return p;
+            }),
+        };
 
         addAuditLog({
             staffId: activeStaff?.id || 'staff-admin',
@@ -3886,34 +3934,60 @@ export const AppProvider: React.FC<{
         });
 
         if (newJournals.length > 0) {
-            setJournalEntries(prev => [...newJournals, ...prev]);
+            setJournalEntries(prev => {
+                const next = [...newJournals, ...prev];
+                try { localStorage.setItem(`${STORAGE_KEY}_JOURNALS`, JSON.stringify(next)); } catch {}
+                return next;
+            });
         }
         if (newTxs.length > 0) {
-            setTransactions(prev => ensureUniqueTransactions([...newTxs, ...prev]));
+            setTransactions(prev => {
+                const next = ensureUniqueTransactions([...newTxs, ...prev]);
+                try { localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(next)); } catch {}
+                return next;
+            });
         }
 
         if (newJournals.length > 0) {
-            setChartOfAccounts(prev => prev.map(acc => {
-                let balChange = 0;
-                newJournals.forEach(j => {
-                    if (acc.id === j.debitAccountId) {
-                        balChange += (acc.normalBalance === 'Debit' ? j.amount : -j.amount);
-                    }
-                    if (acc.id === j.creditAccountId) {
-                        balChange += (acc.normalBalance === 'Credit' ? j.amount : -j.amount);
-                    }
+            setChartOfAccounts(prev => {
+                const next = prev.map(acc => {
+                    let balChange = 0;
+                    newJournals.forEach(j => {
+                        if (acc.id === j.debitAccountId) {
+                            balChange += (acc.normalBalance === 'Debit' ? j.amount : -j.amount);
+                        }
+                        if (acc.id === j.creditAccountId) {
+                            balChange -= (acc.normalBalance === 'Credit' ? j.amount : -j.amount);
+                        }
+                    });
+                    return balChange !== 0 ? { ...acc, currentBalance: acc.currentBalance + balChange } : acc;
                 });
-                return balChange !== 0 ? { ...acc, currentBalance: acc.currentBalance + balChange } : acc;
-            }));
+                try { localStorage.setItem(`${STORAGE_KEY}_COA`, JSON.stringify(next)); } catch {}
+                return next;
+            });
         }
 
-        setProjects((prev) => prev.map((p) => {
-            if (p.id === projectId) {
-                const updatedExpenses = [...p.expenseItems, ...newItems];
-                return recalculateProject({ ...p, expenseItems: updatedExpenses });
-            }
-            return p;
-        }));
+        setProjects((prev) => {
+            const next = prev.map((p) => {
+                if (p.id === projectId) {
+                    const updatedExpenses = [...p.expenseItems, ...newItems];
+                    return recalculateProject({ ...p, expenseItems: updatedExpenses });
+                }
+                return p;
+            });
+            try { localStorage.setItem(`${STORAGE_KEY}_PROJECTS`, JSON.stringify(next)); } catch {}
+            return next;
+        });
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            projects: (latestStateRef.current.projects || []).map((p: Project) => {
+                if (p.id === projectId) {
+                    const updatedExpenses = [...(p.expenseItems || []), ...newItems];
+                    return recalculateProject({ ...p, expenseItems: updatedExpenses });
+                }
+                return p;
+            }),
+        };
 
         const totalAddedAmt = expenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
         addAuditLog({
@@ -3939,30 +4013,56 @@ export const AppProvider: React.FC<{
         if (refNo) {
             const matchingJournals = (journalEntries || []).filter(j => j.source === 'PROJECT_SALES' && j.refNo === refNo && (itemToDelete ? j.narration.includes(itemToDelete.description) || j.amount === Number(itemToDelete.amount) : true));
             if (matchingJournals.length > 0) {
-                setChartOfAccounts(prev => prev.map(acc => {
-                    let balChange = 0;
-                    matchingJournals.forEach(j => {
-                        if (acc.id === j.debitAccountId) {
-                            balChange -= (acc.normalBalance === 'Debit' ? j.amount : -j.amount);
-                        }
-                        if (acc.id === j.creditAccountId) {
-                            balChange -= (acc.normalBalance === 'Credit' ? j.amount : -j.amount);
-                        }
+                setChartOfAccounts(prev => {
+                    const next = prev.map(acc => {
+                        let balChange = 0;
+                        matchingJournals.forEach(j => {
+                            if (acc.id === j.debitAccountId) {
+                                balChange -= (acc.normalBalance === 'Debit' ? j.amount : -j.amount);
+                            }
+                            if (acc.id === j.creditAccountId) {
+                                balChange -= (acc.normalBalance === 'Credit' ? j.amount : -j.amount);
+                            }
+                        });
+                        return balChange !== 0 ? { ...acc, currentBalance: acc.currentBalance + balChange } : acc;
                     });
-                    return balChange !== 0 ? { ...acc, currentBalance: acc.currentBalance + balChange } : acc;
-                }));
+                    try { localStorage.setItem(`${STORAGE_KEY}_COA`, JSON.stringify(next)); } catch {}
+                    return next;
+                });
             }
-            setJournalEntries(prev => prev.filter(j => !(j.source === 'PROJECT_SALES' && j.refNo === refNo && (itemToDelete ? j.narration.includes(itemToDelete.description) : true))));
-            setTransactions(prev => prev.filter(t => !(t.type === 'INCOME' && t.refNo === refNo && (itemToDelete ? t.description.includes(itemToDelete.description) : true))));
+            setJournalEntries(prev => {
+                const next = prev.filter(j => !(j.source === 'PROJECT_SALES' && j.refNo === refNo && (itemToDelete ? j.narration.includes(itemToDelete.description) : true)));
+                try { localStorage.setItem(`${STORAGE_KEY}_JOURNALS`, JSON.stringify(next)); } catch {}
+                return next;
+            });
+            setTransactions(prev => {
+                const next = prev.filter(t => !(t.type === 'INCOME' && t.refNo === refNo && (itemToDelete ? t.description.includes(itemToDelete.description) : true)));
+                try { localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(next)); } catch {}
+                return next;
+            });
         }
 
-        setProjects((prev) => prev.map((p) => {
-            if (p.id === projectId) {
-                const updatedSales = p.salesItems.filter((item) => item.id !== salesId);
-                return recalculateProject({ ...p, salesItems: updatedSales });
-            }
-            return p;
-        }));
+        setProjects((prev) => {
+            const next = prev.map((p) => {
+                if (p.id === projectId) {
+                    const updatedSales = p.salesItems.filter((item) => item.id !== salesId);
+                    return recalculateProject({ ...p, salesItems: updatedSales });
+                }
+                return p;
+            });
+            try { localStorage.setItem(`${STORAGE_KEY}_PROJECTS`, JSON.stringify(next)); } catch {}
+            return next;
+        });
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            projects: (latestStateRef.current.projects || []).map((p: Project) => {
+                if (p.id === projectId) {
+                    const updatedSales = (p.salesItems || []).filter((item) => item.id !== salesId);
+                    return recalculateProject({ ...p, salesItems: updatedSales });
+                }
+                return p;
+            }),
+        };
     };
 
     const deleteProjectExpense = (projectId: string, expenseId: string) => {
@@ -3973,30 +4073,56 @@ export const AppProvider: React.FC<{
         if (code && itemToDelete) {
             const matchingJournals = (journalEntries || []).filter(j => j.source === 'PROJECT_EXPENSE' && j.refNo === code && (j.narration.includes(itemToDelete.category) || j.amount === Number(itemToDelete.amount)));
             if (matchingJournals.length > 0) {
-                setChartOfAccounts(prev => prev.map(acc => {
-                    let balChange = 0;
-                    matchingJournals.forEach(j => {
-                        if (acc.id === j.debitAccountId) {
-                            balChange -= (acc.normalBalance === 'Debit' ? j.amount : -j.amount);
-                        }
-                        if (acc.id === j.creditAccountId) {
-                            balChange -= (acc.normalBalance === 'Credit' ? j.amount : -j.amount);
-                        }
+                setChartOfAccounts(prev => {
+                    const next = prev.map(acc => {
+                        let balChange = 0;
+                        matchingJournals.forEach(j => {
+                            if (acc.id === j.debitAccountId) {
+                                balChange -= (acc.normalBalance === 'Debit' ? j.amount : -j.amount);
+                            }
+                            if (acc.id === j.creditAccountId) {
+                                balChange -= (acc.normalBalance === 'Credit' ? j.amount : -j.amount);
+                            }
+                        });
+                        return balChange !== 0 ? { ...acc, currentBalance: acc.currentBalance + balChange } : acc;
                     });
-                    return balChange !== 0 ? { ...acc, currentBalance: acc.currentBalance + balChange } : acc;
-                }));
+                    try { localStorage.setItem(`${STORAGE_KEY}_COA`, JSON.stringify(next)); } catch {}
+                    return next;
+                });
             }
-            setJournalEntries(prev => prev.filter(j => !(j.source === 'PROJECT_EXPENSE' && j.refNo === code && j.narration.includes(itemToDelete.category))));
-            setTransactions(prev => prev.filter(t => !(t.type === 'EXPENSE' && t.refNo === code && t.category === itemToDelete.category)));
+            setJournalEntries(prev => {
+                const next = prev.filter(j => !(j.source === 'PROJECT_EXPENSE' && j.refNo === code && j.narration.includes(itemToDelete.category)));
+                try { localStorage.setItem(`${STORAGE_KEY}_JOURNALS`, JSON.stringify(next)); } catch {}
+                return next;
+            });
+            setTransactions(prev => {
+                const next = prev.filter(t => !(t.type === 'EXPENSE' && t.refNo === code && t.category === itemToDelete.category));
+                try { localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(next)); } catch {}
+                return next;
+            });
         }
 
-        setProjects((prev) => prev.map((p) => {
-            if (p.id === projectId) {
-                const updatedExpenses = p.expenseItems.filter((item) => item.id !== expenseId);
-                return recalculateProject({ ...p, expenseItems: updatedExpenses });
-            }
-            return p;
-        }));
+        setProjects((prev) => {
+            const next = prev.map((p) => {
+                if (p.id === projectId) {
+                    const updatedExpenses = p.expenseItems.filter((item) => item.id !== expenseId);
+                    return recalculateProject({ ...p, expenseItems: updatedExpenses });
+                }
+                return p;
+            });
+            try { localStorage.setItem(`${STORAGE_KEY}_PROJECTS`, JSON.stringify(next)); } catch {}
+            return next;
+        });
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            projects: (latestStateRef.current.projects || []).map((p: Project) => {
+                if (p.id === projectId) {
+                    const updatedExpenses = (p.expenseItems || []).filter((item) => item.id !== expenseId);
+                    return recalculateProject({ ...p, expenseItems: updatedExpenses });
+                }
+                return p;
+            }),
+        };
     };
 
     const syncProjectsWithAccounting = (): { salesSynced: number; expensesSynced: number; totalAmount: number } => {
@@ -4836,180 +4962,43 @@ export const AppProvider: React.FC<{
         }
     };
 
-    // Initial load from MongoDB Atlas
+    // Initial connection check without overwriting local user changes
     useEffect(() => {
         let isCancelled = false;
-        const checkAndLoadFromCloud = async () => {
+        const checkCloudStatus = async () => {
             try {
                 const healthRes = await fetch('/api/health');
-                if (!healthRes.ok)
-                    throw new Error('Health check failed');
-                const healthData = await healthRes.json();
-                if (healthData.database === 'connected') {
-                    if (!isCancelled)
+                if (healthRes.ok) {
+                    const healthData = await healthRes.json();
+                    if (!isCancelled && healthData.database === 'connected') {
                         setIsCloudConnected(true);
-                    const stateRes = await fetch(`/api/state?t=${Date.now()}`, { cache: 'no-store' });
-                    if (stateRes.ok) {
-                        const stateData = await stateRes.json();
-                        if (stateData.success && stateData.data) {
-                            if (!isCancelled) {
-                                isImportingRef.current = true;
-                                importDatabase(JSON.stringify(stateData.data), true);
-                                setCloudSyncStatus('synced');
-                                if (stateData.updatedAt) {
-                                    lastServerUpdatedAtRef.current = new Date(stateData.updatedAt).getTime();
-                                    setLastSyncedAt(new Date(stateData.updatedAt).toLocaleTimeString());
-                                } else {
-                                    setLastSyncedAt(new Date().toLocaleTimeString());
-                                }
-                                isCloudLoadedRef.current = true;
-                                console.log('✅ Synchronized state from MongoDB Atlas!');
-                            }
-                            return;
-                        }
-                        else {
-                            // Cloud database is brand new and empty, seed it with current local data
-                            isCloudLoadedRef.current = true;
-                            pushToCloud();
-                            return;
-                        }
+                        setCloudSyncStatus('synced');
                     }
                 }
-                else {
-                    if (!isCancelled) {
-                        setIsCloudConnected(false);
-                        setCloudSyncStatus('offline');
-                    }
-                }
-            }
-            catch {
+            } catch {
                 if (!isCancelled) {
                     setIsCloudConnected(false);
                     setCloudSyncStatus('offline');
                 }
-            }
-            finally {
+            } finally {
                 isCloudLoadedRef.current = true;
             }
         };
-        checkAndLoadFromCloud();
+        checkCloudStatus();
         return () => {
             isCancelled = true;
         };
     }, []);
 
-    // Multi-device real-time sync: Server-Sent Events (Instant Live Broadcast) + Polling fallback
+    // Background polling and SSE sync disabled to prevent remote state from overriding local active edits
     useEffect(() => {
-        let isCancelled = false;
-        let eventSource: EventSource | null = null;
-
-        const checkForRemoteUpdates = async () => {
-            if (isCancelled || isSyncingRef.current || !isCloudLoadedRef.current) return;
-            try {
-                const metaRes = await fetch(`/api/state/meta?t=${Date.now()}`, { cache: 'no-store' });
-                if (metaRes.ok) {
-                    const meta = await metaRes.json();
-                    if (meta.success && meta.updatedAt) {
-                        const remoteTs = new Date(meta.updatedAt).getTime();
-                        if (remoteTs > lastServerUpdatedAtRef.current) {
-                            console.log('🔄 Remote update detected from another device, pulling latest state...');
-                            await pullFromCloud();
-                        }
-                    }
-                }
-            } catch {}
-        };
-
-        // 1. Instant Real-Time Push via Server-Sent Events (SSE)
-        try {
-            if (typeof EventSource !== 'undefined') {
-                eventSource = new EventSource('/api/state/events');
-                eventSource.onmessage = async (e) => {
-                    if (isCancelled || !e.data) return;
-                    try {
-                        const parsed = JSON.parse(e.data);
-                        if (parsed.type === 'STATE_UPDATED') {
-                            const remoteTs = parsed.updatedAt ? new Date(parsed.updatedAt).getTime() : Date.now();
-                            if (remoteTs > lastServerUpdatedAtRef.current) {
-                                console.log('⚡ Real-time SSE state broadcast received! Syncing immediately...');
-                                await pullFromCloud();
-                            }
-                        }
-                    } catch {}
-                };
-                eventSource.onerror = () => {
-                    // EventSource will auto-reconnect, no action needed
-                };
-            }
-        } catch {}
-
-        // 2. High-speed fallback polling every 4 seconds
-        const pollInterval = setInterval(() => {
-            if (!document.hidden) {
-                checkForRemoteUpdates();
-            }
-        }, 4000);
-
-        // 3. Immediate check when user focuses window or changes tab back
-        const handleVisibilityOrFocus = () => {
-            if (!document.hidden) {
-                checkForRemoteUpdates();
-            }
-        };
-
-        window.addEventListener('focus', handleVisibilityOrFocus);
-        document.addEventListener('visibilitychange', handleVisibilityOrFocus);
-
-        return () => {
-            isCancelled = true;
-            if (eventSource) {
-                eventSource.close();
-            }
-            clearInterval(pollInterval);
-            window.removeEventListener('focus', handleVisibilityOrFocus);
-            document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
-        };
+        // Disabled auto-pull and SSE listeners as per user instruction to ensure 100% instant local operations
     }, []);
 
-    // Debounced automatic cloud push when state changes from user interactions
+    // Debounced automatic cloud push disabled to eliminate latency, background locks, and "Syncing.." stalls
     useEffect(() => {
-        if (!isCloudLoadedRef.current) {
-            return;
-        }
-        if (isImportingRef.current) {
-            isImportingRef.current = false;
-            return;
-        }
-        if (syncTimeoutRef.current) {
-            clearTimeout(syncTimeoutRef.current);
-        }
-        syncTimeoutRef.current = setTimeout(() => {
-            pushToCloud();
-        }, 1000);
-        return () => {
-            if (syncTimeoutRef.current)
-                clearTimeout(syncTimeoutRef.current);
-        };
-    }, [
-        profile,
-        products,
-        customers,
-        suppliers,
-        invoices,
-        quotations,
-        purchaseOrders,
-        transactions,
-        stockMovements,
-        auditLogs,
-        staffMembers,
-        userRoles,
-        chartOfAccounts,
-        expenseHeads,
-        productCategories,
-        journalEntries,
-        projects,
-        paymentMethods,
-    ]);
+        // Disabled auto-push on state change to ensure zero latency
+    }, []);
     const accountBalances: AccountBalances = useMemo(() => {
         // Smart classifier for accounts in Chart of Accounts
         const isMobile = (name: string, code?: string) => {

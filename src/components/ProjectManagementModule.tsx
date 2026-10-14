@@ -191,12 +191,14 @@ export const ProjectManagementModule: React.FC = () => {
     // Overall Metrics
     const metrics = useMemo(() => {
         const totalProjects = projects.length;
+        const totalBudget = projects.reduce((sum, p) => sum + (Number(p.budget) || 0), 0);
         const totalSales = projects.reduce((sum, p) => sum + (p.totalSales || 0), 0);
         const totalExpenses = projects.reduce((sum, p) => sum + (p.totalExpenses || 0), 0);
         const totalNetProfit = totalSales - totalExpenses;
         const overallMargin = totalSales > 0 ? (totalNetProfit / totalSales) * 100 : 0;
         return {
             totalProjects,
+            totalBudget,
             totalSales,
             totalExpenses,
             totalNetProfit,
@@ -347,15 +349,15 @@ export const ProjectManagementModule: React.FC = () => {
         e.preventDefault();
         if (!showExpenseModal)
             return;
-        const validRows = expenseRows.filter((r) => Number(r.amount) > 0 && (r.category.trim() || r.categorySearch.trim()));
+        const validRows = expenseRows.filter((r) => Number(r.amount) > 0);
         if (validRows.length === 0)
             return;
         const batchId = `exp-batch-${Date.now()}`;
         const itemsToSave: Omit<ProjectExpenseItem, 'id'>[] = validRows.map((r) => {
-            const finalCategory = r.category.trim() || r.categorySearch.trim() || 'Project Expense';
             const defaultCOA = projectExpAcc;
             const resolvedAccountId = r.linkedAccountId || defaultCOA.id;
             const targetCOA = chartOfAccounts.find(a => a.id === resolvedAccountId) || defaultCOA;
+            const finalCategory = r.category?.trim() || r.categorySearch?.trim() || targetCOA.name || 'Project Expense';
             const payMethod = r.paymentMethod || 'Cash in Hand';
             const payAcc = chartOfAccounts.find(a => a.name === payMethod || a.id === payMethod) || availablePaymentAccounts.find(p => p.name === payMethod) || { id: 'coa-1001', code: '1001', name: 'Cash in Hand' };
 
@@ -364,7 +366,7 @@ export const ProjectManagementModule: React.FC = () => {
                 categoryBn: finalCategory,
                 amount: Number(r.amount),
                 date: expenseDate,
-                note: r.note.trim() || expenseGeneralNote.trim() || undefined,
+                note: r.note?.trim() || expenseGeneralNote?.trim() || undefined,
                 breakdownBatchId: batchId,
                 linkedAccountId: targetCOA.id,
                 linkedAccountCode: targetCOA.code,
@@ -452,7 +454,28 @@ export const ProjectManagementModule: React.FC = () => {
       )}
 
       {/* Overview Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+        {/* Total Project Budget */}
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                {'Total Project Budget'}
+              </p>
+              <h3 className="text-xl font-black text-amber-600 mt-1">
+                {profile.currencySymbol}
+                {metrics.totalBudget.toLocaleString()}
+              </h3>
+              <p className="text-[11px] text-slate-500 mt-1">
+                {metrics.totalProjects} {'Projects Total'}
+              </p>
+            </div>
+            <div className="w-10 h-10 bg-amber-50 rounded-xl flex items-center justify-center text-amber-600 border border-amber-100">
+              <Wallet className="w-5 h-5"/>
+            </div>
+          </div>
+        </div>
+
         {/* Total Sales/Income */}
         <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm relative overflow-hidden">
           <div className="flex justify-between items-start">
@@ -465,7 +488,7 @@ export const ProjectManagementModule: React.FC = () => {
                 {metrics.totalSales.toLocaleString()}
               </h3>
               <p className="text-[11px] text-slate-500 mt-1">
-                {metrics.totalProjects} {'Projects Total'}
+                {'All Billed Sales'}
               </p>
             </div>
             <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center text-emerald-600 border border-emerald-100">
@@ -628,6 +651,11 @@ export const ProjectManagementModule: React.FC = () => {
                         <Calendar className="w-3 h-3 text-slate-400"/>
                         {project.startDate} {project.endDate ? `➔ ${project.endDate}` : ''}
                       </span>
+                      {/* Budget Badge */}
+                      <span className="inline-flex items-center gap-1 font-extrabold text-[11px] text-amber-800 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-lg shrink-0">
+                        <Wallet className="w-3 h-3 text-amber-600"/>
+                        <span>Budget: {profile.currencySymbol}{(Number(project.budget) || 0).toLocaleString()}</span>
+                      </span>
                     </div>
                   </div>
 
@@ -635,6 +663,18 @@ export const ProjectManagementModule: React.FC = () => {
                   <div className="flex items-center gap-3 sm:gap-4 shrink-0 justify-between lg:justify-end flex-wrap sm:flex-nowrap">
                     {/* Profitability Numbers Bar (Compact & Sleek) */}
                     <div className="flex items-center gap-3 sm:gap-4 bg-white px-3 py-1.5 rounded-xl border border-slate-200/90 shadow-2xs">
+                      <div>
+                        <p className="text-[9px] font-bold text-amber-600 uppercase leading-none mb-0.5">
+                          {'Budget'}
+                        </p>
+                        <p className="text-xs sm:text-sm font-black text-amber-700 leading-none">
+                          {profile.currencySymbol}
+                          {(Number(project.budget) || 0).toLocaleString()}
+                        </p>
+                      </div>
+
+                      <div className="h-6 w-px bg-slate-200"/>
+
                       <div>
                         <p className="text-[9px] font-bold text-slate-400 uppercase leading-none mb-0.5">
                           {'Sales Income'}
@@ -774,7 +814,51 @@ export const ProjectManagementModule: React.FC = () => {
                 </div>
 
                 {/* Expanded Itemized View */}
-                {isExpanded && (<div className="p-5 border-t border-slate-200 bg-slate-50/60 space-y-6 animate-in fade-in duration-150">
+                {isExpanded && (<div className="p-5 border-t border-slate-200 bg-slate-50/60 space-y-5 animate-in fade-in duration-150">
+                    {/* Project Budget & Financial Overview Banner */}
+                    <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600 border border-amber-200">
+                          <Wallet className="w-5 h-5"/>
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                            {'Estimated Project Budget'}
+                          </p>
+                          <h4 className="text-lg font-black text-amber-700 leading-tight">
+                            {profile.currencySymbol}{(Number(project.budget) || 0).toLocaleString()}
+                          </h4>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 sm:gap-3 flex-wrap text-xs">
+                        <div className="bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
+                          <span className="text-slate-500 font-semibold">Total Billed: </span>
+                          <span className="font-extrabold text-slate-900 font-mono">
+                            {profile.currencySymbol}{project.totalSales.toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="bg-rose-50 px-3 py-1.5 rounded-lg border border-rose-200">
+                          <span className="text-rose-600 font-semibold">Total Expenses: </span>
+                          <span className="font-extrabold text-rose-700 font-mono">
+                            {profile.currencySymbol}{project.totalExpenses.toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200">
+                          <span className="text-emerald-700 font-semibold">Net Profit: </span>
+                          <span className="font-extrabold text-emerald-800 font-mono">
+                            {profile.currencySymbol}{project.netProfit.toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
+                          <span className="text-blue-700 font-semibold">Budget Balance: </span>
+                          <span className={`font-extrabold font-mono ${(Number(project.budget) || 0) - project.totalExpenses >= 0 ? 'text-blue-800' : 'text-rose-700'}`}>
+                            {profile.currencySymbol}{((Number(project.budget) || 0) - project.totalExpenses).toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                       {/* Itemized Sales Table */}
                       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3">
@@ -1219,17 +1303,16 @@ export const ProjectManagementModule: React.FC = () => {
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                         <div className="sm:col-span-2">
                           <label className="text-[10px] font-bold text-slate-600 block mb-1">
-                            {'Expense Name / Category (খরচের নাম/বিবরণ) *'}
+                            {'Expense Name / Category (খরচের বিবরণ - ঐচ্ছিক)'}
                           </label>
                           <input
                             type="text"
-                            required
                             value={eRow.category}
                             onChange={(e) => handleUpdateExpenseRow(eRow.id, {
                               category: e.target.value,
                               categorySearch: e.target.value,
                             })}
-                            placeholder="e.g. Labour Charge, Transport, Site fitting, Snacks..."
+                            placeholder="e.g. Labour Charge, Transport, Site fitting (Default: Project Expense)"
                             className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500/40"
                           />
                         </div>

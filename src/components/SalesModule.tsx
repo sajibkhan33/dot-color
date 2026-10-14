@@ -14,7 +14,7 @@ interface SalesModuleProps {
     onOpenChallanModal: (invoiceId: string) => void;
 }
 export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, onOpenChallanModal, }) => {
-    const { invoices, quotations, customers, products, profile, language, paymentMethods = [], chartOfAccounts = [], transactions = [], accountBalances, updateProductionStatus, updateInvoice, deleteInvoice, collectInvoicePayment, convertQuotationToInvoice, addQuotation, updateQuotation, updateQuotationStatus, deleteQuotation, addCustomer, updateCustomer, deleteCustomer, cleanModuleData, } = useApp();
+    const { invoices, quotations, customers, products, profile, language, paymentMethods = [], chartOfAccounts = [], transactions = [], accountBalances, updateProductionStatus, updateInvoice, deleteInvoice, collectInvoicePayment, convertQuotationToInvoice, addQuotation, updateQuotation, updateQuotationStatus, deleteQuotation, addCustomer, updateCustomer, deleteCustomer, } = useApp();
     const activePaymentMethods = useMemo(() => {
         const list = (paymentMethods || []).filter((p) => p.isEnabled);
         return list.length > 0 ? list : [{ id: 'pm-cash', name: 'Cash', nameBn: "Nagad", type: 'cash' as const, isEnabled: true }];
@@ -26,8 +26,6 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
     const [invoiceToDelete, setInvoiceToDelete] = useState<SalesInvoice | null>(null);
     const [quotationToDelete, setQuotationToDelete] = useState<Quotation | null>(null);
     const [showDirectInvoiceModal, setShowDirectInvoiceModal] = useState(false);
-    const [showResetSalesModal, setShowResetSalesModal] = useState(false);
-    const [resetSalesFeedback, setResetSalesFeedback] = useState<string | null>(null);
     const [editingQuotation, setEditingQuotation] = useState<Quotation | null>(null);
     const [addedQuoteItems, setAddedQuoteItems] = useState<any[]>([]);
     const [viewingPaymentDetailsInvoice, setViewingPaymentDetailsInvoice] = useState<SalesInvoice | null>(null);
@@ -514,10 +512,6 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
         </div>
 
         {activeSubTab === 'invoices' && (<div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
-            <button type="button" onClick={() => setShowResetSalesModal(true)} className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs rounded-xl border border-rose-200 transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs" title="Reset All Sales Data (সকল সেলস ডেটা রিসেট)">
-              <RotateCcw className="w-3.5 h-3.5"/>
-              <span>{'Reset Sales Data (সেলস রিসেট)'}</span>
-            </button>
             <button type="button" onClick={() => setShowDirectInvoiceModal(true)} className="w-full md:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer transition-all">
               <Plus className="w-4 h-4"/>
               <span>{'+ Create Sales Invoice'}</span>
@@ -529,11 +523,6 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
             <span>{'+ Create New Quote'}</span>
           </button>)}
       </div>
-
-      {resetSalesFeedback && (<div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-semibold text-emerald-800 flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0"/>
-          <span>{resetSalesFeedback}</span>
-        </div>)}
 
       {/* SUB-TAB 1: INVOICES & ORDERS */}
       {activeSubTab === 'invoices' && (<div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
@@ -2615,43 +2604,7 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
           </div>
         </div>)}
 
-      {/* RESET SALES DATA CONFIRMATION MODAL */}
-      {showResetSalesModal && (<div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in duration-150">
-            <div className="w-12 h-12 rounded-full bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
-              <AlertTriangle className="w-6 h-6"/>
-            </div>
-            <div className="text-center space-y-2">
-              <h3 className="font-extrabold text-slate-900 text-base">
-                {'Confirm Sales Data Reset (সেলস ডেটা রিসেট)'}
-              </h3>
-              <p className="font-semibold text-slate-800 text-xs text-center">
-                {'Are you sure you want to permanently reset all sales data?'}
-              </p>
-              <p className="text-slate-500 text-[11px] text-center leading-relaxed">
-                {'This will delete all sales invoices, POS records, quotes, sales revenue ledger entries, and reset customer sales dues to 0. Product and customer catalogs will be safely preserved.'}
-              </p>
-              <div className="bg-rose-50 p-2.5 rounded-xl border border-rose-200 text-rose-800 font-bold text-[11px] text-center">
-                {'সকল সেলস ইনভয়েস, POS বিক্রয়, কোটেশন এবং কাস্টমার বকেয়া মুছে সম্পূর্ণ সেলস ডেটা রিসেট করা হবে।'}
-              </div>
-            </div>
 
-            <div className="flex gap-2.5 pt-2">
-              <button type="button" onClick={() => setShowResetSalesModal(false)} className="flex-1 py-2.5 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer transition-all">
-                {'Cancel / বাতিল'}
-              </button>
-              <button type="button" onClick={() => {
-                cleanModuleData('SALES');
-                setShowResetSalesModal(false);
-                setResetSalesFeedback('All sales data reset successfully. / সকল সেলস ডেটা সফলভাবে রিসেট করা হয়েছে।');
-                setTimeout(() => setResetSalesFeedback(null), 5000);
-            }} className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-extrabold shadow-sm cursor-pointer flex items-center justify-center gap-1.5 transition-all">
-                <RotateCcw className="w-3.5 h-3.5"/>
-                <span>{'Yes, Reset / রিসেট করুন'}</span>
-              </button>
-            </div>
-          </div>
-        </div>)}
 
       {/* DIRECT SALES INVOICE CREATION MODAL */}
       <CreateSalesInvoiceModal isOpen={showDirectInvoiceModal} onClose={() => setShowDirectInvoiceModal(false)} onInvoiceCreated={(newInvoiceId) => {

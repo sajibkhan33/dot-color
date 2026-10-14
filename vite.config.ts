@@ -24,36 +24,7 @@ export default defineConfig(() => {
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
     build: {
-      chunkSizeWarningLimit: 1500,
-      rollupOptions: {
-        output: {
-          manualChunks(id) {
-            if (id.includes('node_modules')) {
-              if (id.includes('xlsx')) {
-                return 'vendor-excel';
-              }
-              if (
-                id.includes('jspdf') ||
-                id.includes('html2canvas') ||
-                id.includes('html2pdf.js') ||
-                id.includes('html-to-image') ||
-                id.includes('purify')
-              ) {
-                return 'vendor-pdf';
-              }
-              if (id.includes('recharts')) {
-                return 'vendor-charts';
-              }
-              if (id.includes('lucide-react')) {
-                return 'vendor-icons';
-              }
-              if (id.includes('motion')) {
-                return 'vendor-motion';
-              }
-            }
-          },
-        },
-      },
+      chunkSizeWarningLimit: 3000,
     },
   };
 });
