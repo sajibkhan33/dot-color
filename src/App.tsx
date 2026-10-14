@@ -132,6 +132,11 @@ const MainLayout: React.FC = () => {
         const handleSwitchTab = (e: any) => {
             if (e.detail && VALID_TABS.includes(e.detail)) {
                 setActiveTab(e.detail);
+                try {
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('tab', e.detail);
+                    window.history.replaceState({}, '', url.toString());
+                } catch {}
             }
         };
         window.addEventListener('popstate', handlePopState);

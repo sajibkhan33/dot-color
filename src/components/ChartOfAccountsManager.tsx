@@ -3,7 +3,7 @@ import { useApp } from '../context/AppContext';
 import { ChartOfAccount, SalesInvoice } from '../types';
 import { BookOpen, Plus, Search, Filter, Edit2, Trash2, Lock, CheckCircle2, AlertCircle, X, FileText, Printer, Layers, ArrowUpDown, Download, Upload, } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { calculateSingleAccountBalance, calculateTotalSupplierPayables, calculateInventoryValuation, isInvoiceTransaction, isProjectTransaction, isAdvanceAdjustmentTransaction, isAdvanceDepositTransaction, isProjectDueCollectionTransaction, isDueReceivableTransaction } from '../utils/accountUtils';
+import { calculateSingleAccountBalance, calculateTotalCustomerReceivables, calculateTotalSupplierPayables, calculateInventoryValuation, isInvoiceTransaction, isProjectTransaction, isAdvanceAdjustmentTransaction, isAdvanceDepositTransaction, isProjectDueCollectionTransaction, isDueReceivableTransaction } from '../utils/accountUtils';
 export const ChartOfAccountsManager: React.FC = () => {
     const { chartOfAccounts, invoices = [], transactions = [], accountBalances, suppliers = [], customers = [], purchaseOrders = [], products = [], journalEntries = [], language, profile, addChartOfAccount, updateChartOfAccount, deleteChartOfAccount, checkPermission, projects = [], syncProjectsWithAccounting } = useApp();
     const [searchQuery, setSearchQuery] = useState('');
@@ -31,25 +31,27 @@ export const ChartOfAccountsManager: React.FC = () => {
     const liveAccounts = useMemo(() => {
         const totalTxIncome = (transactions || []).filter(t => t.type === 'INCOME').reduce((s, t) => s + t.amount, 0);
         const totalSupplierDue = calculateTotalSupplierPayables(suppliers, purchaseOrders);
-        const totalInvoiceCustomerDue = (invoices || []).reduce((s, inv) => s + (Number(inv.dueAmount) || 0), 0);
-        const totalCustomerRecordDue = (customers || []).reduce((s, c) => s + (Number(c.dueAmount) || 0), 0);
-        const totalCustomerDue = Math.max(totalInvoiceCustomerDue, totalCustomerRecordDue);
+        const totalCustomerDue = calculateTotalCustomerReceivables(invoices, customers);
         const totalCustomerAdvance = (customers || []).reduce((s, c) => s + (Number(c.advanceBalance) || 0), 0);
         const totalProjectSales = (projects || []).reduce((s, p) => s + (p.totalSales || 0), 0);
         const totalProjectExpenses = (projects || []).reduce((s, p) => s + (p.totalExpenses || 0), 0);
 
-        const projectLinkedInvoiceIds = new Set(
-            (projects || []).map(p => p.invoiceId).filter(Boolean) as string[]
-        );
-        const projectLinkedInvoiceNos = new Set(
-            (projects || []).map(p => p.invoiceNo).filter(Boolean) as string[]
-        );
+        const projectLinkedInvoiceNos = new Set([
+            ...(projects || []).map(p => (p.invoiceNo || '').toLowerCase().trim()).filter(Boolean),
+            ...(projects || []).flatMap(p => (p.salesItems || []).map(s => (s.invoiceNo || '').toLowerCase().trim())).filter(Boolean),
+            ...(invoices || []).filter(inv => inv.projectId || inv.projectCode).map(inv => (inv.invoiceNo || '').toLowerCase().trim()).filter(Boolean),
+        ]);
+        const projectLinkedInvoiceIds = new Set([
+            ...(projects || []).map(p => p.invoiceId).filter(Boolean) as string[],
+            ...(invoices || []).filter(inv => inv.projectId || inv.projectCode).map(inv => inv.id).filter(Boolean) as string[],
+        ]);
         const isInvLinkedToProject = (inv: SalesInvoice) => {
+            const invNo = (inv.invoiceNo || '').toLowerCase().trim();
             return Boolean(
                 inv.projectId ||
                 inv.projectCode ||
                 projectLinkedInvoiceIds.has(inv.id) ||
-                projectLinkedInvoiceNos.has(inv.invoiceNo)
+                (invNo && projectLinkedInvoiceNos.has(invNo))
             );
         };
 
@@ -134,7 +136,7 @@ export const ChartOfAccountsManager: React.FC = () => {
                     liveBal = calculateInventoryValuation(products, purchaseOrders, acc, journalEntries);
                 } else {
                     // Dynamic individual live balance calculation for Cash, City Bank PLC, Southeast Bank, Nagad, bKash, etc.
-                    liveBal = calculateSingleAccountBalance(acc, transactions, invoices);
+                    liveBal = calculateSingleAccountBalance(acc, transactions, invoices, projects);
                 }
             } else if (acc.classification === 'Liability') {
                 const isPayable = acc.code === '2001' || acc.code === '2010' || nameLower.includes('payable') || nameLower.includes('supplier') || nameBn.includes('দেনা') || nameBn.includes('প্রদেয়');
@@ -212,7 +214,16 @@ export const ChartOfAccountsManager: React.FC = () => {
                 } else if (isSalesRev) {
                     // Non-project invoice sales
                     const invoiceSalesFromTx = (transactions || [])
-                        .filter(t => t.type === 'INCOME' && isInvoiceTransaction(t) && !projectLinkedInvoiceNos.has(t.refNo || ''))
+                        .filter(t => 
+                            t.type === 'INCOME' && 
+                            isInvoiceTransaction(t) && 
+                            !isProjectTransaction(t) && 
+                            !isProjectDueCollectionTransaction(t) && 
+                            !(t.category || '').toLowerCase().includes('project') && 
+                            !projectLinkedInvoiceNos.has((t.refNo || '').toLowerCase().trim()) && 
+                            !(t.refNo || '').toUpperCase().startsWith('COL-') && 
+                            !(t.refNo || '').toUpperCase().startsWith('PRJ-')
+                        )
                         .reduce((s, t) => s + t.amount, 0);
                     const effectiveInvoiceSales = Math.max(totalNonProjectInvoiceSales, invoiceSalesFromTx);
 
@@ -222,8 +233,12 @@ export const ChartOfAccountsManager: React.FC = () => {
                             t.type === 'INCOME' && 
                             !isInvoiceTransaction(t) && 
                             !isProjectTransaction(t) && 
+                            !isProjectDueCollectionTransaction(t) && 
+                            !(t.category || '').toLowerCase().includes('project') && 
                             !isAdvanceDepositTransaction(t) && 
-                            !isAdvanceAdjustmentTransaction(t) && (
+                            !isAdvanceAdjustmentTransaction(t) && 
+                            !(t.refNo || '').toUpperCase().startsWith('COL-') && 
+                            !(t.refNo || '').toUpperCase().startsWith('PRJ-') && (
                                 (t.category && (
                                     nameLower.includes(t.category.toLowerCase()) || 
                                     (acc.nameBn && acc.nameBn.toLowerCase().includes(t.category.toLowerCase())) || 
@@ -248,6 +263,10 @@ export const ChartOfAccountsManager: React.FC = () => {
                             t.type === 'INCOME' && 
                             !isInvoiceTransaction(t) && 
                             !isProjectTransaction(t) && 
+                            !isProjectDueCollectionTransaction(t) && 
+                            !(t.category || '').toLowerCase().includes('project') && 
+                            !(t.refNo || '').toUpperCase().startsWith('COL-') && 
+                            !(t.refNo || '').toUpperCase().startsWith('PRJ-') && 
                             !isAdvanceDepositTransaction(t) && 
                             !isAdvanceAdjustmentTransaction(t) && (
                                 (t.category && (

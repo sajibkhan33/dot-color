@@ -695,7 +695,13 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                             return (
                               <button
                                 type="button"
-                                onClick={() => window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'projects' }))}
+                                onClick={() => {
+                                  const codeToSearch = linkedProject?.code || inv.projectCode || '';
+                                  if (codeToSearch) {
+                                    try { sessionStorage.setItem('PROJECT_SEARCH_TERM', codeToSearch); } catch {}
+                                  }
+                                  window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'projects' }));
+                                }}
                                 className="inline-flex items-center gap-1 font-bold text-amber-800 bg-amber-50 hover:bg-amber-100 px-1.5 py-0.5 rounded text-[9.5px] border border-amber-200 cursor-pointer transition-colors"
                                 title="Linked Project (Unified COA) - Click to view in Projects tab"
                               >
@@ -859,6 +865,9 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                               <button
                                 type="button"
                                 onClick={() => {
+                                  if (pCode && pCode !== 'PRJ') {
+                                    try { sessionStorage.setItem('PROJECT_SEARCH_TERM', pCode); } catch {}
+                                  }
                                   window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'projects' }));
                                 }}
                                 className="h-6.5 px-1.5 py-0.5 text-amber-900 bg-amber-100 hover:bg-amber-200/90 rounded-md border border-amber-300 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"

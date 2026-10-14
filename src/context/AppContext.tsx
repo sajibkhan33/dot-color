@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useMemo, useRef 
 import { CompanyProfile, ProductItem, Customer, Supplier, SalesInvoice, Quotation, PurchaseOrder, AccountingTransaction, StockMovement, Language, LocationType, AccountBalances, StaffMember, StaffRole, AuditLogEntry, ChartOfAccount, ExpenseHead, ProductCategory, UserRole, RolePermission, JournalEntry, Project, ProjectExpenseItem, ProjectSalesItem, PaymentMethodConfig, PaymentStatus, ProjectSalesCollection, ProjectSalesPaymentBreakdown } from '../types';
 import { INITIAL_COMPANY_PROFILE, INITIAL_PRODUCTS, INITIAL_CUSTOMERS, INITIAL_SUPPLIERS, INITIAL_INVOICES, INITIAL_PURCHASE_ORDERS, INITIAL_TRANSACTIONS, INITIAL_QUOTATIONS, INITIAL_STOCK_MOVEMENTS, INITIAL_STAFF_MEMBERS, INITIAL_AUDIT_LOGS, } from '../data/initialData';
 import { INITIAL_CHART_OF_ACCOUNTS, INITIAL_EXPENSE_HEADS, INITIAL_PRODUCT_CATEGORIES, INITIAL_USER_ROLES, INITIAL_JOURNAL_ENTRIES, INITIAL_PROJECTS, ALL_SYSTEM_PERMISSIONS, INITIAL_PAYMENT_METHODS, } from '../data/accountingAndConfigData';
-import { matchChannelToAccount, calculateSingleAccountBalance, getBankAccountsBreakdown, getMfsAccountsBreakdown, getCashAccountsBreakdown, isInvoiceTransaction, isProjectTransaction, isInvoiceMatchingCustomer, isAdvanceAdjustmentTransaction, isAdvanceDepositTransaction, isProjectDueCollectionTransaction, isDueReceivableTransaction, calculateTotalSupplierPayables, calculateInventoryValuation } from '../utils/accountUtils';
+import { matchChannelToAccount, calculateSingleAccountBalance, getBankAccountsBreakdown, getMfsAccountsBreakdown, getCashAccountsBreakdown, isInvoiceTransaction, isProjectTransaction, isInvoiceMatchingCustomer, isAdvanceAdjustmentTransaction, isAdvanceDepositTransaction, isProjectDueCollectionTransaction, isDueReceivableTransaction, calculateTotalCustomerReceivables, calculateTotalSupplierPayables, calculateInventoryValuation } from '../utils/accountUtils';
 const STORAGE_KEY = 'DOT_COLOR_ERP_V1_STATE';
 interface AppContextType {
     profile: CompanyProfile;
@@ -171,7 +171,7 @@ interface AppContextType {
     cloudSyncStatus: 'idle' | 'syncing' | 'synced' | 'offline' | 'error';
     isCloudConnected: boolean;
     lastSyncedAt: string | null;
-    syncWithCloud: () => Promise<void>;
+    syncWithCloud: (options?: { forcePull?: boolean; forcePush?: boolean }) => Promise<void>;
 }
 const AppContext = createContext<AppContextType | undefined>(undefined);
 const generateUniqueId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}-${Math.floor(100 + Math.random() * 900)}`;
@@ -477,10 +477,128 @@ export const AppProvider: React.FC<{
     const lastServerUpdatedAtRef = useRef(0);
     const syncTimeoutRef = useRef<any>(null);
     const pushToCloudRef = useRef<() => Promise<void>>(() => Promise.resolve());
+    const tabIdRef = useRef<string>(`tab_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`);
+    const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+    const isFirstMountRef = useRef(true);
+
+    const broadcastCrossTabSync = () => {
+        if (isImportingRef.current) return;
+        try {
+            broadcastChannelRef.current?.postMessage({
+                type: 'CROSS_TAB_STATE_UPDATE',
+                senderTabId: tabIdRef.current,
+                timestamp: Date.now(),
+            });
+        } catch {}
+    };
 
     const triggerImmediatePush = () => {
-        // Disabled auto-push to ensure zero-lag instant responsiveness
+        if (isImportingRef.current) return;
+        broadcastCrossTabSync();
+        if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = setTimeout(() => {
+            if (pushToCloudRef.current) {
+                pushToCloudRef.current();
+            }
+        }, 150);
     };
+
+    const reloadAllStateFromStorage = () => {
+        try {
+            isImportingRef.current = true;
+            const rawInvs = localStorage.getItem(`${STORAGE_KEY}_INVOICES`);
+            if (rawInvs) setInvoices(JSON.parse(rawInvs));
+
+            const rawTxs = localStorage.getItem(`${STORAGE_KEY}_TRANSACTIONS`);
+            if (rawTxs) setTransactions(JSON.parse(rawTxs));
+
+            const rawProjs = localStorage.getItem(`${STORAGE_KEY}_PROJECTS`);
+            if (rawProjs) setProjects(JSON.parse(rawProjs));
+
+            const rawPos = localStorage.getItem(`${STORAGE_KEY}_PURCHASE_ORDERS`);
+            if (rawPos) setPurchaseOrders(JSON.parse(rawPos));
+
+            const rawProds = localStorage.getItem(`${STORAGE_KEY}_PRODUCTS`);
+            if (rawProds) setProducts(JSON.parse(rawProds));
+
+            const rawCusts = localStorage.getItem(`${STORAGE_KEY}_CUSTOMERS`);
+            if (rawCusts) setCustomers(JSON.parse(rawCusts));
+
+            const rawSupps = localStorage.getItem(`${STORAGE_KEY}_SUPPLIERS`);
+            if (rawSupps) setSuppliers(JSON.parse(rawSupps));
+
+            const rawCoa = localStorage.getItem(`${STORAGE_KEY}_COA`);
+            if (rawCoa) setChartOfAccounts(JSON.parse(rawCoa));
+
+            const rawExp = localStorage.getItem(`${STORAGE_KEY}_EXPENSE_HEADS`);
+            if (rawExp) setExpenseHeads(JSON.parse(rawExp));
+
+            const rawJournals = localStorage.getItem(`${STORAGE_KEY}_JOURNALS`);
+            if (rawJournals) setJournalEntries(JSON.parse(rawJournals));
+
+            const rawQuotes = localStorage.getItem(`${STORAGE_KEY}_QUOTATIONS`);
+            if (rawQuotes) setQuotations(JSON.parse(rawQuotes));
+
+            const rawStocks = localStorage.getItem(`${STORAGE_KEY}_STOCK_MOVEMENTS`);
+            if (rawStocks) setStockMovements(JSON.parse(rawStocks));
+
+            const rawStaff = localStorage.getItem(`${STORAGE_KEY}_STAFF`);
+            if (rawStaff) setStaffMembers(JSON.parse(rawStaff));
+
+            const rawRoles = localStorage.getItem(`${STORAGE_KEY}_ROLES`);
+            if (rawRoles) setUserRoles(JSON.parse(rawRoles));
+
+            const rawCats = localStorage.getItem(`${STORAGE_KEY}_CATEGORIES`);
+            if (rawCats) setProductCategories(JSON.parse(rawCats));
+
+            const rawPm = localStorage.getItem(`${STORAGE_KEY}_PAYMENT_METHODS`);
+            if (rawPm) setPaymentMethods(JSON.parse(rawPm));
+
+            const rawProfile = localStorage.getItem(`${STORAGE_KEY}_PROFILE`);
+            if (rawProfile) setProfile(JSON.parse(rawProfile));
+
+            setTimeout(() => {
+                isImportingRef.current = false;
+            }, 300);
+        } catch (e) {
+            console.error('reloadAllStateFromStorage error', e);
+            isImportingRef.current = false;
+        }
+    };
+
+    // Cross-Tab instant synchronization (BroadcastChannel + storage event fallback)
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+
+        let channel: BroadcastChannel | null = null;
+        try {
+            channel = new BroadcastChannel('dotcolor_erp_cross_tab_sync');
+            broadcastChannelRef.current = channel;
+
+            channel.onmessage = (event) => {
+                const data = event.data;
+                if (!data || data.senderTabId === tabIdRef.current) return;
+                if (data.type === 'CROSS_TAB_STATE_UPDATE') {
+                    reloadAllStateFromStorage();
+                }
+            };
+        } catch (e) {
+            console.warn('BroadcastChannel fallback to storage event', e);
+        }
+
+        const handleStorage = (e: StorageEvent) => {
+            if (e.key && e.key.startsWith(STORAGE_KEY)) {
+                reloadAllStateFromStorage();
+            }
+        };
+
+        window.addEventListener('storage', handleStorage);
+
+        return () => {
+            if (channel) channel.close();
+            window.removeEventListener('storage', handleStorage);
+        };
+    }, []);
 
     // Sync to LocalStorage
     useEffect(() => {
@@ -806,9 +924,7 @@ export const AppProvider: React.FC<{
                 (acc.name.toLowerCase().includes('receivable') && !acc.name.toLowerCase().includes('aggregator') && !acc.name.toLowerCase().includes('staff'))
             );
             if (isCustomerReceivable) {
-                const totalInvoiceCustomerDue = (invoices || []).reduce((s, inv) => s + (Number(inv.dueAmount) || 0), 0);
-                const totalCustomerRecordDue = (customers || []).reduce((s, c) => s + (Number(c.dueAmount) || 0), 0);
-                const totalCustomerDue = Math.max(totalInvoiceCustomerDue, totalCustomerRecordDue);
+                const totalCustomerDue = calculateTotalCustomerReceivables(invoices, customers);
                 const targetReceivableBal = totalCustomerDue > 0 ? totalCustomerDue : (acc.openingBalance || 0);
                 if (acc.currentBalance !== targetReceivableBal) {
                     coaNeedsUpdate = true;
@@ -871,23 +987,47 @@ export const AppProvider: React.FC<{
                 acc.nameBn?.includes('বিক্রয়')
             );
             if (isSalesRevenue) {
+                const projectLinkedInvoiceNos = new Set([
+                    ...(projects || []).map(p => (p.invoiceNo || '').toLowerCase().trim()).filter(Boolean),
+                    ...(projects || []).flatMap(p => (p.salesItems || []).map(s => (s.invoiceNo || '').toLowerCase().trim())).filter(Boolean),
+                    ...(invoices || []).filter(inv => inv.projectId || inv.projectCode).map(inv => (inv.invoiceNo || '').toLowerCase().trim()).filter(Boolean),
+                ]);
+                const projectLinkedInvoiceIds = new Set([
+                    ...(projects || []).map(p => p.invoiceId).filter(Boolean) as string[],
+                    ...(invoices || []).filter(inv => inv.projectId || inv.projectCode).map(inv => inv.id).filter(Boolean) as string[],
+                ]);
                 const nonPrjInvoices = (invoices || []).filter(inv => {
+                    const invNo = (inv.invoiceNo || '').toLowerCase().trim();
                     const isLinked = Boolean(
                         inv.projectId ||
                         inv.projectCode ||
-                        (projects || []).some(p => p.invoiceId === inv.id || p.invoiceNo === inv.invoiceNo)
+                        projectLinkedInvoiceIds.has(inv.id) ||
+                        (invNo && projectLinkedInvoiceNos.has(invNo))
                     );
                     return !isLinked;
                 });
                 const totalInvoiceSales = nonPrjInvoices.reduce((s, inv) => s + (Number(inv.grandTotal) || (Number(inv.paidAmount) + Number(inv.dueAmount)) || 0), 0);
-                const invoiceSalesFromTx = (transactions || []).filter(t => t.type === 'INCOME' && isInvoiceTransaction(t)).reduce((s, t) => s + t.amount, 0);
+                const invoiceSalesFromTx = (transactions || []).filter(t => 
+                    t.type === 'INCOME' && 
+                    isInvoiceTransaction(t) && 
+                    !isProjectTransaction(t) && 
+                    !isProjectDueCollectionTransaction(t) && 
+                    !(t.category || '').toLowerCase().includes('project') && 
+                    !projectLinkedInvoiceNos.has((t.refNo || '').toLowerCase().trim()) && 
+                    !(t.refNo || '').toUpperCase().startsWith('COL-') && 
+                    !(t.refNo || '').toUpperCase().startsWith('PRJ-')
+                ).reduce((s, t) => s + t.amount, 0);
                 const effectiveInvoiceSales = Math.max(totalInvoiceSales, invoiceSalesFromTx);
                 const directSalesRevenue = (transactions || []).filter(t => 
                     t.type === 'INCOME' && 
                     !isInvoiceTransaction(t) && 
                     !isProjectTransaction(t) && 
+                    !isProjectDueCollectionTransaction(t) && 
+                    !(t.category || '').toLowerCase().includes('project') && 
                     !isAdvanceDepositTransaction(t) && 
-                    !isAdvanceAdjustmentTransaction(t) && (
+                    !isAdvanceAdjustmentTransaction(t) && 
+                    !(t.refNo || '').toUpperCase().startsWith('COL-') && 
+                    !(t.refNo || '').toUpperCase().startsWith('PRJ-') && (
                         (t.category && (
                             t.category.toLowerCase().includes('sales') ||
                             t.category.toLowerCase().includes('বিক্রয়') ||
@@ -951,6 +1091,10 @@ export const AppProvider: React.FC<{
                     t.type === 'INCOME' && 
                     !isInvoiceTransaction(t) && 
                     !isProjectTransaction(t) && 
+                    !isProjectDueCollectionTransaction(t) && 
+                    !(t.category || '').toLowerCase().includes('project') && 
+                    !(t.refNo || '').toUpperCase().startsWith('COL-') && 
+                    !(t.refNo || '').toUpperCase().startsWith('PRJ-') && 
                     !isAdvanceDepositTransaction(t) && 
                     !isAdvanceAdjustmentTransaction(t) && (
                         (t.category && (
@@ -1040,15 +1184,30 @@ export const AppProvider: React.FC<{
         if (!customers || customers.length === 0 || !invoices) return;
 
         let custsChanged = false;
+        const claimedInvoiceIds = new Set<string>();
+
         const reconciled = customers.map(c => {
-            const clientInvoices = invoices.filter(inv => isInvoiceMatchingCustomer(inv, c));
+            const clientInvoices = invoices.filter(inv => {
+                if (claimedInvoiceIds.has(inv.id)) return false;
+                return isInvoiceMatchingCustomer(inv, c);
+            });
+
             if (clientInvoices.length > 0) {
+                clientInvoices.forEach(inv => claimedInvoiceIds.add(inv.id));
                 const totalPurchased = clientInvoices.reduce((s, inv) => s + (Number(inv.grandTotal) || 0), 0);
                 const dueAmount = clientInvoices.reduce((s, inv) => s + (Number(inv.dueAmount) || 0), 0);
 
                 if (Number(c.totalPurchased) !== totalPurchased || Number(c.dueAmount) !== dueAmount) {
                     custsChanged = true;
                     return { ...c, totalPurchased, dueAmount };
+                }
+            } else if (invoices.length > 0 && (Number(c.dueAmount) > 0 || Number(c.totalPurchased) > 0)) {
+                // If customer has no directly claimed invoices, but duplicate matching invoices exist that were claimed by their primary profile,
+                // zero out the duplicate's due so the duplicate doesn't hold ghost dues
+                const isDuplicateOfInvoiceCustomer = invoices.some(inv => isInvoiceMatchingCustomer(inv, c));
+                if (isDuplicateOfInvoiceCustomer) {
+                    custsChanged = true;
+                    return { ...c, totalPurchased: 0, dueAmount: 0 };
                 }
             }
             return c;
@@ -1131,8 +1290,56 @@ export const AppProvider: React.FC<{
     useEffect(() => {
         if (!invoices || invoices.length === 0) return;
 
+        const projectLinkedInvoiceNos = new Set([
+            ...(projects || []).map(p => (p.invoiceNo || '').toLowerCase().trim()).filter(Boolean),
+            ...(projects || []).flatMap(p => (p.salesItems || []).map(s => (s.invoiceNo || '').toLowerCase().trim())).filter(Boolean),
+            ...(invoices || []).filter(inv => inv.projectId || inv.projectCode).map(inv => (inv.invoiceNo || '').toLowerCase().trim()).filter(Boolean),
+        ]);
+        const projectLinkedInvoiceIds = new Set([
+            ...(projects || []).map(p => p.invoiceId).filter(Boolean) as string[],
+            ...(invoices || []).filter(inv => inv.projectId || inv.projectCode).map(inv => inv.id).filter(Boolean) as string[],
+        ]);
+
+        const isInvLinkedToProject = (inv: SalesInvoice) => {
+            const invNo = (inv.invoiceNo || '').toLowerCase().trim();
+            return Boolean(
+                inv.projectId ||
+                inv.projectCode ||
+                projectLinkedInvoiceIds.has(inv.id) ||
+                (invNo && projectLinkedInvoiceNos.has(invNo))
+            );
+        };
+
+        // 1. Purge rogue duplicate auto-generated Sales Revenue transactions for project-linked invoices
+        if (transactions && transactions.length > 0) {
+            const isRogueTx = (t: AccountingTransaction) => {
+                const refLower = (t.refNo || '').toLowerCase().trim();
+                const descLower = (t.description || '').toLowerCase();
+                const idLower = (t.id || '').toLowerCase();
+                return t.type === 'INCOME' && t.category === 'Sales Revenue' && (
+                    (refLower && projectLinkedInvoiceNos.has(refLower)) ||
+                    refLower.startsWith('col-') ||
+                    refLower.startsWith('prj-') ||
+                    idLower.startsWith('tx-prj-') ||
+                    descLower.includes('project due')
+                );
+            };
+
+            const hasRogueTx = transactions.some(isRogueTx);
+            if (hasRogueTx) {
+                const cleaned = transactions.filter(t => !isRogueTx(t));
+                setTransactions(cleaned);
+                try { localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(cleaned)); } catch {}
+                latestStateRef.current = {
+                    ...latestStateRef.current,
+                    transactions: cleaned,
+                };
+            }
+        }
+
+        const currentTxs = latestStateRef.current.transactions || transactions || [];
         const recordedRefs = new Set(
-            (transactions || [])
+            currentTxs
                 .filter(t => t.type === 'INCOME' && t.refNo)
                 .map(t => (t.refNo || '').toLowerCase().trim())
         );
@@ -1144,6 +1351,9 @@ export const AppProvider: React.FC<{
 
         const missingTxs: AccountingTransaction[] = [];
         invoices.forEach(inv => {
+            // NEVER generate generic Sales Revenue transactions for invoices linked to projects!
+            if (isInvLinkedToProject(inv)) return;
+
             const ref = (inv.invoiceNo || '').toLowerCase().trim();
             if (!ref || recordedRefs.has(ref) || deletedRefs.has(ref)) return;
 
@@ -1187,15 +1397,117 @@ export const AppProvider: React.FC<{
         if (missingTxs.length > 0) {
             setTransactions(prev => ensureUniqueTransactions([...missingTxs, ...prev]));
         }
-    }, [invoices, chartOfAccounts, paymentMethods]);
+    }, [invoices, chartOfAccounts, paymentMethods, projects]);
 
     // Automatic real-time reconciliation between Projects and linked Sales Invoices
     useEffect(() => {
-        if (!projects || projects.length === 0 || !invoices || invoices.length === 0) return;
+        if (!invoices || invoices.length === 0) return;
+
+        // 1. Check for any invoices that have a linked project reference (inv.projectId or inv.projectCode)
+        // but the project object is missing from the projects array (e.g. wiped by cloud sync or never persisted).
+        const currentProjects = projects || [];
+        const missingProjects: Project[] = [];
+        invoices.forEach(inv => {
+            if (!inv.projectId && !inv.projectCode) return;
+            const exists = currentProjects.some(p => 
+                (inv.projectId && p.id === inv.projectId) ||
+                (inv.projectCode && p.code === inv.projectCode) ||
+                (p.invoiceId && p.invoiceId === inv.id) ||
+                (p.invoiceNo && p.invoiceNo === inv.invoiceNo)
+            );
+            if (exists) return;
+
+            const pCode = inv.projectCode || `PRJ-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+            const pId = inv.projectId || `prj-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+            const coaId = inv.chartOfAccountId || 'coa-4002';
+            const revAcc = resolveProjectRevenueAccount(coaId);
+
+            const paymentBreakdowns: ProjectSalesPaymentBreakdown[] = [];
+            if (inv.splitPayments && Object.keys(inv.splitPayments).length > 0) {
+                Object.entries(inv.splitPayments).forEach(([channel, amt]) => {
+                    const num = Number(amt) || 0;
+                    if (num > 0 && channel.toLowerCase() !== 'due') {
+                        paymentBreakdowns.push({
+                            id: `pb-${Date.now()}-${channel}`,
+                            method: channel,
+                            amount: num,
+                            referenceNo: inv.invoiceNo,
+                        });
+                    }
+                });
+            } else if ((inv.paidAmount || 0) > 0) {
+                paymentBreakdowns.push({
+                    id: `pb-${Date.now()}-paid`,
+                    method: inv.paymentMethod || 'Cash in Hand',
+                    amount: inv.paidAmount,
+                    referenceNo: inv.invoiceNo,
+                });
+            }
+            if ((inv.dueAmount || 0) > 0) {
+                paymentBreakdowns.push({
+                    id: `pb-${Date.now()}-due`,
+                    method: 'Due',
+                    amount: inv.dueAmount,
+                    referenceNo: inv.invoiceNo,
+                });
+            }
+
+            const reconstructed: Project = recalculateProject({
+                id: pId,
+                code: pCode,
+                name: `${inv.customerName} - ${(inv.items || []).map(i => i.name).join(', ') || 'Project'}`,
+                clientName: inv.customerName,
+                clientPhone: inv.customerPhone,
+                budget: Number(inv.grandTotal) || 0,
+                status: (Number(inv.dueAmount) || 0) <= 0 ? 'Completed' : 'In Progress',
+                startDate: inv.date || new Date().toISOString().slice(0, 10),
+                endDate: '',
+                notes: `Created against Sales Invoice #${inv.invoiceNo}`,
+                salesItems: [{
+                    id: `ps-${Date.now()}`,
+                    invoiceNo: inv.invoiceNo,
+                    description: (inv.items || []).map(i => `${i.name} (x${i.qty})`).join(', ') || 'Sales Invoice Billing',
+                    amount: Number(inv.grandTotal) || 0,
+                    date: inv.date || new Date().toISOString().slice(0, 10),
+                    clientName: inv.customerName,
+                    note: `Synced from Sales Invoice #${inv.invoiceNo}`,
+                    paymentMethod: inv.paymentMethod || 'Cash in Hand',
+                    paymentBreakdown: paymentBreakdowns.length > 0 ? paymentBreakdowns : undefined,
+                    linkedAccountId: coaId,
+                    paidAmount: Number(inv.paidAmount) || 0,
+                    dueAmount: Number(inv.dueAmount) || 0,
+                    collections: [],
+                }],
+                expenseItems: [],
+                totalSales: 0,
+                totalExpenses: 0,
+                netProfit: 0,
+                profitMargin: 0,
+                chartOfAccountId: coaId,
+                projectAccountCode: revAcc.code || '4002',
+                invoiceId: inv.id,
+                invoiceNo: inv.invoiceNo,
+            });
+            missingProjects.push(reconstructed);
+        });
+
+        if (missingProjects.length > 0) {
+            const nextProjects = [...missingProjects, ...currentProjects];
+            setProjects(nextProjects);
+            try { localStorage.setItem(`${STORAGE_KEY}_PROJECTS`, JSON.stringify(nextProjects)); } catch {}
+            latestStateRef.current = {
+                ...latestStateRef.current,
+                projects: nextProjects,
+            };
+            triggerImmediatePush();
+            return;
+        }
+
+        if (currentProjects.length === 0) return;
 
         let invsChanged = false;
         const updatedInvoices = invoices.map(inv => {
-            const linkedProj = projects.find(p => 
+            const linkedProj = currentProjects.find(p => 
                 (p.invoiceId && p.invoiceId === inv.id) ||
                 (p.invoiceNo && p.invoiceNo === inv.invoiceNo) ||
                 (p.salesItems || []).some(s => s.invoiceNo === inv.invoiceNo)
@@ -1212,7 +1524,8 @@ export const AppProvider: React.FC<{
                 ? Number(salesItem.dueAmount) 
                 : Math.max(0, (Number(salesItem.amount) || Number(inv.grandTotal) || 0) - projPaid);
 
-            if (Number(inv.paidAmount) !== projPaid || Number(inv.dueAmount) !== projDue) {
+            const needsProjectRef = (!inv.projectId && !!linkedProj.id) || (!inv.projectCode && !!linkedProj.code);
+            if (Number(inv.paidAmount) !== projPaid || Number(inv.dueAmount) !== projDue || needsProjectRef) {
                 invsChanged = true;
                 const newStatus: PaymentStatus = projDue <= 0 ? 'Paid' : projPaid > 0 ? 'Partial' : 'Due';
                 const existingSplits = { ...(inv.splitPayments || {}) };
@@ -1225,6 +1538,9 @@ export const AppProvider: React.FC<{
                 });
                 return {
                     ...inv,
+                    projectId: inv.projectId || linkedProj.id,
+                    projectCode: inv.projectCode || linkedProj.code,
+                    chartOfAccountId: inv.chartOfAccountId || linkedProj.chartOfAccountId,
                     paidAmount: projPaid,
                     dueAmount: projDue,
                     paymentStatus: newStatus,
@@ -1452,12 +1768,17 @@ export const AppProvider: React.FC<{
         setInvoices((prev) => [newInvoice, ...prev]);
         const advanceApplied = Number(data.splitPayments?.['Customer Advance']) || 0;
         // Update Customer safely
+        let matchedCustomer = false;
         setCustomers((prev) => prev.map((c) => {
-            if (isInvoiceMatchingCustomer(newInvoice, c)) {
+            if (!matchedCustomer && isInvoiceMatchingCustomer(newInvoice, c)) {
+                matchedCustomer = true;
+                const clientInvoices = [newInvoice, ...invoices.filter(i => isInvoiceMatchingCustomer(i, c))];
+                const totalPurchased = clientInvoices.reduce((s, i) => s + (Number(i.grandTotal) || 0), 0);
+                const dueAmount = clientInvoices.reduce((s, i) => s + (Number(i.dueAmount) || 0), 0);
                 return {
                     ...c,
-                    totalPurchased: (c.totalPurchased || 0) + (Number(data.grandTotal) || 0),
-                    dueAmount: (c.dueAmount || 0) + (Number(data.dueAmount) || 0),
+                    totalPurchased,
+                    dueAmount,
                     advanceBalance: advanceApplied > 0 
                         ? Math.max(0, (Number(c.advanceBalance) || 0) - advanceApplied)
                         : c.advanceBalance,
@@ -1802,7 +2123,7 @@ export const AppProvider: React.FC<{
 
         // Update Chart of Accounts Customer Advance liability and Customer Receivable accounts immediately
         const newTotalCustomerAdvance = updatedCusts.reduce((s, c) => s + (Number(c.advanceBalance) || 0), 0);
-        const newTotalCustomerDue = updatedInvoices.reduce((s, inv) => s + (Number(inv.dueAmount) || 0), 0);
+        const newTotalCustomerDue = calculateTotalCustomerReceivables(updatedInvoices, updatedCusts);
         const currentCoa = latestStateRef.current.chartOfAccounts || chartOfAccounts;
         const updatedCoa = currentCoa.map((acc) => {
             const isAdvanceLiability = acc.classification === 'Liability' && (
@@ -3709,15 +4030,11 @@ export const AppProvider: React.FC<{
     // Projects Management & Chart of Accounts Dynamic Alignment
     const resolvePaymentAssetAccount = (methodName?: string) => {
         const m = (methodName || 'Cash').toLowerCase();
-        if (m.includes('bank') || m.includes('brac') || m.includes('city') || m.includes('card') || m.includes('plc')) {
-            return chartOfAccounts.find(a => a.classification === 'Asset' && (a.code === '1006' || a.code === '1020' || a.code === '1030' || a.name.toLowerCase().includes('bank') || a.name.toLowerCase().includes('plc'))) || chartOfAccounts.find(a => a.classification === 'Asset') || chartOfAccounts[0];
-        }
-        if (m.includes('bkash') || m.includes('nagad') || m.includes('rocket') || m.includes('mfs') || m.includes('wallet')) {
-            return chartOfAccounts.find(a => a.classification === 'Asset' && (a.code === '1040' || a.code === '1030' || a.name.toLowerCase().includes('bkash') || a.name.toLowerCase().includes('nagad') || a.name.toLowerCase().includes('wallet')) && !a.name.toLowerCase().includes('receivable')) || chartOfAccounts.find(a => a.classification === 'Asset') || chartOfAccounts[0];
-        }
         if (m.includes('due') || m.includes('receivable')) {
             return chartOfAccounts.find(a => a.classification === 'Asset' && (a.code === '1003' || a.code === '1004' || a.code === '1050' || a.name.toLowerCase().includes('receivable'))) || chartOfAccounts.find(a => a.classification === 'Asset') || chartOfAccounts[0];
         }
+        const matched = matchChannelToAccount(methodName || 'Cash', chartOfAccounts, paymentMethods);
+        if (matched) return matched;
         return chartOfAccounts.find(a => a.classification === 'Asset' && (a.code === '1001' || a.code === '1010' || a.name.toLowerCase().includes('cash'))) || chartOfAccounts[0];
     };
 
@@ -3972,6 +4289,7 @@ export const AppProvider: React.FC<{
             detailsBn: undefined,
             severity: 'info',
         });
+        triggerImmediatePush();
         return calculated;
     };
 
@@ -3992,6 +4310,7 @@ export const AppProvider: React.FC<{
             ...latestStateRef.current,
             projects: (latestStateRef.current.projects || []).map((p: Project) => p.id === id ? recalculateProject({ ...p, ...updates }) : p),
         };
+        triggerImmediatePush();
     };
 
     const deleteProject = (id: string) => {
@@ -4053,6 +4372,7 @@ export const AppProvider: React.FC<{
             ...latestStateRef.current,
             projects: (latestStateRef.current.projects || []).filter((p: Project) => p.id !== id),
         };
+        triggerImmediatePush();
     };
 
     const createProjectFromInvoice = (
@@ -4146,6 +4466,14 @@ export const AppProvider: React.FC<{
             invoiceId: inv.id,
             invoiceNo: inv.invoiceNo,
         });
+
+        updateInvoice(inv.id, {
+            projectId: newProject.id,
+            projectCode: newProject.code,
+            chartOfAccountId: chosenCoaId,
+        });
+
+        triggerImmediatePush();
 
         return newProject;
     };
@@ -4426,6 +4754,7 @@ export const AppProvider: React.FC<{
             amount: sales.amount,
             severity: 'success',
         });
+        triggerImmediatePush();
     };
 
     const addProjectExpense = (projectId: string, expense: Omit<ProjectExpenseItem, 'id'>) => {
@@ -4478,8 +4807,12 @@ export const AppProvider: React.FC<{
                     paymentAccount: payAcc.name,
                     refNo: code,
                     customerOrSupplier: targetProj?.clientName || 'Vendor/Labor',
-                    description: `Project Cost: [${code}] ${projName} - ${exp.category}${exp.note ? ` (${exp.note})` : ''}`,
+                    description: exp.note
+                        ? `Project Cost: [${code}] ${projName} - ${exp.note}`
+                        : `Project Cost: [${code}] ${projName} - ${exp.category}`,
                     amount: expAmount,
+                    projectId: targetProj?.id,
+                    projectCode: code,
                 });
             }
 
@@ -4563,6 +4896,8 @@ export const AppProvider: React.FC<{
             amount: totalAddedAmt,
             severity: 'info',
         });
+
+        triggerImmediatePush();
     };
 
     const deleteProjectSales = (projectId: string, salesId: string) => {
@@ -4623,6 +4958,7 @@ export const AppProvider: React.FC<{
                 return p;
             }),
         };
+        triggerImmediatePush();
     };
 
     const collectProjectDue = (
@@ -4792,13 +5128,13 @@ export const AppProvider: React.FC<{
                 date: colDate,
                 type: 'INCOME',
                 category: 'Project Due Collection',
-                account: isBank ? (paymentMethod.includes('City') ? 'City Bank PLC' : paymentMethod.includes('Southeast') ? 'Southeast Bank' : 'Bank Account') : isMobile ? paymentMethod : 'Cash in Hand',
+                account: debitAcc.name,
                 accountHead: debitAcc.name,
                 paymentMethod: paymentMethod,
                 paymentAccount: debitAcc.name,
                 refNo: ref,
                 customerOrSupplier: targetProj.clientName,
-                description: `Project Due Collected: [${targetProj.code}] ${targetProj.name} - ${targetSale.description || 'Billing'} (${paymentMethod})`,
+                description: note || `Project Due Collected: [${targetProj.code}] ${targetProj.name}${targetSale.description ? ` - ${targetSale.description}` : ''} (${debitAcc.name})`,
                 amount: safeCash,
             });
         }
@@ -4873,6 +5209,8 @@ export const AppProvider: React.FC<{
                     }
                     return {
                         ...inv,
+                        projectId: inv.projectId || targetProj.id,
+                        projectCode: inv.projectCode || targetProj.code,
                         paidAmount: newPaid,
                         dueAmount: newDue,
                         paymentStatus: newStatus,
@@ -5001,6 +5339,7 @@ export const AppProvider: React.FC<{
                 return p;
             }),
         };
+        triggerImmediatePush();
     };
 
     const syncProjectsWithAccounting = (): { salesSynced: number; expensesSynced: number; totalAmount: number } => {
@@ -5725,8 +6064,16 @@ export const AppProvider: React.FC<{
                 try { localStorage.setItem(`${STORAGE_KEY}_JOURNALS`, JSON.stringify(data.journalEntries)); } catch {}
             }
             if (data.projects && Array.isArray(data.projects)) {
-                setProjects(data.projects);
-                try { localStorage.setItem(`${STORAGE_KEY}_PROJECTS`, JSON.stringify(data.projects)); } catch {}
+                const localProjs = safeGetLocalStorage<Project[]>(`${STORAGE_KEY}_PROJECTS`, []);
+                const incomingProjs = data.projects as Project[];
+                const mergedProjs = [...incomingProjs];
+                localProjs.forEach(lp => {
+                    if (!mergedProjs.some(mp => mp.id === lp.id || (mp.code && mp.code === lp.code))) {
+                        mergedProjs.push(lp);
+                    }
+                });
+                setProjects(mergedProjs);
+                try { localStorage.setItem(`${STORAGE_KEY}_PROJECTS`, JSON.stringify(mergedProjs)); } catch {}
             }
             if (data.paymentMethods && Array.isArray(data.paymentMethods)) {
                 setPaymentMethods(data.paymentMethods);
@@ -5775,6 +6122,9 @@ export const AppProvider: React.FC<{
             console.warn('Pull from cloud error', e);
         } finally {
             isSyncingRef.current = false;
+            setTimeout(() => {
+                isImportingRef.current = false;
+            }, 300);
         }
     };
 
@@ -5841,10 +6191,10 @@ export const AppProvider: React.FC<{
         }
     };
 
-    // Initial connection check without overwriting local user changes
+    // Initial connection check & pull latest database state
     useEffect(() => {
         let isCancelled = false;
-        const checkCloudStatus = async () => {
+        const checkCloudStatusAndLoad = async () => {
             try {
                 const healthRes = await fetch('/api/health');
                 if (healthRes.ok) {
@@ -5852,6 +6202,28 @@ export const AppProvider: React.FC<{
                     if (!isCancelled && healthData.database === 'connected') {
                         setIsCloudConnected(true);
                         setCloudSyncStatus('synced');
+
+                        try {
+                            const stateRes = await fetch(`/api/state?t=${Date.now()}`, { cache: 'no-store' });
+                            if (stateRes.ok && !isCancelled) {
+                                const cloudState = await stateRes.json();
+                                if (cloudState.success && cloudState.data) {
+                                    const remoteTs = cloudState.updatedAt ? new Date(cloudState.updatedAt).getTime() : 0;
+                                    isImportingRef.current = true;
+                                    importDatabase(JSON.stringify(cloudState.data), true);
+                                    setTimeout(() => { isImportingRef.current = false; }, 300);
+                                    lastServerUpdatedAtRef.current = remoteTs || Date.now();
+                                    if (cloudState.updatedAt) {
+                                        setLastSyncedAt(new Date(cloudState.updatedAt).toLocaleTimeString());
+                                    }
+                                } else if (!cloudState.data) {
+                                    // If database is completely empty on server, push our initial local state to populate database
+                                    await pushToCloud();
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('Initial cloud state fetch failed', e);
+                        }
                     }
                 }
             } catch {
@@ -5861,23 +6233,85 @@ export const AppProvider: React.FC<{
                 }
             } finally {
                 isCloudLoadedRef.current = true;
+                setTimeout(() => { isImportingRef.current = false; }, 300);
             }
         };
-        checkCloudStatus();
+        checkCloudStatusAndLoad();
         return () => {
             isCancelled = true;
         };
     }, []);
 
-    // Background polling and SSE sync disabled to prevent remote state from overriding local active edits
+    // Real-Time Multi-Device SSE Listener
     useEffect(() => {
-        // Disabled auto-pull and SSE listeners as per user instruction to ensure 100% instant local operations
+        if (typeof window === 'undefined') return;
+        let eventSource: EventSource | null = null;
+        let reconnectTimeout: any = null;
+
+        const connectSSE = () => {
+            try {
+                eventSource = new EventSource('/api/state/events');
+                eventSource.onmessage = async (e) => {
+                    try {
+                        const parsed = JSON.parse(e.data);
+                        if (parsed.type === 'STATE_UPDATED' && parsed.updatedAt) {
+                            const remoteTs = new Date(parsed.updatedAt).getTime();
+                            if (remoteTs > lastServerUpdatedAtRef.current + 300) {
+                                await pullFromCloud();
+                            }
+                        }
+                    } catch {}
+                };
+                eventSource.onerror = () => {
+                    eventSource?.close();
+                    reconnectTimeout = setTimeout(connectSSE, 5000);
+                };
+            } catch {}
+        };
+
+        connectSSE();
+
+        return () => {
+            if (eventSource) eventSource.close();
+            if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        };
     }, []);
 
-    // Debounced automatic cloud push disabled to eliminate latency, background locks, and "Syncing.." stalls
+    // Automatic Real-Time Cloud Auto-Save whenever user inputs or modifies data
     useEffect(() => {
-        // Disabled auto-push on state change to ensure zero latency
-    }, []);
+        if (isFirstMountRef.current) {
+            isFirstMountRef.current = false;
+            return;
+        }
+        if (isImportingRef.current) return;
+
+        broadcastCrossTabSync();
+
+        if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+        syncTimeoutRef.current = setTimeout(() => {
+            if (pushToCloudRef.current) {
+                pushToCloudRef.current();
+            }
+        }, 400);
+    }, [
+        profile,
+        products,
+        customers,
+        suppliers,
+        invoices,
+        quotations,
+        purchaseOrders,
+        transactions,
+        stockMovements,
+        staffMembers,
+        userRoles,
+        chartOfAccounts,
+        expenseHeads,
+        productCategories,
+        journalEntries,
+        projects,
+        paymentMethods,
+    ]);
     const accountBalances: AccountBalances = useMemo(() => {
         // Smart classifier for accounts in Chart of Accounts
         const isMobile = (name: string, code?: string) => {
@@ -5968,9 +6402,9 @@ export const AppProvider: React.FC<{
             }
         });
 
-        const mfsData = getMfsAccountsBreakdown(chartOfAccounts, transactions, invoices);
-        const bankData = getBankAccountsBreakdown(chartOfAccounts, transactions, invoices);
-        const cashData = getCashAccountsBreakdown(chartOfAccounts, transactions, invoices);
+        const mfsData = getMfsAccountsBreakdown(chartOfAccounts, transactions, invoices, projects);
+        const bankData = getBankAccountsBreakdown(chartOfAccounts, transactions, invoices, projects);
+        const cashData = getCashAccountsBreakdown(chartOfAccounts, transactions, invoices, projects);
         const dynamicBankTotal = bankData.reduce((acc, b) => acc + b.balance, 0);
 
         return {
@@ -5982,7 +6416,7 @@ export const AppProvider: React.FC<{
             nagad: mfsData.nagad,
             bankBreakdown: bankData,
         };
-    }, [transactions, chartOfAccounts, profile.bankName, invoices]);
+    }, [transactions, chartOfAccounts, profile.bankName, invoices, projects]);
     return (<AppContext.Provider value={{
             profile,
             products,

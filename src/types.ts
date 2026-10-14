@@ -400,6 +400,8 @@ export interface AccountingTransaction {
   refNo?: string;
   customerOrSupplier?: string;
   description: string;
+  projectId?: string;
+  projectCode?: string;
 }
 
 export interface ChartOfAccount {

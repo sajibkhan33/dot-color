@@ -130,39 +130,50 @@ export const doesTransactionMatchAccount = (
     const isBrac = accNameLower.includes('brac');
     const isCash = (accNameLower.includes('cash') || accCode === '1001' || accCode === '1010' || (acc.nameBn && acc.nameBn.includes('ক্যাশ'))) && !isBkash && !isNagad;
 
+    // Determine if the transaction explicitly declares a payment channel or account
+    const txHasExplicitChannel = Boolean(payAcc || head);
+
     // 2. Strict MFS separation
     if (isBkash) {
-        if (payAcc.includes('bkash') || head.includes('bkash') || desc.includes('bkash')) {
-            if (payAcc.includes('nagad') || head.includes('nagad') || desc.includes('nagad')) {
-                // If generic "bkash / nagad", check if description says bkash specifically
-                return desc.includes('bkash') || !desc.includes('nagad');
-            }
-            return true;
-        }
+        if (payAcc.includes('nagad') || head.includes('nagad') || payAcc.includes('city') || payAcc.includes('southeast') || payAcc.includes('brac') || payAcc.includes('cash')) return false;
+        if (payAcc.includes('bkash') || head.includes('bkash')) return true;
+        if (!txHasExplicitChannel && desc.includes('bkash')) return true;
         return false;
     }
 
     if (isNagad) {
-        if (payAcc.includes('nagad') || head.includes('nagad') || desc.includes('nagad')) {
-            if (payAcc.includes('bkash') || head.includes('bkash') || desc.includes('bkash')) {
-                return desc.includes('nagad');
-            }
-            return true;
-        }
+        if (payAcc.includes('bkash') || head.includes('bkash') || payAcc.includes('city') || payAcc.includes('southeast') || payAcc.includes('brac') || payAcc.includes('cash')) return false;
+        if (payAcc.includes('nagad') || head.includes('nagad')) return true;
+        if (!txHasExplicitChannel && desc.includes('nagad')) return true;
         return false;
     }
 
     // 3. Strict Bank separation
     if (isCity) {
-        return payAcc.includes('city') || head.includes('city') || desc.includes('city');
+        if (payAcc.includes('southeast') || head.includes('southeast') || payAcc.includes('brac') || head.includes('brac') || payAcc.includes('cash') || payAcc.includes('bkash') || payAcc.includes('nagad')) {
+            return false;
+        }
+        if (payAcc.includes('city') || head.includes('city')) return true;
+        if (!txHasExplicitChannel && desc.includes('city')) return true;
+        return false;
     }
 
     if (isSoutheast) {
-        return payAcc.includes('southeast') || head.includes('southeast') || desc.includes('southeast');
+        if (payAcc.includes('city') || head.includes('city') || payAcc.includes('brac') || head.includes('brac') || payAcc.includes('cash') || payAcc.includes('bkash') || payAcc.includes('nagad')) {
+            return false;
+        }
+        if (payAcc.includes('southeast') || head.includes('southeast')) return true;
+        if (!txHasExplicitChannel && desc.includes('southeast')) return true;
+        return false;
     }
 
     if (isBrac) {
-        return (payAcc.includes('brac') || head.includes('brac') || desc.includes('brac')) && !isCity && !isSoutheast;
+        if (payAcc.includes('city') || head.includes('city') || payAcc.includes('southeast') || head.includes('southeast') || payAcc.includes('cash') || payAcc.includes('bkash') || payAcc.includes('nagad')) {
+            return false;
+        }
+        if (payAcc.includes('brac') || head.includes('brac')) return true;
+        if (!txHasExplicitChannel && desc.includes('brac')) return true;
+        return false;
     }
 
     // 4. Cash separation
@@ -174,10 +185,13 @@ export const doesTransactionMatchAccount = (
         return false;
     }
 
-    // 5. General partial match
+    // 5. General partial match only for other unspecialized Asset accounts
     if (acc.classification === 'Asset') {
-        if (payAcc && (accNameLower.includes(payAcc) || payAcc.includes(accNameLower))) return true;
-        if (head && (accNameLower.includes(head) || head.includes(accNameLower))) return true;
+        const isTargetSpecialized = isCity || isSoutheast || isBrac || isBkash || isNagad || isCash;
+        if (!isTargetSpecialized) {
+            if (payAcc && (accNameLower.includes(payAcc) || payAcc.includes(accNameLower))) return true;
+            if (head && (accNameLower.includes(head) || head.includes(accNameLower))) return true;
+        }
     }
 
     return false;
@@ -189,7 +203,8 @@ export const doesTransactionMatchAccount = (
 export const calculateSingleAccountBalance = (
     acc: ChartOfAccount,
     transactions: AccountingTransaction[],
-    invoices: SalesInvoice[] = []
+    invoices: SalesInvoice[] = [],
+    projects: any[] = []
 ): number => {
     let balance = Number(acc.openingBalance) || 0;
 
@@ -220,8 +235,25 @@ export const calculateSingleAccountBalance = (
             .map((t) => (t.refNo || '').toLowerCase().trim())
     );
 
+    // Build set of invoice numbers / IDs linked to projects to prevent double-counting
+    const projectLinkedInvoiceNos = new Set<string>();
+    if (projects && Array.isArray(projects)) {
+        projects.forEach((p: any) => {
+            if (p.invoiceNo) projectLinkedInvoiceNos.add(p.invoiceNo.toLowerCase().trim());
+            (p.salesItems || []).forEach((s: any) => {
+                if (s.invoiceNo) projectLinkedInvoiceNos.add(s.invoiceNo.toLowerCase().trim());
+            });
+        });
+    }
+
     (invoices || []).forEach((inv) => {
         const invRef = (inv.invoiceNo || '').toLowerCase().trim();
+
+        // Skip invoices that belong to projects - project collections/sales are recorded via project vouchers/transactions
+        if (inv.projectId || inv.projectCode || (invRef && projectLinkedInvoiceNos.has(invRef))) {
+            return;
+        }
+
         if (invRef && recordedInvoiceRefs.has(invRef)) {
             return; // Already accounted for in transactions
         }
@@ -285,12 +317,13 @@ export const getPaymentMethodLiveBalance = (
     chartOfAccounts: ChartOfAccount[] = [],
     transactions: AccountingTransaction[] = [],
     invoices: SalesInvoice[] = [],
-    accountBalances?: AccountBalances
+    accountBalances?: AccountBalances,
+    projects: any[] = []
 ): number => {
     // 1. Try to find the exact linked or matching account head in Chart of Accounts
     const matchingAcc = matchChannelToAccount(pm.name, chartOfAccounts, [pm]);
     if (matchingAcc) {
-        return calculateSingleAccountBalance(matchingAcc, transactions, invoices);
+        return calculateSingleAccountBalance(matchingAcc, transactions, invoices, projects);
     }
 
     // 2. If no COA head matched, compute directly from transactions & invoices matching this payment method
@@ -326,7 +359,8 @@ export const getPaymentMethodLiveBalance = (
 export const getBankAccountsBreakdown = (
     chartOfAccounts: ChartOfAccount[] = [],
     transactions: AccountingTransaction[] = [],
-    invoices: SalesInvoice[] = []
+    invoices: SalesInvoice[] = [],
+    projects: any[] = []
 ): Array<{ id: string; code: string; name: string; balance: number }> => {
     const isMobile = (name: string) => {
         const n = name.toLowerCase();
@@ -345,7 +379,7 @@ export const getBankAccountsBreakdown = (
         id: acc.id,
         code: acc.code,
         name: acc.name,
-        balance: calculateSingleAccountBalance(acc, transactions, invoices),
+        balance: calculateSingleAccountBalance(acc, transactions, invoices, projects),
     }));
 };
 
@@ -355,7 +389,8 @@ export const getBankAccountsBreakdown = (
 export const getMfsAccountsBreakdown = (
     chartOfAccounts: ChartOfAccount[] = [],
     transactions: AccountingTransaction[] = [],
-    invoices: SalesInvoice[] = []
+    invoices: SalesInvoice[] = [],
+    projects: any[] = []
 ): {
     bkash: number;
     nagad: number;
@@ -372,7 +407,7 @@ export const getMfsAccountsBreakdown = (
     let bkash = 0;
     let nagad = 0;
     const accounts = mfsAccs.map((acc) => {
-        const bal = calculateSingleAccountBalance(acc, transactions, invoices);
+        const bal = calculateSingleAccountBalance(acc, transactions, invoices, projects);
         const n = acc.name.toLowerCase();
         if (n.includes('bkash') || (acc.nameBn && acc.nameBn.includes('বিকাশ'))) {
             bkash += bal;
@@ -401,7 +436,8 @@ export const getMfsAccountsBreakdown = (
 export const getCashAccountsBreakdown = (
     chartOfAccounts: ChartOfAccount[] = [],
     transactions: AccountingTransaction[] = [],
-    invoices: SalesInvoice[] = []
+    invoices: SalesInvoice[] = [],
+    projects: any[] = []
 ): {
     total: number;
     officeCash: number;
@@ -428,7 +464,7 @@ export const getCashAccountsBreakdown = (
     let factoryCash = 0;
     let total = 0;
     const accounts = cashAccs.map((acc) => {
-        const bal = calculateSingleAccountBalance(acc, transactions, invoices);
+        const bal = calculateSingleAccountBalance(acc, transactions, invoices, projects);
         total += bal;
         const n = acc.name.toLowerCase();
         if (n.includes('factory') || acc.code === '1020') {
@@ -459,20 +495,29 @@ export const getCashAccountsBreakdown = (
  */
 export const isInvoiceTransaction = (tx: Partial<AccountingTransaction>): boolean => {
     if (!tx) return false;
+    // Strictly exclude any project transactions, project due collections, and project vouchers
+    if (isProjectTransaction(tx) || isProjectDueCollectionTransaction(tx)) return false;
+    const cat = (tx.category || '').toLowerCase();
+    if (cat.includes('project')) return false;
+
     const ref = (tx.refNo || '').toUpperCase();
     const desc = (tx.description || '').toLowerCase();
-    const cat = (tx.category || '').toLowerCase();
     const id = (tx.id || '').toLowerCase();
+
+    if (id.startsWith('tx-prj-')) return false;
+    if (ref.startsWith('COL-') || ref.startsWith('PRJ-')) return false;
+    if (desc.includes('project due') || desc.includes('project sales') || desc.includes('project expense')) return false;
 
     if (id.startsWith('tx-auto-inv')) return true;
     if (ref.startsWith('DCC-INV-') || ref.startsWith('INV-')) return true;
+    if (cat === 'sales revenue') return true;
     if (cat.includes('due collection') || cat.includes('pos payment') || cat.includes('invoice payment')) return true;
     if (desc.includes('sales invoice payment') || desc.includes('due collection against invoice') || desc.includes('pos payment') || desc.includes('invoice payment')) return true;
     return false;
 };
 
 /**
- * Checks whether an accounting transaction is linked to a project sales billing or expense
+ * Checks whether an accounting transaction is linked to a project sales billing, collection or expense
  */
 export const isProjectTransaction = (tx: Partial<AccountingTransaction>): boolean => {
     if (!tx) return false;
@@ -482,9 +527,9 @@ export const isProjectTransaction = (tx: Partial<AccountingTransaction>): boolea
     const id = (tx.id || '').toLowerCase();
 
     if (id.startsWith('tx-prj-')) return true;
-    if (ref.startsWith('PRJ-')) return true;
+    if (ref.startsWith('PRJ-') || ref.startsWith('COL-')) return true;
     if (cat.includes('project')) return true;
-    if (desc.includes('project income') || desc.includes('project sales') || desc.includes('project expense')) return true;
+    if (desc.includes('project income') || desc.includes('project sales') || desc.includes('project expense') || desc.includes('project due')) return true;
     return false;
 };
 
@@ -538,7 +583,11 @@ export const isProjectDueCollectionTransaction = (tx: Partial<AccountingTransact
     if (!tx) return false;
     const cat = (tx.category || '').toLowerCase();
     const desc = (tx.description || '').toLowerCase();
+    const ref = (tx.refNo || '').toUpperCase();
+    const id = (tx.id || '').toLowerCase();
     return (
+        id.startsWith('tx-prj-col') ||
+        ref.startsWith('COL-') ||
         cat.includes('project due collection') ||
         cat.includes('project due') ||
         desc.includes('project due collected') ||
@@ -574,7 +623,9 @@ export const isDueReceivableTransaction = (tx: Partial<AccountingTransaction>): 
  */
 export const isInvoiceMatchingCustomer = (inv: Partial<SalesInvoice>, c: any): boolean => {
     if (!inv || !c) return false;
-    if (inv.customerId && inv.customerId === c.id) return true;
+    if (inv.customerId && c.id) {
+        return inv.customerId === c.id;
+    }
 
     const cPhone = (c.phone || '').replace(/[^0-9]/g, '');
     const invPhone = (inv.customerPhone || '').replace(/[^0-9]/g, '');
@@ -724,6 +775,37 @@ export const getInvoicePayments = (
     }
 
     return [];
+};
+
+/**
+ * Calculates dynamic real-time Accounts Receivable (Customer Dues) strictly from Sales Invoices and unlinked Customer records
+ */
+export const calculateTotalCustomerReceivables = (
+    invoices: SalesInvoice[] = [],
+    customers: any[] = []
+): number => {
+    // 1. Authoritative customer receivables are strictly the outstanding due amounts on active sales invoices
+    const totalInvoiceDue = (invoices || []).reduce((sum, inv) => sum + (Number(inv.dueAmount) || 0), 0);
+
+    // 2. Add unlinked customer opening dues (only for customers who have NO invoices in the system)
+    const seenCustomerKeys = new Set<string>();
+    const unlinkedCustomerDue = (customers || []).reduce((sum, c) => {
+        // Check if customer has any matching invoices in the system
+        const hasMatchingInvoices = (invoices || []).some(inv => isInvoiceMatchingCustomer(inv, c));
+        if (hasMatchingInvoices) {
+            // Their due is already counted in totalInvoiceDue, so do NOT count again!
+            return sum;
+        }
+
+        // Deduplicate unlinked customers by normalized phone or name to avoid duplicate counting
+        const key = (c.phone || c.name || c.company || c.id || '').toLowerCase().trim();
+        if (key && seenCustomerKeys.has(key)) return sum;
+        if (key) seenCustomerKeys.add(key);
+
+        return sum + (Number(c.dueAmount) || 0);
+    }, 0);
+
+    return totalInvoiceDue + unlinkedCustomerDue;
 };
 
 /**

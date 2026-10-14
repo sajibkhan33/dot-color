@@ -76,6 +76,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             const ok = importDatabase(content);
             if (ok) {
                 setImportStatus('success');
+                syncWithCloud?.({ forcePush: true });
                 setTimeout(() => {
                     setImportStatus(null);
                     setShowBackupModal(false);
@@ -149,27 +150,17 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
                 </span>
               </button>
 
-              {/* Cloud Sync Status Indicator */}
-              <button type="button" onClick={() => syncWithCloud()} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all ${isCloudConnected
-            ? cloudSyncStatus === 'syncing'
-                ? 'bg-amber-50 text-amber-700 border-amber-300'
-                : 'bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100'
-            : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'}`} title={isCloudConnected
-            ? `MongoDB Atlas: Connected (${lastSyncedAt ? `Last: ${lastSyncedAt}` : 'Ready'}) - Click to Sync`
-            : 'MongoDB Not Connected (Running in Local Storage mode) - Click to retry'}>
-                {isCloudConnected ? (cloudSyncStatus === 'syncing' ? (<RefreshCw className="w-3.5 h-3.5 text-amber-600 animate-spin"/>) : (<Cloud className="w-3.5 h-3.5 text-emerald-600"/>)) : (<CloudOff className="w-3.5 h-3.5 text-slate-400"/>)}
-                <span className="hidden md:inline">
-                  {isCloudConnected
-            ? cloudSyncStatus === 'syncing'
-                ? 'Syncing...'
-                : 'DB Synced'
-            : 'Local Mode'}
+              {/* Central Project Data Backup & Upload Button */}
+              <button
+                type="button"
+                onClick={() => setShowBackupModal(true)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 active:scale-95 text-slate-950 shadow-xs transition-all border border-amber-400 shrink-0"
+                title={language === 'bn' ? 'সম্পূর্ণ প্রোজেক্টের ডাটা ব্যাকআপ ও আপলোড' : 'Backup & Upload Entire Project Data'}
+              >
+                <Database className="w-4 h-4 text-slate-950" />
+                <span className="font-extrabold hidden sm:inline">
+                  {language === 'bn' ? 'ডাটা ব্যাকআপ ও আপলোড' : 'Backup & Upload'}
                 </span>
-              </button>
-
-              {/* Data Backup Modal */}
-              <button type="button" onClick={() => setShowBackupModal(true)} className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors" title={'Data Backup & Restore'}>
-                <Database className="w-4 h-4"/>
               </button>
 
               {/* Language Switcher */}
@@ -228,7 +219,14 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             { id: 'profile', labelEn: 'Company Profile', labelBn: "" },
         ].map((tab) => {
             const active = activeTab === tab.id;
-            return (<button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`px-2.5 sm:px-3 py-1.5 text-xs sm:text-[13px] font-semibold rounded-lg whitespace-nowrap transition-all ${active
+            return (<button key={tab.id} onClick={() => {
+                setActiveTab(tab.id);
+                try {
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('tab', tab.id);
+                    window.history.replaceState({}, '', url.toString());
+                } catch {}
+            }} className={`px-2.5 sm:px-3 py-1.5 text-xs sm:text-[13px] font-semibold rounded-lg whitespace-nowrap transition-all ${active
                     ? 'bg-slate-900 text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/70'}`}>
                   {tab.labelEn}
@@ -245,7 +243,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
               <div className="flex items-center gap-2">
                 <Database className="w-5 h-5 text-amber-600"/>
                 <h3 className="font-bold text-slate-900 text-base">
-                  {'Data Backup & Restore'}
+                  {language === 'bn' ? 'সম্পূর্ণ প্রোজেক্ট ডাটা ব্যাকআপ ও আপলোড' : 'Project Data Backup & Restore'}
                 </h3>
               </div>
               <button type="button" onClick={() => setShowBackupModal(false)} className="p-1 text-slate-400 hover:text-slate-700 rounded-lg">
@@ -255,24 +253,30 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
 
             <div className="py-4 space-y-4">
               <p className="text-xs text-slate-600 leading-relaxed">
-                {'All sales invoices, purchase records, inventory stock and financial ledgers are securely stored locally. You can download an offline JSON backup or restore anytime.'}
+                {language === 'bn'
+                  ? 'ইনভয়েস, পারচেজ, প্রজেক্ট, একাউন্টিং লেজার এবং ইনভেন্টরির সমস্ত ডাটা ক্লাউড ডাটাবেজে রিয়েল-টাইমে অটো-সেভ হয়। আপনি যেকোনো সময় সম্পূর্ণ ডাটার অফলাইন ব্যাকআপ ডাউনলোড করতে পারেন অথবা পূর্বের ব্যাকআপ ফাইল আপলোড করে রিস্টোর করতে পারেন।'
+                  : 'All sales invoices, purchase records, projects, inventory stock and financial ledgers are automatically saved in the database in real-time. You can download an offline JSON backup or restore anytime.'}
               </p>
 
               <div className="grid grid-cols-2 gap-3">
-                <button type="button" onClick={handleExport} className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border border-slate-200 hover:border-amber-500 hover:bg-amber-50/50 transition-all group text-center">
+                <button type="button" onClick={handleExport} className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border border-slate-200 hover:border-amber-500 hover:bg-amber-50/50 transition-all group text-center cursor-pointer shadow-2xs">
                   <Download className="w-6 h-6 text-amber-600 group-hover:scale-110 transition-transform"/>
                   <span className="text-xs font-bold text-slate-900">
-                    {'Download Backup'}
+                    {language === 'bn' ? 'ব্যাকআপ ডাউনলোড' : 'Download Backup'}
                   </span>
-                  <span className="text-[10px] text-slate-500">.json format</span>
+                  <span className="text-[10px] text-slate-500">
+                    {language === 'bn' ? 'সম্পূর্ণ ডাটা (.json)' : '.json format'}
+                  </span>
                 </button>
 
-                <label className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border border-dashed border-slate-300 hover:border-slate-800 hover:bg-slate-50 transition-all cursor-pointer text-center">
-                  <Upload className="w-6 h-6 text-slate-700"/>
+                <label className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border border-dashed border-amber-300 hover:border-amber-600 hover:bg-amber-50/50 transition-all cursor-pointer text-center shadow-2xs">
+                  <Upload className="w-6 h-6 text-amber-600"/>
                   <span className="text-xs font-bold text-slate-900">
-                    {'Restore File'}
+                    {language === 'bn' ? 'ফাইল আপলোড (রিস্টোর)' : 'Upload & Restore'}
                   </span>
-                  <span className="text-[10px] text-slate-500">upload JSON</span>
+                  <span className="text-[10px] text-slate-500">
+                    {language === 'bn' ? '.json ফাইল সিলেক্ট করুন' : 'select JSON file'}
+                  </span>
                   <input type="file" accept=".json" onChange={handleFileUpload} className="hidden"/>
                 </label>
               </div>
@@ -286,44 +290,44 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
                     </div>
                     <div>
                       <div className="text-xs font-bold text-slate-800">
-                        {'MongoDB Atlas Cloud Sync'}
+                        {language === 'bn' ? 'MongoDB Atlas ক্লাউড ডাটাবেজ' : 'MongoDB Atlas Cloud Database'}
                       </div>
                       <div className="text-[10px] text-slate-500">
                         {isCloudConnected
-                ? (lastSyncedAt ? `${'Last: '}${lastSyncedAt}` : 'Connected')
-                : ('Not Connected (Local Mode)')}
+                          ? (language === 'bn' ? 'কানেক্টেড (ইনপুট করলেই অটো-সেভ হয়)' : `Connected (Real-time auto-save active)`)
+                          : (language === 'bn' ? 'লোকাল মোডে চলছে' : 'Not Connected (Local Mode)')}
                       </div>
                     </div>
                   </div>
-                  <button type="button" onClick={() => syncWithCloud()} disabled={cloudSyncStatus === 'syncing'} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-700 bg-white border border-emerald-300 rounded-lg hover:bg-emerald-50 transition-colors shadow-2xs shrink-0">
+                  <button type="button" onClick={() => syncWithCloud()} disabled={cloudSyncStatus === 'syncing'} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-emerald-700 bg-white border border-emerald-300 rounded-lg hover:bg-emerald-50 transition-colors shadow-2xs shrink-0 cursor-pointer">
                     <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncStatus === 'syncing' ? 'animate-spin' : ''}`}/>
-                    <span>{cloudSyncStatus === 'syncing' ? ('Syncing...') : ('Sync Now')}</span>
+                    <span>{cloudSyncStatus === 'syncing' ? (language === 'bn' ? 'সেভ হচ্ছে...' : 'Saving...') : (language === 'bn' ? 'এখনই সিঙ্ক' : 'Sync Now')}</span>
                   </button>
                 </div>
               </div>
 
               {importStatus === 'success' && (<div className="flex items-center gap-2 text-xs font-bold text-emerald-700 bg-emerald-50 p-2.5 rounded-lg border border-emerald-200">
                   <CheckCircle2 className="w-4 h-4 shrink-0"/>
-                  {'Data restored successfully!'}
+                  {language === 'bn' ? 'ডাটা সফলভাবে রিস্টোর ও ডাটাবেজে সেভ হয়েছে!' : 'Data restored & saved successfully!'}
                 </div>)}
 
               {importStatus === 'error' && (<div className="text-xs font-bold text-rose-700 bg-rose-50 p-2.5 rounded-lg border border-rose-200">
-                  {'Invalid JSON file format!'}
+                  {language === 'bn' ? 'ভুল JSON ফাইল ফরম্যাট!' : 'Invalid JSON file format!'}
                 </div>)}
 
               <div className="pt-2 border-t border-slate-100 flex justify-between items-center">
                 <button type="button" onClick={() => {
-                if (window.confirm('Are you sure you want to reset to demo data?')) {
+                if (window.confirm(language === 'bn' ? 'আপনি কি নিশ্চিত যে ডেমো ডাটায় রিসেট করতে চান?' : 'Are you sure you want to reset to demo data?')) {
                     resetToDefaultData();
                     setShowBackupModal(false);
                 }
-            }} className="flex items-center gap-1.5 text-xs text-rose-600 hover:text-rose-800 font-semibold">
+            }} className="flex items-center gap-1.5 text-xs text-rose-600 hover:text-rose-800 font-semibold cursor-pointer">
                   <RotateCcw className="w-3.5 h-3.5"/>
-                  {'Reset to Default'}
+                  {language === 'bn' ? 'ডিফল্ট ডাটায় রিসেট' : 'Reset to Default'}
                 </button>
 
-                <button type="button" onClick={() => setShowBackupModal(false)} className="text-xs font-semibold px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800">
-                  {'Close'}
+                <button type="button" onClick={() => setShowBackupModal(false)} className="text-xs font-semibold px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 cursor-pointer">
+                  {language === 'bn' ? 'বন্ধ করুন' : 'Close'}
                 </button>
               </div>
             </div>

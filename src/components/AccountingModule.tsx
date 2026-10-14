@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { AccountType, TransactionType } from '../types';
-import { Wallet, Building, Smartphone, TrendingUp, TrendingDown, Plus, ArrowUpRight, ArrowDownLeft, Search, Filter, DollarSign, Calendar, Layers, FileSpreadsheet, Printer, SlidersHorizontal, RefreshCw, BookOpen, Trash2, Edit2, Eye, AlertCircle, } from 'lucide-react';
+import { Wallet, Building, Smartphone, TrendingUp, TrendingDown, Plus, ArrowUpRight, ArrowDownLeft, Search, Filter, DollarSign, Calendar, Layers, FileSpreadsheet, Printer, SlidersHorizontal, RefreshCw, BookOpen, Trash2, Edit2, Eye, AlertCircle, Briefcase, FolderKanban, Receipt, CheckCircle2 } from 'lucide-react';
 import { exportAccountingToExcel } from '../utils/exportUtils';
 import { ReportPrintModal } from './ReportPrintModal';
 import { ChartOfAccountsManager } from './ChartOfAccountsManager';
@@ -9,7 +9,7 @@ import { ExpenseHeadManager } from './ExpenseHeadManager';
 import { JournalEntriesManager } from './JournalEntriesManager';
 import { getBankAccountsBreakdown, getMfsAccountsBreakdown, getPaymentMethodLiveBalance, calculateSingleAccountBalance, isAdvanceAdjustmentTransaction, isDueReceivableTransaction } from '../utils/accountUtils';
 export const AccountingModule: React.FC = () => {
-    const { accountBalances: rawBalances, transactions, chartOfAccounts, expenseHeads, journalEntries, profile, language, invoices = [], paymentMethods = [], customers = [], updateCustomer, addTransaction, updateTransaction, deleteTransaction, } = useApp();
+    const { accountBalances: rawBalances, transactions, chartOfAccounts, expenseHeads, journalEntries, profile, language, invoices = [], paymentMethods = [], customers = [], updateCustomer, addTransaction, updateTransaction, deleteTransaction, projects = [], addProjectExpense, addProject, addProjectSales, collectProjectDue } = useApp();
     const accountBalances = {
         cash: rawBalances?.cash ?? 0,
         bank: rawBalances?.bank ?? 0,
@@ -75,7 +75,7 @@ export const AccountingModule: React.FC = () => {
                 const key = acc.name.trim().toLowerCase();
                 if (!seen.has(key)) {
                     seen.add(key);
-                    const bal = calculateSingleAccountBalance(acc, transactions, invoices);
+                    const bal = calculateSingleAccountBalance(acc, transactions, invoices, projects);
                     list.push({
                         id: acc.id,
                         name: acc.name,
@@ -108,6 +108,18 @@ export const AccountingModule: React.FC = () => {
     const [expenseAmount, setExpenseAmount] = useState<number>(1000);
     const [expenseAccount, setExpenseAccount] = useState<string>('');
     const [expenseNote, setExpenseNote] = useState('');
+    const [selectedProjectId, setSelectedProjectId] = useState<string>('');
+
+    const isProjectExpense = useMemo(() => {
+        const cat = (expenseCategory || '').toLowerCase();
+        return cat.includes('project') || cat.includes('প্রজেক্ট');
+    }, [expenseCategory]);
+
+    useEffect(() => {
+        if (isProjectExpense && !selectedProjectId && projects.length === 1) {
+            setSelectedProjectId(projects[0].id);
+        }
+    }, [isProjectExpense, projects, selectedProjectId]);
 
     // Dynamically unified expense categories from active Expense Heads AND Chart of Accounts
     const availableExpenseOptions = useMemo(() => {
@@ -211,6 +223,87 @@ export const AccountingModule: React.FC = () => {
     const [incomeAccount, setIncomeAccount] = useState<string>('');
     const [incomeCustomerId, setIncomeCustomerId] = useState<string>('');
 
+    // Project Sales & Due Collection in Income Modal
+    const [projectIncomeMode, setProjectIncomeMode] = useState<'existing' | 'new' | 'direct'>('existing');
+    const [selectedIncomeProjectId, setSelectedIncomeProjectId] = useState<string>('');
+    const [projectIncomeAction, setProjectIncomeAction] = useState<'collect_due' | 'new_sales'>('collect_due');
+    const [newProjName, setNewProjName] = useState<string>('');
+    const [newProjClientName, setNewProjClientName] = useState<string>('');
+    const [newProjClientPhone, setNewProjClientPhone] = useState<string>('');
+    const [newProjBudget, setNewProjBudget] = useState<number>(5000);
+
+    const isProjectIncome = useMemo(() => {
+        const cat = (incomeCategory || '').toLowerCase();
+        return cat.includes('project') || cat.includes('প্রজেক্ট');
+    }, [incomeCategory]);
+
+    useEffect(() => {
+        if (isProjectIncome) {
+            if (projects.length === 0) {
+                setProjectIncomeMode('new');
+            } else if (!selectedIncomeProjectId) {
+                const projWithDue = projects.find((p) => {
+                    const due = (p.salesItems || []).reduce((sum, s) => {
+                        const d = s.dueAmount !== undefined ? Number(s.dueAmount) : Math.max(0, Number(s.amount) - (Number(s.paidAmount) || 0));
+                        return sum + d;
+                    }, 0);
+                    return due > 0;
+                });
+                setSelectedIncomeProjectId(projWithDue ? projWithDue.id : projects[0].id);
+            }
+        }
+    }, [isProjectIncome, projects, selectedIncomeProjectId]);
+
+    useEffect(() => {
+        if (showIncomeModal && !incomeAccount && availablePaymentAccounts.length > 0) {
+            setIncomeAccount(availablePaymentAccounts[0].name);
+        }
+    }, [showIncomeModal, incomeAccount, availablePaymentAccounts]);
+
+    const selectedIncomeProject = useMemo(() => {
+        return projects.find((p) => p.id === selectedIncomeProjectId);
+    }, [projects, selectedIncomeProjectId]);
+
+    const selectedProjectDue = useMemo(() => {
+        if (!selectedIncomeProject) return 0;
+        return (selectedIncomeProject.salesItems || []).reduce((sum, s) => {
+            if (s.dueAmount !== undefined) return sum + (Number(s.dueAmount) || 0);
+            const breakdowns = s.paymentBreakdown || [];
+            const dueRow = breakdowns.find((b) => {
+                const m = (b.method || '').toLowerCase();
+                return m.includes('due') || m.includes('receivable');
+            });
+            const dueInitial = dueRow ? Number(dueRow.amount) || 0 : 0;
+            const pastCollections = (s.collections || []).reduce((csum, c) => csum + (Number(c.amount) || 0), 0);
+            return sum + Math.max(0, dueInitial - pastCollections);
+        }, 0);
+    }, [selectedIncomeProject]);
+
+    // Smartly set action and auto-suggest description & amount when project is selected
+    useEffect(() => {
+        if (isProjectIncome && projectIncomeMode === 'existing' && selectedIncomeProject) {
+            if (selectedProjectDue > 0) {
+                setProjectIncomeAction('collect_due');
+                if (!incomeTitle || incomeTitle.startsWith('Project Due Collection:') || incomeTitle.startsWith('Project Sales:') || incomeTitle.startsWith('Received Advance Cash')) {
+                    setIncomeTitle(`Project Due Collection: [${selectedIncomeProject.code}] ${selectedIncomeProject.name} (${selectedIncomeProject.clientName})`);
+                }
+            } else {
+                setProjectIncomeAction('new_sales');
+                if (!incomeTitle || incomeTitle.startsWith('Project Due Collection:') || incomeTitle.startsWith('Project Sales:') || incomeTitle.startsWith('Received Advance Cash')) {
+                    setIncomeTitle(`Project Sales: [${selectedIncomeProject.code}] ${selectedIncomeProject.name} - Billing`);
+                }
+            }
+        }
+    }, [isProjectIncome, projectIncomeMode, selectedIncomeProjectId, selectedProjectDue]);
+
+    useEffect(() => {
+        if (isProjectIncome && projectIncomeMode === 'new' && newProjName) {
+            if (!incomeTitle || incomeTitle.startsWith('Project Due Collection:') || incomeTitle.startsWith('Project Sales:') || incomeTitle.startsWith('Received Advance Cash')) {
+                setIncomeTitle(`Project Sales: ${newProjName}${newProjClientName ? ` (${newProjClientName})` : ''}`);
+            }
+        }
+    }, [isProjectIncome, projectIncomeMode, newProjName, newProjClientName]);
+
     useEffect(() => {
         if (availableIncomeOptions.length > 0) {
             const exists = availableIncomeOptions.some((o) => o.name === incomeCategory);
@@ -309,9 +402,16 @@ export const AccountingModule: React.FC = () => {
             .map((t) => (t.refNo || '').toLowerCase().trim())
     );
 
+    const projectLinkedInvoiceNos = useMemo(() => new Set([
+        ...(projects || []).map(p => (p.invoiceNo || '').toLowerCase().trim()).filter(Boolean),
+        ...(projects || []).flatMap(p => (p.salesItems || []).map(s => (s.invoiceNo || '').toLowerCase().trim())).filter(Boolean),
+        ...(invoices || []).filter(inv => inv.projectId || inv.projectCode).map(inv => (inv.invoiceNo || '').toLowerCase().trim()).filter(Boolean),
+    ]), [projects, invoices]);
+
     const unrecordedInvoiceIncome = (invoices || [])
         .filter((inv) => {
             const invRef = (inv.invoiceNo || '').toLowerCase().trim();
+            if (inv.projectId || inv.projectCode || projectLinkedInvoiceNos.has(invRef)) return false;
             if (invRef && recordedInvoiceRefs.has(invRef)) return false;
             const matchDate = (!startDate || inv.date >= startDate) && (!endDate || inv.date <= endDate);
             return matchDate;
@@ -346,47 +446,151 @@ export const AccountingModule: React.FC = () => {
         if (!expenseTitle || expenseAmount <= 0)
             return;
         const selectedAccount = expenseAccount || availablePaymentAccounts[0]?.name || 'Cash';
-        addTransaction({
-            date: new Date().toISOString().slice(0, 10),
-            type: 'EXPENSE',
-            category: expenseCategory,
-            description: expenseTitle,
-            amount: expenseAmount,
-            account: selectedAccount,
-            paymentAccount: selectedAccount,
-            accountHead: selectedAccount,
-            paymentMethod: selectedAccount,
-            refNo: `EXP-${Date.now().toString().slice(-4)}`,
-        });
+
+        if (selectedProjectId) {
+            const matchedExpCoa = chartOfAccounts.find(a => a.name.toLowerCase() === expenseCategory.toLowerCase());
+            const matchedPayCoa = chartOfAccounts.find(a => a.name.toLowerCase() === selectedAccount.toLowerCase());
+
+            addProjectExpense(selectedProjectId, {
+                category: expenseCategory,
+                amount: expenseAmount,
+                note: expenseTitle + (expenseNote ? ` • ${expenseNote}` : ''),
+                date: new Date().toISOString().slice(0, 10),
+                paymentMethod: selectedAccount,
+                linkedAccountId: matchedExpCoa?.id,
+                paymentAccountId: matchedPayCoa?.id,
+            });
+        } else {
+            addTransaction({
+                date: new Date().toISOString().slice(0, 10),
+                type: 'EXPENSE',
+                category: expenseCategory,
+                description: expenseTitle,
+                amount: expenseAmount,
+                account: selectedAccount,
+                paymentAccount: selectedAccount,
+                accountHead: selectedAccount,
+                paymentMethod: selectedAccount,
+                refNo: `EXP-${Date.now().toString().slice(-4)}`,
+            });
+        }
+
         setShowExpenseModal(false);
         setExpenseTitle('');
         setExpenseAmount(1000);
         setExpenseNote('');
+        setSelectedProjectId('');
     };
     const handleCreateIncome = (e: React.FormEvent) => {
         e.preventDefault();
-        if (!incomeTitle || incomeAmount <= 0)
-            return;
+        const numAmount = Number(incomeAmount);
+        if (numAmount <= 0) return;
         const selectedAccount = incomeAccount || availablePaymentAccounts[0]?.name || 'Cash';
-        addTransaction({
-            date: new Date().toISOString().slice(0, 10),
-            type: 'INCOME',
-            category: incomeCategory,
-            description: incomeTitle,
-            amount: incomeAmount,
-            account: selectedAccount,
-            paymentAccount: selectedAccount,
-            accountHead: selectedAccount,
-            paymentMethod: selectedAccount,
-            refNo: `INC-${Date.now().toString().slice(-4)}`,
-        });
+        const today = new Date().toISOString().slice(0, 10);
 
-        if (incomeCustomerId) {
-            const cust = customers.find((c) => c.id === incomeCustomerId);
-            if (cust) {
-                updateCustomer(cust.id, {
-                    advanceBalance: (Number(cust.advanceBalance) || 0) + Number(incomeAmount),
+        if (isProjectIncome && projectIncomeMode === 'existing' && selectedIncomeProject) {
+            if (projectIncomeAction === 'collect_due') {
+                const saleWithDue = (selectedIncomeProject.salesItems || []).find((s) => {
+                    const d = s.dueAmount !== undefined
+                        ? Number(s.dueAmount)
+                        : (Number(s.amount) - (Number(s.paidAmount) || 0));
+                    return d > 0;
+                }) || selectedIncomeProject.salesItems?.[0];
+
+                if (saleWithDue) {
+                    collectProjectDue(
+                        selectedIncomeProject.id,
+                        saleWithDue.id,
+                        numAmount,
+                        selectedAccount,
+                        today,
+                        incomeTitle || `Project Due Collection: [${selectedIncomeProject.code}] ${selectedIncomeProject.name}`,
+                        `COL-${Date.now().toString().slice(-4)}`
+                    );
+                } else {
+                    addProjectSales(selectedIncomeProject.id, {
+                        description: incomeTitle || `${selectedIncomeProject.name} - Due Collection`,
+                        amount: numAmount,
+                        date: today,
+                        clientName: selectedIncomeProject.clientName,
+                        paymentMethod: selectedAccount,
+                        paymentBreakdown: [{
+                            id: `pb-${Date.now()}`,
+                            method: selectedAccount,
+                            amount: numAmount,
+                        }],
+                        paidAmount: numAmount,
+                        dueAmount: 0,
+                    });
+                }
+            } else {
+                addProjectSales(selectedIncomeProject.id, {
+                    description: incomeTitle || `${selectedIncomeProject.name} - Project Sales`,
+                    amount: numAmount,
+                    date: today,
+                    clientName: selectedIncomeProject.clientName,
+                    paymentMethod: selectedAccount,
+                    paymentBreakdown: [{
+                        id: `pb-${Date.now()}`,
+                        method: selectedAccount,
+                        amount: numAmount,
+                    }],
+                    paidAmount: numAmount,
+                    dueAmount: 0,
                 });
+            }
+        } else if (isProjectIncome && projectIncomeMode === 'new') {
+            const projTitle = newProjName.trim() || incomeTitle.trim() || 'New Project';
+            const cName = newProjClientName.trim() || 'Walk-in Client';
+            const budgetVal = Math.max(Number(newProjBudget) || 0, numAmount);
+            const paidVal = numAmount;
+            const dueVal = Math.max(0, budgetVal - paidVal);
+
+            addProject({
+                name: projTitle,
+                clientName: cName,
+                clientPhone: newProjClientPhone.trim() || undefined,
+                startDate: today,
+                status: 'In Progress',
+                budget: budgetVal,
+                salesItems: [{
+                    id: `ps-${Date.now()}`,
+                    description: incomeTitle || `${projTitle} - Project Sales Contract`,
+                    amount: budgetVal,
+                    date: today,
+                    clientName: cName,
+                    paymentMethod: selectedAccount,
+                    paymentBreakdown: [
+                        { id: `pb-1-${Date.now()}`, method: selectedAccount, amount: paidVal },
+                        ...(dueVal > 0 ? [{ id: `pb-2-${Date.now()}`, method: 'Due', amount: dueVal }] : []),
+                    ],
+                    paidAmount: paidVal,
+                    dueAmount: dueVal,
+                }],
+                expenseItems: [],
+            });
+        } else {
+            if (!incomeTitle) return;
+            addTransaction({
+                date: today,
+                type: 'INCOME',
+                category: incomeCategory,
+                description: incomeTitle,
+                amount: numAmount,
+                account: selectedAccount,
+                paymentAccount: selectedAccount,
+                accountHead: selectedAccount,
+                paymentMethod: selectedAccount,
+                refNo: `INC-${Date.now().toString().slice(-4)}`,
+            });
+
+            if (incomeCustomerId) {
+                const cust = customers.find((c) => c.id === incomeCustomerId);
+                if (cust) {
+                    updateCustomer(cust.id, {
+                        advanceBalance: (Number(cust.advanceBalance) || 0) + numAmount,
+                    });
+                }
             }
         }
 
@@ -394,6 +598,13 @@ export const AccountingModule: React.FC = () => {
         setIncomeTitle('');
         setIncomeAmount(5000);
         setIncomeCustomerId('');
+        setSelectedIncomeProjectId('');
+        setNewProjName('');
+        setNewProjClientName('');
+        setNewProjClientPhone('');
+        setNewProjBudget(5000);
+        setProjectIncomeMode('existing');
+        setProjectIncomeAction('collect_due');
     };
     const handleOpenEditTx = (tx: any) => {
         setEditingTransaction(tx);
@@ -409,9 +620,14 @@ export const AccountingModule: React.FC = () => {
         e.preventDefault();
         if (!editingTransaction)
             return;
+        let cleanDescription = editTxDescription;
+        const oldAcc = editingTransaction.paymentAccount || editingTransaction.account || '';
+        if (oldAcc && editTxAccount && oldAcc !== editTxAccount) {
+            cleanDescription = cleanDescription.replace(new RegExp(`\\(${oldAcc}\\)`, 'gi'), `(${editTxAccount})`);
+        }
         updateTransaction(editingTransaction.id, {
             date: editTxDate,
-            description: editTxDescription,
+            description: cleanDescription,
             category: editTxCategory,
             amount: Number(editTxAmount),
             account: editTxAccount,
@@ -730,7 +946,15 @@ export const AccountingModule: React.FC = () => {
                   <td className="py-3 px-4 text-slate-500 font-mono text-[11px]">{tx.date}</td>
                   <td className="py-3 px-4 font-mono text-slate-600 font-semibold">{tx.refNo}</td>
                   <td className="py-3 px-4">
-                    <div className="font-bold text-slate-900">{tx.description}</div>
+                    <div className="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                      <span>{tx.description}</span>
+                      {(tx.projectId || tx.projectCode) && (
+                        <span className="inline-flex items-center gap-1 font-mono text-[9px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                          <Briefcase className="w-2.5 h-2.5 text-amber-600" />
+                          <span>{tx.projectCode || tx.refNo}</span>
+                        </span>
+                      )}
+                    </div>
                     <div className="text-[10px] text-amber-700 font-medium">{tx.category}</div>
                   </td>
                   <td className="py-3 px-4 font-medium text-slate-700">{tx.paymentAccount || tx.account || tx.accountHead || 'Cash in Hand'}</td>
@@ -855,6 +1079,121 @@ export const AccountingModule: React.FC = () => {
                   </select>
                 </div>
               </div>
+
+              {/* Project Linking Section */}
+              <div className={`p-3.5 rounded-xl border transition-all ${
+                isProjectExpense
+                  ? 'bg-amber-50/70 border-amber-300 ring-1 ring-amber-300/40'
+                  : selectedProjectId
+                  ? 'bg-indigo-50/60 border-indigo-200'
+                  : 'bg-slate-50 border-slate-200/80'
+              }`}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
+                    <Briefcase className="w-4 h-4 text-amber-600" />
+                    <span>Link to Project / সংশ্লিষ্ট প্রজেক্ট নির্বাচন</span>
+                    {isProjectExpense && (
+                      <span className="text-amber-800 text-[10px] bg-amber-100 font-extrabold px-1.5 py-0.5 rounded border border-amber-300">
+                        Project Expense
+                      </span>
+                    )}
+                  </label>
+                  {selectedProjectId && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedProjectId('')}
+                      className="text-[10px] font-bold text-rose-600 hover:underline cursor-pointer"
+                    >
+                      Clear Project Link
+                    </button>
+                  )}
+                </div>
+
+                <select
+                  value={selectedProjectId}
+                  onChange={(e) => setSelectedProjectId(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl font-medium text-xs bg-white cursor-pointer focus:ring-1 focus:ring-amber-500 focus:outline-hidden"
+                >
+                  <option value="">
+                    {isProjectExpense
+                      ? '-- Select a Project / প্রজেক্ট সিলেক্ট করুন --'
+                      : '-- No Project Linked (General Operating Expense) / সাধারণ খরচ --'}
+                  </option>
+                  {projects.map((proj) => {
+                    const isCompleted = proj.status === 'Completed';
+                    return (
+                      <option key={proj.id} value={proj.id}>
+                        [{proj.code}] {proj.name} — {proj.clientName} {isCompleted ? '(Completed)' : `(${proj.status})`}
+                      </option>
+                    );
+                  })}
+                </select>
+
+                {/* Selected Project Info Preview */}
+                {(() => {
+                  const p = projects.find((item) => item.id === selectedProjectId);
+                  if (!p) {
+                    if (isProjectExpense && projects.length > 0) {
+                      return (
+                        <p className="text-[10.5px] text-amber-800 mt-2 flex items-center gap-1.5 font-medium">
+                          <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span>
+                            টিপস: প্রজেক্ট সিলেক্ট করলে খরচটি স্বয়ংক্রিয়ভাবে উক্ত প্রজেক্টের খরচের তালিকায় যুক্ত হবে এবং নিট প্রফিট আপডেট হবে।
+                          </span>
+                        </p>
+                      );
+                    }
+                    return null;
+                  }
+
+                  const newTotalCost = (Number(p.totalExpenses) || 0) + (Number(expenseAmount) || 0);
+
+                  return (
+                    <div className="mt-2.5 p-2.5 bg-white rounded-lg border border-amber-200 text-[11px] space-y-1.5 animate-in fade-in duration-150">
+                      <div className="flex items-center justify-between">
+                        <div className="font-extrabold text-slate-900 flex items-center gap-1.5">
+                          <span className="font-mono text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-bold">
+                            {p.code}
+                          </span>
+                          <span className="truncate max-w-[280px] sm:max-w-md">{p.name}</span>
+                        </div>
+                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${
+                          p.status === 'Completed'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-amber-50 text-amber-700 border-amber-200'
+                        }`}>
+                          {p.status}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 border-t border-slate-100 text-center">
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-medium">Client</span>
+                          <span className="font-bold text-slate-700 truncate block">{p.clientName}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-medium">Project Budget</span>
+                          <span className="font-bold text-amber-700">{profile.currencySymbol}{(Number(p.budget) || 0).toLocaleString()}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 block font-medium">Current Cost</span>
+                          <span className="font-bold text-slate-600">{profile.currencySymbol}{(Number(p.totalExpenses) || 0).toLocaleString()}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-rose-600 block font-bold">New Cost After</span>
+                          <span className="font-black text-rose-700 font-mono">
+                            {profile.currencySymbol}{newTotalCost.toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+
+                      <p className="text-[10.5px] text-emerald-700 font-semibold pt-1 flex items-center gap-1 border-t border-slate-100">
+                        <span>✓ এই খরচটি সরাসরি [{p.code}] {p.name} প্রজেক্টের খরচে যুক্ত হয়ে প্রজেক্ট ম্যানেজমেন্টের সাথে সিঙ্ক থাকবে।</span>
+                      </p>
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
 
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
@@ -862,7 +1201,9 @@ export const AccountingModule: React.FC = () => {
                 {'Cancel'}
               </button>
               <button type="submit" className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-2xs">
-                {'Confirm Expense'}
+                {selectedProjectId
+                  ? `Confirm & Link to Project (${profile.currencySymbol}${(Number(expenseAmount) || 0).toLocaleString()})`
+                  : 'Confirm Expense'}
               </button>
             </div>
           </form>
@@ -965,14 +1306,323 @@ export const AccountingModule: React.FC = () => {
                   </p>
                 </div>
               )}
+
+              {/* PROJECT SALES & DUE COLLECTION WORKFLOW */}
+              {isProjectIncome && (
+                <div className="bg-gradient-to-br from-emerald-50/80 via-teal-50/40 to-slate-50 p-4 rounded-xl border border-emerald-200/90 space-y-3.5 shadow-2xs">
+                  {/* Mode Selector Header */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-emerald-200/70">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                      <Briefcase className="w-4 h-4 text-emerald-600" />
+                      <span>Project Sales & Due Management / প্রজেক্ট নির্বাচন ও বকেয়া আদায়</span>
+                    </div>
+
+                    <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-emerald-200 shadow-2xs">
+                      <button
+                        type="button"
+                        onClick={() => setProjectIncomeMode('existing')}
+                        className={`px-3 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                          projectIncomeMode === 'existing'
+                            ? 'bg-emerald-600 text-white shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        <FolderKanban className="w-3.5 h-3.5" />
+                        <span>Link Existing Project</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProjectIncomeMode('new')}
+                        className={`px-3 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                          projectIncomeMode === 'new'
+                            ? 'bg-emerald-600 text-white shadow-2xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Create New Project</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setProjectIncomeMode('direct')}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                          projectIncomeMode === 'direct'
+                            ? 'bg-slate-700 text-white shadow-2xs'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        <span>Direct Sales</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* MODE 1: EXISTING PROJECT & DUE COLLECTION */}
+                  {projectIncomeMode === 'existing' && (
+                    <div className="space-y-3 animate-in fade-in duration-150">
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="font-bold text-slate-700 text-xs">
+                            Select Existing Project / প্রজেক্ট বাছাই করুন *
+                          </label>
+                          {selectedIncomeProjectId && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedIncomeProjectId('')}
+                              className="text-[10.5px] font-bold text-rose-600 hover:underline cursor-pointer"
+                            >
+                              Clear Selection
+                            </button>
+                          )}
+                        </div>
+                        <select
+                          value={selectedIncomeProjectId}
+                          onChange={(e) => setSelectedIncomeProjectId(e.target.value)}
+                          className="w-full px-3 py-2 border border-emerald-300 rounded-xl font-medium text-xs bg-white cursor-pointer focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
+                        >
+                          <option value="">-- Choose a Project to Link / প্রজেক্ট সিলেক্ট করুন --</option>
+                          {projects.map((proj) => {
+                            const due = (proj.salesItems || []).reduce((s, si) => {
+                              const d = si.dueAmount !== undefined
+                                ? Number(si.dueAmount)
+                                : Math.max(0, Number(si.amount) - (Number(si.paidAmount) || 0));
+                              return s + d;
+                            }, 0);
+                            return (
+                              <option key={proj.id} value={proj.id}>
+                                [{proj.code}] {proj.name} — {proj.clientName} {due > 0 ? `(Due: ${profile.currencySymbol}${due.toLocaleString()})` : '(Fully Paid)'}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+
+                      {/* Selected Project Details & Due Collection Card */}
+                      {selectedIncomeProject && (
+                        <div className="p-3.5 bg-white rounded-xl border border-emerald-200/90 shadow-2xs space-y-3">
+                          <div className="flex items-center justify-between">
+                            <div className="font-extrabold text-slate-900 flex items-center gap-2">
+                              <span className="font-mono text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-bold">
+                                {selectedIncomeProject.code}
+                              </span>
+                              <span className="truncate max-w-[280px] sm:max-w-md">{selectedIncomeProject.name}</span>
+                            </div>
+                            <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+                              selectedProjectDue > 0
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            }`}>
+                              {selectedProjectDue > 0 ? `Due: ${profile.currencySymbol}${selectedProjectDue.toLocaleString()}` : 'Fully Paid'}
+                            </span>
+                          </div>
+
+                          {/* Metrics Grid */}
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 py-2 border-y border-slate-100 text-center">
+                            <div>
+                              <span className="text-[10px] text-slate-400 block font-medium">Client</span>
+                              <span className="font-bold text-slate-700 truncate block">{selectedIncomeProject.clientName}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-slate-400 block font-medium">Project Budget</span>
+                              <span className="font-bold text-slate-800">{profile.currencySymbol}{(Number(selectedIncomeProject.budget) || 0).toLocaleString()}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-slate-400 block font-medium">Total Invoiced</span>
+                              <span className="font-bold text-emerald-700">{profile.currencySymbol}{(Number(selectedIncomeProject.totalSales) || 0).toLocaleString()}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] text-rose-500 block font-bold">Outstanding Due</span>
+                              <span className="font-black text-rose-600 font-mono">
+                                {profile.currencySymbol}{selectedProjectDue.toLocaleString()}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Action Type: Collect Due vs Add New Sales Billing */}
+                          <div className="space-y-2 pt-1">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <label className="text-[11px] font-bold text-slate-700">Income Type for this Project:</label>
+                              <div className="flex items-center gap-3">
+                                <label className="flex items-center gap-1.5 text-xs font-semibold cursor-pointer text-slate-800">
+                                  <input
+                                    type="radio"
+                                    name="projectIncomeAction"
+                                    value="collect_due"
+                                    checked={projectIncomeAction === 'collect_due'}
+                                    onChange={() => setProjectIncomeAction('collect_due')}
+                                    className="text-emerald-600 focus:ring-emerald-500"
+                                  />
+                                  <span>Collect Due (বকেয়া আদায়)</span>
+                                </label>
+                                <label className="flex items-center gap-1.5 text-xs font-semibold cursor-pointer text-slate-800">
+                                  <input
+                                    type="radio"
+                                    name="projectIncomeAction"
+                                    value="new_sales"
+                                    checked={projectIncomeAction === 'new_sales'}
+                                    onChange={() => setProjectIncomeAction('new_sales')}
+                                    className="text-emerald-600 focus:ring-emerald-500"
+                                  />
+                                  <span>New Sales Billing (নতুন বিলিং)</span>
+                                </label>
+                              </div>
+                            </div>
+
+                            {projectIncomeAction === 'collect_due' ? (
+                              <div className="bg-rose-50/70 p-3 rounded-xl border border-rose-200 text-xs space-y-2">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="text-rose-900 font-semibold">
+                                    💡 বর্তমান বকেয়া: <strong className="text-rose-700 font-black">{profile.currencySymbol}{selectedProjectDue.toLocaleString()}</strong>
+                                  </span>
+                                  {selectedProjectDue > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setIncomeAmount(selectedProjectDue);
+                                        setIncomeTitle(`Project Due Collection: [${selectedIncomeProject.code}] ${selectedIncomeProject.name} (${selectedIncomeProject.clientName})`);
+                                      }}
+                                      className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[11px] font-bold transition-all shadow-2xs cursor-pointer flex items-center gap-1"
+                                    >
+                                      <span>⚡ Fill Full Due ({profile.currencySymbol}{selectedProjectDue.toLocaleString()})</span>
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="text-[11px] text-slate-600 flex items-center justify-between pt-1.5 border-t border-rose-200/60">
+                                  <span>আদায় পরবর্তী অবশিষ্ট বকেয়া:</span>
+                                  <span className="font-bold text-slate-800 font-mono">
+                                    {profile.currencySymbol}{Math.max(0, selectedProjectDue - (Number(incomeAmount) || 0)).toLocaleString()}
+                                  </span>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="bg-emerald-50/70 p-2.5 rounded-lg border border-emerald-200 text-xs">
+                                <span className="text-emerald-900 font-medium">
+                                  ✓ এই টাকাটি [{selectedIncomeProject.code}] {selectedIncomeProject.name} প্রজেক্টের নতুন বিক্রয় আয় হিসেবে যুক্ত হবে।
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* MODE 2: CREATE NEW PROJECT */}
+                  {projectIncomeMode === 'new' && (
+                    <div className="space-y-3 bg-white p-3.5 rounded-xl border border-emerald-200 shadow-2xs animate-in fade-in duration-150">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800">
+                        <Plus className="w-4 h-4 text-emerald-600" />
+                        <span>New Project Details & Initial Sales Booking</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Project Name / Title *</label>
+                          <input
+                            type="text"
+                            required
+                            value={newProjName}
+                            onChange={(e) => setNewProjName(e.target.value)}
+                            placeholder="e.g. Bashundhara Outdoor Billboard Fabrication"
+                            className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-hidden"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Client / Company Name *</label>
+                          <div className="flex gap-1.5">
+                            <input
+                              type="text"
+                              required
+                              value={newProjClientName}
+                              onChange={(e) => setNewProjClientName(e.target.value)}
+                              placeholder="e.g. BSRM Limited / Walk-in Corporate"
+                              className="flex-1 px-3 py-2 border border-slate-200 rounded-xl font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-hidden"
+                            />
+                            {customers.length > 0 && (
+                              <select
+                                value=""
+                                onChange={(e) => {
+                                  const cust = customers.find((c) => c.id === e.target.value);
+                                  if (cust) {
+                                    setNewProjClientName(cust.company || cust.name);
+                                    setNewProjClientPhone(cust.phone || '');
+                                  }
+                                }}
+                                className="px-2 py-1 border border-slate-200 rounded-xl text-slate-600 text-xs font-medium bg-slate-50 cursor-pointer"
+                                title="Pick from registered clients"
+                              >
+                                <option value="">Pick Client...</option>
+                                {customers.map((c) => (
+                                  <option key={c.id} value={c.id}>{c.company ? `${c.company} (${c.name})` : c.name}</option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Client Phone (Optional)</label>
+                          <input
+                            type="text"
+                            value={newProjClientPhone}
+                            onChange={(e) => setNewProjClientPhone(e.target.value)}
+                            placeholder="e.g. 01819-000000"
+                            className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium focus:ring-1 focus:ring-emerald-500 focus:outline-hidden"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="font-bold text-slate-700 block mb-1">Total Project Sales Contract / Budget *</label>
+                          <input
+                            type="number"
+                            min="1"
+                            required
+                            value={newProjBudget}
+                            onChange={(e) => setNewProjBudget(Number(e.target.value))}
+                            placeholder="e.g. 50000"
+                            className="w-full px-3 py-2 border border-slate-200 rounded-xl font-bold text-slate-900 focus:ring-1 focus:ring-emerald-500 focus:outline-hidden"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Calculation summary */}
+                      <div className="p-2.5 bg-emerald-50/70 rounded-lg border border-emerald-200 text-xs flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-3">
+                          <span>মোট চুক্তি মূল্য: <strong className="font-mono text-slate-900">{profile.currencySymbol}{(Number(newProjBudget) || 0).toLocaleString()}</strong></span>
+                          <span>নগদ জমা: <strong className="font-mono text-emerald-700">{profile.currencySymbol}{(Number(incomeAmount) || 0).toLocaleString()}</strong></span>
+                        </div>
+                        <div>
+                          <span className="text-rose-700 font-bold">
+                            প্রজেক্টের অবশিষ্ট বকেয়া: {profile.currencySymbol}{Math.max(0, (Number(newProjBudget) || 0) - (Number(incomeAmount) || 0)).toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* MODE 3: DIRECT SALES */}
+                  {projectIncomeMode === 'direct' && (
+                    <p className="text-[11px] text-slate-500 italic p-2 bg-white rounded-lg border border-slate-200">
+                      ℹ️ সাধারণ প্রজেক্ট সেলস হিসেবে লেজারে ইনকাম ট্রানজেকশন যুক্ত হবে (কোনো নির্দিষ্ট প্রজেক্ট ফোল্ডারে লিঙ্ক করা হবে না)।
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
               <button type="button" onClick={() => setShowIncomeModal(false)} className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50">
                 {'Cancel'}
               </button>
-              <button type="submit" className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-2xs">
-                {'Confirm Income'}
+              <button type="submit" className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-2xs transition-all flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                {isProjectIncome && projectIncomeMode === 'existing' && selectedIncomeProject
+                  ? (projectIncomeAction === 'collect_due'
+                      ? `Collect Project Due (${profile.currencySymbol}${(Number(incomeAmount) || 0).toLocaleString()})`
+                      : `Record Project Billing (${profile.currencySymbol}${(Number(incomeAmount) || 0).toLocaleString()})`)
+                  : isProjectIncome && projectIncomeMode === 'new'
+                    ? `Create Project & Record Income (${profile.currencySymbol}${(Number(incomeAmount) || 0).toLocaleString()})`
+                    : 'Confirm Income'}
               </button>
             </div>
           </form>

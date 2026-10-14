@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Project, ProjectExpenseItem, ProjectSalesItem } from '../types';
 import { FolderKanban, Plus, Search, Filter, TrendingUp, TrendingDown, DollarSign, Receipt, CheckCircle2, Clock, Briefcase, Layers, Edit2, Trash2, ChevronDown, ChevronUp, FileSpreadsheet, Printer, Calendar, User, Phone, BookOpen, PieChart, Tag, CreditCard, Wallet, Landmark, Banknote, Smartphone, History, } from 'lucide-react';
@@ -22,9 +22,28 @@ export interface ExpenseBreakdownRow {
 export const ProjectManagementModule: React.FC = () => {
     const { projects, addProject, updateProject, deleteProject, addProjectSales, collectProjectDue, addProjectExpense, addProjectExpenses, deleteProjectSales, deleteProjectExpense, syncProjectsWithAccounting, journalEntries = [], chartOfAccounts = [], expenseHeads = [], language, profile, paymentMethods = [], invoices = [], linkInvoiceToProject, unlinkInvoiceFromProject, createProjectFromInvoice, customers = [], transactions = [], accountBalances, } = useApp();
     const isBn = language === 'bn';
-    const [searchTerm, setSearchType] = useState('');
+    const [searchTerm, setSearchType] = useState(() => {
+        try {
+            const saved = sessionStorage.getItem('PROJECT_SEARCH_TERM');
+            if (saved) {
+                sessionStorage.removeItem('PROJECT_SEARCH_TERM');
+                return saved;
+            }
+        } catch {}
+        return '';
+    });
     const [statusFilter, setStatusFilter] = useState<string>('ALL');
     const [expandedProjectId, setExpandedProjectId] = useState<string | null>(null);
+
+    // Auto-expand project if matched by search term from invoice navigation
+    useEffect(() => {
+        if (searchTerm && projects && projects.length > 0) {
+            const matched = projects.find(p => p.code.toLowerCase().includes(searchTerm.toLowerCase()));
+            if (matched) {
+                setExpandedProjectId(matched.id);
+            }
+        }
+    }, [searchTerm, projects]);
     const [syncNotice, setSyncNotice] = useState<string | null>(null);
     // Modals state
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -77,7 +96,7 @@ export const ProjectManagementModule: React.FC = () => {
         });
         if (filtered.length > 0) return filtered;
         return [
-            { id: 'Cash', name: 'Cash in Hand', nameBn: 'হাতে নগদ', isEnabled: true, type: 'Cash' as const },
+            { id: 'Cash', name: 'Cash in Hand', nameBn: 'হাতে নগদ', isEnabled: true, type: 'cash' as const },
         ];
     }, [activePaymentMethods]);
     const paymentMethodOptions = useMemo(() => {
