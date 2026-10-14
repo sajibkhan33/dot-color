@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { SalesInvoice, Quotation, Customer, ProductionStatus, PRESET_INVOICE_ITEM_TYPES } from '../types';
-import { FileText, Printer, Receipt, Plus, Search, CheckCircle2, Clock, Truck, ArrowRight, DollarSign, AlertCircle, Eye, Filter, Layers, Phone, User, Calendar, FileSpreadsheet, SlidersHorizontal, RefreshCw, Edit2, Trash2, X, UserPlus, RotateCcw, AlertTriangle, Landmark, Smartphone, Banknote, CreditCard, History, ChevronRight, } from 'lucide-react';
+import { FileText, Printer, Receipt, Plus, Search, CheckCircle2, Clock, Truck, ArrowRight, DollarSign, AlertCircle, Eye, Filter, Layers, Phone, User, Calendar, FileSpreadsheet, SlidersHorizontal, RefreshCw, Edit2, Trash2, X, UserPlus, RotateCcw, AlertTriangle, Landmark, Smartphone, Banknote, CreditCard, History, ChevronRight, FolderKanban, Briefcase, } from 'lucide-react';
 import { exportSalesToExcel } from '../utils/exportUtils';
 import { ReportPrintModal } from './ReportPrintModal';
 import { CreateSalesInvoiceModal } from './CreateSalesInvoiceModal';
@@ -14,7 +14,7 @@ interface SalesModuleProps {
     onOpenChallanModal: (invoiceId: string) => void;
 }
 export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, onOpenChallanModal, }) => {
-    const { invoices, quotations, customers, products, profile, language, paymentMethods = [], chartOfAccounts = [], transactions = [], accountBalances, updateProductionStatus, updateInvoice, deleteInvoice, collectInvoicePayment, convertQuotationToInvoice, addQuotation, updateQuotation, updateQuotationStatus, deleteQuotation, addCustomer, updateCustomer, deleteCustomer, } = useApp();
+    const { invoices, quotations, customers, products, profile, language, paymentMethods = [], chartOfAccounts = [], transactions = [], accountBalances, updateProductionStatus, updateInvoice, deleteInvoice, collectInvoicePayment, convertQuotationToInvoice, addQuotation, updateQuotation, updateQuotationStatus, deleteQuotation, addCustomer, updateCustomer, deleteCustomer, projects = [], createProjectFromInvoice, } = useApp();
     const activePaymentMethods = useMemo(() => {
         const list = (paymentMethods || []).filter((p) => p.isEnabled);
         return list.length > 0 ? list : [{ id: 'pm-cash', name: 'Cash', nameBn: "Nagad", type: 'cash' as const, isEnabled: true }];
@@ -57,6 +57,58 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
         address: '',
         advanceBalance: 0,
     });
+
+    // Project Creation Against Invoice States
+    const [projectModalInvoice, setProjectModalInvoice] = useState<SalesInvoice | null>(null);
+    const [projectFormData, setProjectFormData] = useState({
+        name: '',
+        nameBn: '',
+        budget: 0,
+        status: 'In Progress' as 'In Progress' | 'Completed' | 'Planning' | 'On Hold',
+        startDate: new Date().toISOString().split('T')[0],
+        endDate: '',
+        chartOfAccountId: 'coa-4051',
+        includeSalesItem: true,
+        notes: '',
+    });
+    const [projectCreatedSuccess, setProjectCreatedSuccess] = useState<{ projectCode: string; projectName: string } | null>(null);
+
+    const availableRevenueCOAs = useMemo(() => {
+        const revs = (chartOfAccounts || []).filter(a => a.classification === 'Revenue' && a.isActive !== false);
+        if (revs.length === 0) {
+            return [
+                { id: 'coa-4051', code: '4051', name: 'Project Sales Income', nameBn: 'প্রজেক্ট সেলস ইনকাম' },
+                { id: 'coa-4010', code: '4010', name: 'Digital Printing & Flex Banner Sales', nameBn: 'ডিজিটাল প্রিন্টিং বিক্রয়' },
+            ];
+        }
+        return [...revs].sort((a, b) => {
+            if (a.code === '4051' || a.id === 'coa-4051') return -1;
+            if (b.code === '4051' || b.id === 'coa-4051') return 1;
+            return a.code.localeCompare(b.code);
+        });
+    }, [chartOfAccounts]);
+
+    const handleCreateProjectAgainstInvoice = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!projectModalInvoice || !projectFormData.name.trim()) return;
+
+        const newProj = createProjectFromInvoice(projectModalInvoice.id, {
+            name: projectFormData.name.trim(),
+            nameBn: projectFormData.nameBn.trim() || undefined,
+            budget: Number(projectFormData.budget) || 0,
+            status: projectFormData.status,
+            startDate: projectFormData.startDate,
+            endDate: projectFormData.endDate || '',
+            chartOfAccountId: projectFormData.chartOfAccountId,
+            includeAsSalesItem: projectFormData.includeSalesItem,
+            notes: projectFormData.notes,
+        });
+
+        if (newProj) {
+            setProjectCreatedSuccess({ projectCode: newProj.code, projectName: newProj.name });
+        }
+        setProjectModalInvoice(null);
+    };
     const handleUpdateEditInvoiceItemRow = (index: number, field: 'qty' | 'unitPrice', val: number) => {
         setEditInvoiceItems((prev) => prev.map((it, i) => {
             if (i !== index)
@@ -631,12 +683,29 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                       <div className="font-bold text-slate-900 text-xs sm:text-[13px]">
                         <span>{inv.invoiceNo}</span>
                       </div>
-                      <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-1">
+                      <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-1 flex-wrap">
                         <Calendar className="w-3 h-3 text-slate-400 shrink-0"/>
                         <span>{inv.date}</span>
                         {inv.warehouseLocation && (<span className="font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded text-[10px]">
                             {inv.warehouseLocation}
                           </span>)}
+                        {(() => {
+                          const linkedProject = projects.find(p => p.invoiceId === inv.id || p.invoiceNo === inv.invoiceNo || (inv.projectId && p.id === inv.projectId));
+                          if (linkedProject || inv.projectId || inv.projectCode) {
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'projects' }))}
+                                className="inline-flex items-center gap-1 font-bold text-amber-800 bg-amber-50 hover:bg-amber-100 px-1.5 py-0.5 rounded text-[9.5px] border border-amber-200 cursor-pointer transition-colors"
+                                title="Linked Project (Unified COA) - Click to view in Projects tab"
+                              >
+                                <FolderKanban className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                                <span className="font-mono">{linkedProject?.code || inv.projectCode}</span>
+                              </button>
+                            );
+                          }
+                          return null;
+                        })()}
                       </div>
                     </td>
 
@@ -780,6 +849,51 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                         <button type="button" onClick={() => onOpenChallanModal(inv.id)} className="w-6.5 h-6.5 p-1 flex items-center justify-center text-slate-700 hover:text-blue-600 hover:bg-blue-50 rounded-md border border-slate-200 transition-colors cursor-pointer" title="Generate Delivery Challan">
                           <Truck className="w-3 h-3"/>
                         </button>
+
+                        {/* Create Project / View Linked Project (Unified COA) */}
+                        {(() => {
+                          const linkedProject = projects.find(p => p.invoiceId === inv.id || p.invoiceNo === inv.invoiceNo || (inv.projectId && p.id === inv.projectId));
+                          if (linkedProject || inv.projectId || inv.projectCode) {
+                            const pCode = linkedProject?.code || inv.projectCode || 'PRJ';
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'projects' }));
+                                }}
+                                className="h-6.5 px-1.5 py-0.5 text-amber-900 bg-amber-100 hover:bg-amber-200/90 rounded-md border border-amber-300 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                                title={`Linked to Project ${pCode} (Unified COA) - Click to view in Projects tab`}
+                              >
+                                <FolderKanban className="w-3 h-3 text-amber-700" />
+                                <span className="font-mono text-[9px]">{pCode}</span>
+                              </button>
+                            );
+                          }
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setProjectModalInvoice(inv);
+                                const defaultProjectName = `${inv.customerName} - ${(inv.items || []).map(i => i.name).join(', ') || 'Signboard Project'}`;
+                                setProjectFormData({
+                                  name: defaultProjectName,
+                                  nameBn: '',
+                                  budget: inv.grandTotal,
+                                  status: 'In Progress',
+                                  startDate: inv.date || new Date().toISOString().split('T')[0],
+                                  endDate: '',
+                                  chartOfAccountId: inv.chartOfAccountId || 'coa-4051',
+                                  includeSalesItem: true,
+                                  notes: `Created against Invoice #${inv.invoiceNo}`,
+                                });
+                              }}
+                              className="w-6.5 h-6.5 p-1 flex items-center justify-center text-amber-700 hover:text-amber-900 bg-amber-50 hover:bg-amber-100 rounded-md border border-amber-300 transition-colors cursor-pointer shadow-2xs"
+                              title="Create Project Against Invoice (Unified COA) / প্রজেক্ট তৈরি করুন"
+                            >
+                              <FolderKanban className="w-3 h-3" />
+                            </button>
+                          );
+                        })()}
 
                         {/* Delete Invoice */}
                         <button type="button" onClick={() => setInvoiceToDelete(inv)} className="w-6.5 h-6.5 p-1 flex items-center justify-center text-slate-700 hover:text-rose-600 hover:bg-rose-50 rounded-md border border-slate-200 transition-colors cursor-pointer" title="Delete Invoice">
@@ -2549,6 +2663,257 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
             </div>
           </div>
         </div>)}
+
+      {/* CREATE PROJECT AGAINST INVOICE MODAL (WITH UNIFIED COA) */}
+      {projectModalInvoice && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <form
+            onSubmit={handleCreateProjectAgainstInvoice}
+            className="bg-white rounded-2xl max-w-xl w-full p-5 sm:p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150 space-y-4 my-8"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-100 flex items-center justify-center text-amber-700">
+                  <FolderKanban className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm sm:text-base">
+                    {'Create Project Against Invoice'}
+                  </h3>
+                  <div className="text-[11px] font-medium text-slate-500">
+                    ইনভয়েস <span className="font-bold text-amber-700 font-mono">#{projectModalInvoice.invoiceNo}</span> এর সাথে একীভূত (Unified COA) প্রজেক্ট
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setProjectModalInvoice(null)}
+                className="text-slate-400 hover:text-slate-700 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Invoice Summary Card */}
+            <div className="p-3 bg-amber-50/60 rounded-xl border border-amber-200/80 text-xs space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-slate-500 text-[11px]">Customer & Company:</span>
+                  <div className="font-bold text-slate-900 text-xs sm:text-[13px]">{projectModalInvoice.customerName}</div>
+                </div>
+                <div className="text-right">
+                  <span className="text-slate-500 text-[11px]">Invoice Total:</span>
+                  <div className="font-black text-slate-900 text-sm">
+                    {profile.currencySymbol}{projectModalInvoice.grandTotal.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-slate-600 pt-1 border-t border-amber-200/60">
+                <span className="truncate max-w-[280px]">
+                  <strong>Items:</strong> {(projectModalInvoice.items || []).map(i => `${i.name} (x${i.qty})`).join(', ')}
+                </span>
+                <span className={projectModalInvoice.dueAmount > 0 ? "text-rose-600 font-bold" : "text-emerald-700 font-bold"}>
+                  {projectModalInvoice.dueAmount > 0 ? `Due: ${profile.currencySymbol}${projectModalInvoice.dueAmount.toLocaleString()}` : 'Fully Paid'}
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Project Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={projectFormData.name}
+                  onChange={(e) => setProjectFormData({ ...projectFormData, name: e.target.value })}
+                  placeholder="e.g. BSRM Steel Ltd - Dealer New Signboard"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:border-amber-500 focus:outline-hidden font-medium"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Project Budget ({profile.currencySymbol}) *
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    required
+                    value={projectFormData.budget}
+                    onChange={(e) => setProjectFormData({ ...projectFormData, budget: Number(e.target.value) })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl font-bold text-slate-900 focus:border-amber-500 focus:outline-hidden"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Status
+                  </label>
+                  <select
+                    value={projectFormData.status}
+                    onChange={(e) => setProjectFormData({ ...projectFormData, status: e.target.value as any })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl font-bold text-slate-700 bg-white"
+                  >
+                    <option value="In Progress">In Progress (চলমান)</option>
+                    <option value="Planning">Planning (পরিকল্পনা)</option>
+                    <option value="Completed">Completed (সম্পন্ন)</option>
+                    <option value="On Hold">On Hold (স্থগিত)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    Start Date
+                  </label>
+                  <input
+                    type="date"
+                    value={projectFormData.startDate}
+                    onChange={(e) => setProjectFormData({ ...projectFormData, startDate: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    End Date (Optional)
+                  </label>
+                  <input
+                    type="date"
+                    value={projectFormData.endDate}
+                    onChange={(e) => setProjectFormData({ ...projectFormData, endDate: e.target.value })}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                  />
+                </div>
+              </div>
+
+              {/* UNIFIED CHART OF ACCOUNTS (COA) SELECTOR */}
+              <div className="p-3.5 bg-gradient-to-br from-indigo-50/70 to-blue-50/50 rounded-xl border border-indigo-200 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Landmark className="w-4 h-4 text-indigo-700 shrink-0" />
+                  <label className="font-extrabold text-indigo-950 text-xs">
+                    Unified Chart of Accounts Head (একীভূত COA) *
+                  </label>
+                  <span className="text-[10px] font-bold px-1.5 py-0.2 bg-indigo-100 text-indigo-800 rounded">
+                    COA হবে একটাই
+                  </span>
+                </div>
+                <select
+                  value={projectFormData.chartOfAccountId}
+                  onChange={(e) => setProjectFormData({ ...projectFormData, chartOfAccountId: e.target.value })}
+                  className="w-full px-3 py-2 bg-white border border-indigo-300 rounded-xl font-bold text-indigo-900 text-xs focus:outline-hidden cursor-pointer"
+                >
+                  {availableRevenueCOAs.map(coa => (
+                    <option key={coa.id} value={coa.id}>
+                      {coa.code} - {coa.name} {coa.nameBn ? `(${coa.nameBn})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-indigo-900/80 leading-relaxed">
+                  ✓ এই প্রজেক্ট এবং সেলস ইনভয়েস <strong>একই চার্ট অব অ্যাকাউন্টস (COA)</strong> হেডে যুক্ত থাকবে। কোনো আলাদা বা ডাবল এন্ট্রি হবে না।
+                </p>
+              </div>
+
+              {/* Sync sales item checkbox */}
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200 cursor-pointer hover:bg-slate-100/70 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={projectFormData.includeSalesItem}
+                  onChange={(e) => setProjectFormData({ ...projectFormData, includeSalesItem: e.target.checked })}
+                  className="mt-0.5 rounded text-amber-600 focus:ring-amber-500 w-4 h-4 cursor-pointer"
+                />
+                <div className="text-xs">
+                  <span className="font-bold text-slate-800 block">
+                    ইনভয়েসের মূল্য ({profile.currencySymbol}{projectModalInvoice.grandTotal.toLocaleString()}) প্রজেক্ট সেলস ইনকাম হিসেবে যোগ করুন
+                  </span>
+                  <span className="text-[11px] text-slate-500">
+                    প্রজেক্টের প্রফিটেবিলিটি স্টেটমেন্টে এই ইনভয়েসের সেলস ও পেমেন্ট হিস্ট্রি সরাসরি যুক্ত হবে।
+                  </span>
+                </div>
+              </label>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  Notes / Specification
+                </label>
+                <textarea
+                  rows={2}
+                  value={projectFormData.notes}
+                  onChange={(e) => setProjectFormData({ ...projectFormData, notes: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs"
+                  placeholder="Optional internal remarks..."
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setProjectModalInvoice(null)}
+                className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold shadow-md cursor-pointer flex items-center gap-1.5 transition-all"
+              >
+                <FolderKanban className="w-3.5 h-3.5" />
+                <span>Create Project & Link COA</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* PROJECT CREATED SUCCESS MODAL */}
+      {projectCreatedSuccess && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 text-center space-y-4 animate-in fade-in zoom-in duration-200">
+            <div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center mx-auto text-emerald-600">
+              <CheckCircle2 className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-bold text-slate-900 text-base">
+                Project Created Successfully!
+              </h3>
+              <p className="text-xs text-slate-600 mt-1 font-mono font-bold text-amber-700">
+                {projectCreatedSuccess.projectCode}
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                {projectCreatedSuccess.projectName}
+              </p>
+              <div className="mt-2 p-2 bg-emerald-50 rounded-lg border border-emerald-200 text-[11px] text-emerald-800 font-semibold">
+                ✓ চার্ট অব অ্যাকাউন্টস (COA) একীভূতভাবে সিঙ্ক সম্পন্ন হয়েছে।
+              </div>
+            </div>
+            <div className="flex justify-center gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setProjectCreatedSuccess(null)}
+                className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setProjectCreatedSuccess(null);
+                  window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'projects' }));
+                }}
+                className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold shadow-md cursor-pointer flex items-center gap-1"
+              >
+                <span>Go to Projects</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {invoiceToDelete && (<div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 text-center space-y-4 animate-in fade-in zoom-in duration-200">

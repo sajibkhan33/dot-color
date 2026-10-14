@@ -531,6 +531,45 @@ export const isAdvanceDepositTransaction = (tx: Partial<AccountingTransaction>):
 };
 
 /**
+ * Checks whether an accounting transaction is a project due collection
+ * (cash/bank receipt settling an existing project receivable, NOT new project sales revenue).
+ */
+export const isProjectDueCollectionTransaction = (tx: Partial<AccountingTransaction>): boolean => {
+    if (!tx) return false;
+    const cat = (tx.category || '').toLowerCase();
+    const desc = (tx.description || '').toLowerCase();
+    return (
+        cat.includes('project due collection') ||
+        cat.includes('project due') ||
+        desc.includes('project due collected') ||
+        desc.includes('project due collection')
+    );
+};
+
+/**
+ * Checks whether an accounting transaction is an unpaid credit / due receivable booking.
+ * These transactions represent unpaid credit billings, NOT cash inflows in the financial ledger.
+ */
+export const isDueReceivableTransaction = (tx: Partial<AccountingTransaction>): boolean => {
+    if (!tx) return false;
+    const cat = (tx.category || '').toLowerCase();
+    const desc = (tx.description || '').toLowerCase();
+    const acc = (tx.paymentAccount || tx.account || tx.accountHead || '').toLowerCase();
+    const method = (tx.paymentMethod || '').toLowerCase();
+    return (
+        method === 'due' ||
+        method.includes('receivable') ||
+        acc === 'accounts receivable' ||
+        acc.includes('accounts receivable') ||
+        acc.includes('প্রাপ্য হিসাব') ||
+        desc.endsWith('(due)') ||
+        desc.includes('(due)') ||
+        desc.includes(' (due)')
+    );
+};
+
+
+/**
  * Checks whether an invoice belongs to a specific customer record (matches by id, phone, or name/company)
  */
 export const isInvoiceMatchingCustomer = (inv: Partial<SalesInvoice>, c: any): boolean => {

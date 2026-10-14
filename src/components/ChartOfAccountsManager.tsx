@@ -1,9 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { ChartOfAccount } from '../types';
+import { ChartOfAccount, SalesInvoice } from '../types';
 import { BookOpen, Plus, Search, Filter, Edit2, Trash2, Lock, CheckCircle2, AlertCircle, X, FileText, Printer, Layers, ArrowUpDown, Download, Upload, } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { calculateSingleAccountBalance, calculateTotalSupplierPayables, calculateInventoryValuation, isInvoiceTransaction, isProjectTransaction, isAdvanceAdjustmentTransaction, isAdvanceDepositTransaction } from '../utils/accountUtils';
+import { calculateSingleAccountBalance, calculateTotalSupplierPayables, calculateInventoryValuation, isInvoiceTransaction, isProjectTransaction, isAdvanceAdjustmentTransaction, isAdvanceDepositTransaction, isProjectDueCollectionTransaction, isDueReceivableTransaction } from '../utils/accountUtils';
 export const ChartOfAccountsManager: React.FC = () => {
     const { chartOfAccounts, invoices = [], transactions = [], accountBalances, suppliers = [], customers = [], purchaseOrders = [], products = [], journalEntries = [], language, profile, addChartOfAccount, updateChartOfAccount, deleteChartOfAccount, checkPermission, projects = [], syncProjectsWithAccounting } = useApp();
     const [searchQuery, setSearchQuery] = useState('');
@@ -37,6 +37,24 @@ export const ChartOfAccountsManager: React.FC = () => {
         const totalCustomerAdvance = (customers || []).reduce((s, c) => s + (Number(c.advanceBalance) || 0), 0);
         const totalProjectSales = (projects || []).reduce((s, p) => s + (p.totalSales || 0), 0);
         const totalProjectExpenses = (projects || []).reduce((s, p) => s + (p.totalExpenses || 0), 0);
+
+        const projectLinkedInvoiceIds = new Set(
+            (projects || []).map(p => p.invoiceId).filter(Boolean) as string[]
+        );
+        const projectLinkedInvoiceNos = new Set(
+            (projects || []).map(p => p.invoiceNo).filter(Boolean) as string[]
+        );
+        const isInvLinkedToProject = (inv: SalesInvoice) => {
+            return Boolean(
+                inv.projectId ||
+                inv.projectCode ||
+                projectLinkedInvoiceIds.has(inv.id) ||
+                projectLinkedInvoiceNos.has(inv.invoiceNo)
+            );
+        };
+
+        const nonProjectInvoices = (invoices || []).filter(inv => !isInvLinkedToProject(inv));
+        const totalNonProjectInvoiceSales = nonProjectInvoices.reduce((s, inv) => s + (Number(inv.grandTotal) || (Number(inv.paidAmount) + Number(inv.dueAmount)) || 0), 0);
         const totalInvoiceSales = (invoices || []).reduce((s, inv) => s + (Number(inv.grandTotal) || (Number(inv.paidAmount) + Number(inv.dueAmount)) || 0), 0);
 
         // Dynamic detection of primary advance liability account (e.g. 2020 or 2002 Customer Advance)
@@ -170,18 +188,33 @@ export const ChartOfAccountsManager: React.FC = () => {
                     ((nameBn.includes('বিক্রয়') || nameBn.includes('বিক্রয়')) && !nameBn.includes('প্রজেক্ট'))
                 );
 
-                if (isProjectRev) {
-                    const projectMatching = (transactions || [])
-                        .filter(t => t.type === 'INCOME' && isProjectTransaction(t))
-                        .reduce((s, t) => s + t.amount, 0);
-                    liveBal = (acc.openingBalance || 0) + Math.max(projectMatching, totalProjectSales);
+                // Matching projects for this COA head
+                const matchingProjects = (projects || []).filter(p => 
+                    p.chartOfAccountId === acc.id || 
+                    (isProjectRev && (!p.chartOfAccountId || p.chartOfAccountId === 'coa-4051' || p.chartOfAccountId === 'coa-4002' || p.chartOfAccountId === acc.id))
+                );
+                const matchingProjectSales = matchingProjects.reduce((s, p) => s + (p.totalSales || 0), 0);
+
+                if (isProjectRev || matchingProjects.length > 0) {
+                    // Standalone project revenue transactions that are NOT due collections, NOT unpaid receivable due bookings, and NOT already part of matchingProjects
+                    const standaloneProjectRevenue = (transactions || [])
+                        .filter(t => 
+                            t.type === 'INCOME' && 
+                            !isProjectDueCollectionTransaction(t) && 
+                            !isDueReceivableTransaction(t) && 
+                            !isAdvanceAdjustmentTransaction(t) && 
+                            (t.accountHead === acc.name || (t.category && t.category.toLowerCase().includes('project revenue'))) && 
+                            !matchingProjects.some(p => (p.code && t.refNo && p.code.toLowerCase() === t.refNo.toLowerCase()) || (t.description && p.code && t.description.toLowerCase().includes(p.code.toLowerCase())))
+                        )
+                        .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+
+                    liveBal = (acc.openingBalance || 0) + matchingProjectSales + standaloneProjectRevenue;
                 } else if (isSalesRev) {
-                    // Invoice payments are already counted in totalInvoiceSales (accrual basis).
-                    // We also include invoiceSalesFromTx as fallback if invoices array is empty.
+                    // Non-project invoice sales
                     const invoiceSalesFromTx = (transactions || [])
-                        .filter(t => t.type === 'INCOME' && isInvoiceTransaction(t))
+                        .filter(t => t.type === 'INCOME' && isInvoiceTransaction(t) && !projectLinkedInvoiceNos.has(t.refNo || ''))
                         .reduce((s, t) => s + t.amount, 0);
-                    const effectiveInvoiceSales = Math.max(totalInvoiceSales, invoiceSalesFromTx);
+                    const effectiveInvoiceSales = Math.max(totalNonProjectInvoiceSales, invoiceSalesFromTx);
 
                     // Direct non-invoice operating incomes (e.g. scrap sales, counter direct sales, INC- vouchers)
                     const directMatchingSales = (transactions || [])

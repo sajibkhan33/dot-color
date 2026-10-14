@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { AccountingTransaction, ChartOfAccount, Language, CompanyProfile, } from '../../types';
 import { BookOpen, Calendar, Layers, Search, ArrowDownLeft, ArrowUpRight, Wallet, Building, FolderKanban, TrendingUp, TrendingDown, } from 'lucide-react';
-import { isAdvanceAdjustmentTransaction } from '../../utils/accountUtils';
+import { isAdvanceAdjustmentTransaction, isDueReceivableTransaction } from '../../utils/accountUtils';
 interface FinancialReportsProps {
     reportId: string;
     transactions: AccountingTransaction[];
@@ -80,7 +80,7 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({ reportId, tr
         const dailyTx = (transactions || [])
             .filter((tx) => (tx.date || '').startsWith(selectedDate))
             .sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime());
-        const inflows = dailyTx.filter((t) => (t.type === 'CREDIT' || t.type === 'INCOME') && !isAdvanceAdjustmentTransaction(t));
+        const inflows = dailyTx.filter((t) => (t.type === 'CREDIT' || t.type === 'INCOME') && !isAdvanceAdjustmentTransaction(t) && !isDueReceivableTransaction(t));
         const outflows = dailyTx.filter((t) => t.type === 'DEBIT' || t.type === 'EXPENSE');
         const totalInflow = inflows.reduce((s, t) => s + (t.amount || 0), 0);
         const totalOutflow = outflows.reduce((s, t) => s + (t.amount || 0), 0);
@@ -112,7 +112,7 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({ reportId, tr
         (transactions || []).forEach((tx) => {
             if (!tx)
                 return;
-            if (tx.type === 'CREDIT' || tx.type === 'INCOME') {
+            if ((tx.type === 'CREDIT' || tx.type === 'INCOME') && !isAdvanceAdjustmentTransaction(tx) && !isDueReceivableTransaction(tx)) {
                 const head = tx.accountHead || 'Sales Revenue';
                 receiptsMap.set(head, (receiptsMap.get(head) || 0) + (tx.amount || 0));
             }

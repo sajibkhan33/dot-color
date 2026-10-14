@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { Project, ProjectExpenseItem, ProjectSalesItem } from '../types';
-import { FolderKanban, Plus, Search, Filter, TrendingUp, TrendingDown, DollarSign, Receipt, CheckCircle2, Clock, Briefcase, Layers, Edit2, Trash2, ChevronDown, ChevronUp, FileSpreadsheet, Printer, Calendar, User, Phone, BookOpen, PieChart, Tag, CreditCard, Wallet, } from 'lucide-react';
+import { FolderKanban, Plus, Search, Filter, TrendingUp, TrendingDown, DollarSign, Receipt, CheckCircle2, Clock, Briefcase, Layers, Edit2, Trash2, ChevronDown, ChevronUp, FileSpreadsheet, Printer, Calendar, User, Phone, BookOpen, PieChart, Tag, CreditCard, Wallet, Landmark, } from 'lucide-react';
 export interface SalesPaymentRow {
     id: string;
     method: string;
@@ -19,7 +19,7 @@ export interface ExpenseBreakdownRow {
     paymentMethod?: string;
 }
 export const ProjectManagementModule: React.FC = () => {
-    const { projects, addProject, updateProject, deleteProject, addProjectSales, addProjectExpense, addProjectExpenses, deleteProjectSales, deleteProjectExpense, syncProjectsWithAccounting, journalEntries = [], chartOfAccounts = [], expenseHeads = [], language, profile, paymentMethods = [], } = useApp();
+    const { projects, addProject, updateProject, deleteProject, addProjectSales, collectProjectDue, addProjectExpense, addProjectExpenses, deleteProjectSales, deleteProjectExpense, syncProjectsWithAccounting, journalEntries = [], chartOfAccounts = [], expenseHeads = [], language, profile, paymentMethods = [], invoices = [], linkInvoiceToProject, unlinkInvoiceFromProject, createProjectFromInvoice, } = useApp();
     const isBn = language === 'bn';
     const [searchTerm, setSearchType] = useState('');
     const [statusFilter, setStatusFilter] = useState<string>('ALL');
@@ -29,8 +29,26 @@ export const ProjectManagementModule: React.FC = () => {
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [showSalesModal, setShowSalesModal] = useState<string | null>(null); // projectId
     const [showExpenseModal, setShowExpenseModal] = useState<string | null>(null); // projectId
+    const [collectingDueSale, setCollectingDueSale] = useState<{
+        project: Project;
+        sale: ProjectSalesItem;
+        dueAmount: number;
+    } | null>(null);
+    const [collectDueForm, setCollectDueForm] = useState({
+        amount: '' as number | '',
+        paymentMethod: 'Cash in Hand',
+        date: new Date().toISOString().split('T')[0],
+        referenceNo: '',
+        note: '',
+    });
     const [editingProject, setEditingProject] = useState<Project | null>(null);
     const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
+    const [linkingProject, setLinkingProject] = useState<Project | null>(null);
+    const [linkInvoiceForm, setLinkInvoiceForm] = useState({
+        invoiceId: '',
+        chartOfAccountId: 'coa-4051',
+        syncSalesItem: true,
+    });
     // New Project Form State
     const [newProject, setNewProject] = useState({
         name: '',
@@ -42,6 +60,9 @@ export const ProjectManagementModule: React.FC = () => {
         startDate: new Date().toISOString().split('T')[0],
         endDate: '',
         notes: '',
+        invoiceId: '',
+        chartOfAccountId: 'coa-4051',
+        includeSalesItem: true,
     });
     // Dynamic Payment method options for sales breakdown
     const activePaymentMethods = useMemo(() => {
@@ -135,7 +156,40 @@ export const ProjectManagementModule: React.FC = () => {
         return list;
     }, [chartOfAccounts]);
 
+    const collectPaymentAccounts = useMemo(() => {
+        const accounts: string[] = [];
+        availablePaymentAccounts.forEach(a => {
+            if (!accounts.includes(a.name) && !a.name.toLowerCase().includes('due') && !a.name.toLowerCase().includes('receivable')) {
+                accounts.push(a.name);
+            }
+        });
+        (activePaymentMethods || []).forEach(pm => {
+            if (!accounts.includes(pm.name) && !pm.name.toLowerCase().includes('due') && !pm.name.toLowerCase().includes('receivable')) {
+                accounts.push(pm.name);
+            }
+        });
+        if (accounts.length === 0) {
+            accounts.push('Cash in Hand', 'City Bank PLC', 'Southeast Bank', 'Nagad', 'bKash');
+        }
+        return accounts;
+    }, [availablePaymentAccounts, activePaymentMethods]);
 
+
+
+    const availableRevenueAccounts = useMemo(() => {
+        const revs = (chartOfAccounts || []).filter(a => a.classification === 'Revenue' && a.isActive !== false);
+        if (revs.length === 0) {
+            return [
+                { id: 'coa-4051', code: '4051', name: 'Project Sales Income', nameBn: 'প্রজেক্ট সেলস ইনকাম' },
+                { id: 'coa-4010', code: '4010', name: 'Digital Printing & Flex Banner Sales', nameBn: 'ডিজিটাল প্রিন্টিং বিক্রয়' },
+            ];
+        }
+        return [...revs].sort((a, b) => {
+            if (a.code === '4051' || a.id === 'coa-4051') return -1;
+            if (b.code === '4051' || b.id === 'coa-4051') return 1;
+            return a.code.localeCompare(b.code);
+        });
+    }, [chartOfAccounts]);
 
     const projectRevAcc = useMemo(() => {
         return chartOfAccounts.find(a => a.classification === 'Revenue' && (a.code === '4002' || a.code === '4051' || a.id === 'coa-4002' || a.id === 'coa-4051' || a.name.toLowerCase().includes('project') || a.code === '4060')) || { code: '4002', name: 'Project Sales', id: 'coa-4002' };
@@ -193,6 +247,8 @@ export const ProjectManagementModule: React.FC = () => {
         const totalProjects = projects.length;
         const totalBudget = projects.reduce((sum, p) => sum + (Number(p.budget) || 0), 0);
         const totalSales = projects.reduce((sum, p) => sum + (p.totalSales || 0), 0);
+        const totalCollected = projects.reduce((sum, p) => sum + (p.totalCollected || 0), 0);
+        const totalDue = projects.reduce((sum, p) => sum + (p.totalDue || 0), 0);
         const totalExpenses = projects.reduce((sum, p) => sum + (p.totalExpenses || 0), 0);
         const totalNetProfit = totalSales - totalExpenses;
         const overallMargin = totalSales > 0 ? (totalNetProfit / totalSales) * 100 : 0;
@@ -200,6 +256,8 @@ export const ProjectManagementModule: React.FC = () => {
             totalProjects,
             totalBudget,
             totalSales,
+            totalCollected,
+            totalDue,
             totalExpenses,
             totalNetProfit,
             overallMargin,
@@ -237,8 +295,23 @@ export const ProjectManagementModule: React.FC = () => {
                 startDate: newProject.startDate,
                 endDate: newProject.endDate,
                 notes: newProject.notes,
+                chartOfAccountId: newProject.chartOfAccountId,
             });
             setEditingProject(null);
+        }
+        else if (newProject.invoiceId) {
+            createProjectFromInvoice(newProject.invoiceId, {
+                name: newProject.name,
+                nameBn: newProject.nameBn,
+                budget: Number(newProject.budget),
+                status: newProject.status,
+                startDate: newProject.startDate,
+                endDate: newProject.endDate,
+                notes: newProject.notes,
+                chartOfAccountId: newProject.chartOfAccountId,
+                includeAsSalesItem: newProject.includeSalesItem,
+            });
+            setSyncNotice(`Project created against invoice with unified Chart of Accounts.`);
         }
         else {
             addProject({
@@ -251,6 +324,7 @@ export const ProjectManagementModule: React.FC = () => {
                 startDate: newProject.startDate,
                 endDate: newProject.endDate,
                 notes: newProject.notes,
+                chartOfAccountId: newProject.chartOfAccountId,
                 salesItems: [],
                 expenseItems: [],
             });
@@ -266,7 +340,18 @@ export const ProjectManagementModule: React.FC = () => {
             startDate: new Date().toISOString().split('T')[0],
             endDate: '',
             notes: '',
+            invoiceId: '',
+            chartOfAccountId: 'coa-4051',
+            includeSalesItem: true,
         });
+    };
+
+    const handleLinkInvoiceSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!linkingProject || !linkInvoiceForm.invoiceId) return;
+        linkInvoiceToProject(linkingProject.id, linkInvoiceForm.invoiceId, linkInvoiceForm.chartOfAccountId, linkInvoiceForm.syncSalesItem);
+        setSyncNotice(`Linked sales invoice to project [${linkingProject.code}] with unified COA.`);
+        setLinkingProject(null);
     };
     const handleAddPaymentRow = () => {
         const newId = `pay-${Date.now()}-${salesForm.paymentRows.length + 1}`;
@@ -321,6 +406,37 @@ export const ProjectManagementModule: React.FC = () => {
         });
         setShowSalesModal(null);
     };
+
+    const handleOpenCollectDue = (project: Project, sale: ProjectSalesItem, dueAmount: number) => {
+        setCollectingDueSale({ project, sale, dueAmount });
+        setCollectDueForm({
+            amount: dueAmount,
+            paymentMethod: collectPaymentAccounts[0] || 'Cash in Hand',
+            date: new Date().toISOString().split('T')[0],
+            referenceNo: '',
+            note: '',
+        });
+    };
+
+    const handleConfirmCollectDue = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!collectingDueSale) return;
+        const amt = Number(collectDueForm.amount) || 0;
+        if (amt <= 0) return;
+
+        collectProjectDue(
+            collectingDueSale.project.id,
+            collectingDueSale.sale.id,
+            amt,
+            collectDueForm.paymentMethod,
+            collectDueForm.date,
+            collectDueForm.note,
+            collectDueForm.referenceNo
+        );
+
+        setCollectingDueSale(null);
+    };
+
     const handleAddExpenseRow = () => {
         const newId = `exp-${Date.now()}-${expenseRows.length + 1}`;
         setExpenseRows((prev) => [
@@ -389,6 +505,9 @@ export const ProjectManagementModule: React.FC = () => {
             startDate: p.startDate,
             endDate: p.endDate || '',
             notes: p.notes || '',
+            invoiceId: p.invoiceId || '',
+            chartOfAccountId: p.chartOfAccountId || 'coa-4051',
+            includeSalesItem: false,
         });
         setShowCreateModal(true);
     };
@@ -434,6 +553,9 @@ export const ProjectManagementModule: React.FC = () => {
                 startDate: new Date().toISOString().split('T')[0],
                 endDate: '',
                 notes: '',
+                invoiceId: '',
+                chartOfAccountId: 'coa-4051',
+                includeSalesItem: true,
             });
             setShowCreateModal(true);
         }} className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-sm transition-all cursor-pointer">
@@ -487,9 +609,16 @@ export const ProjectManagementModule: React.FC = () => {
                 {profile.currencySymbol}
                 {metrics.totalSales.toLocaleString()}
               </h3>
-              <p className="text-[11px] text-slate-500 mt-1">
-                {'All Billed Sales'}
-              </p>
+              <div className="flex flex-wrap gap-1 mt-1 text-[10px]">
+                <span className="font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100">
+                  Paid: {profile.currencySymbol}{metrics.totalCollected.toLocaleString()}
+                </span>
+                {metrics.totalDue > 0 && (
+                  <span className="font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                    Due: {profile.currencySymbol}{metrics.totalDue.toLocaleString()}
+                  </span>
+                )}
+              </div>
             </div>
             <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center text-emerald-600 border border-emerald-100">
               <TrendingUp className="w-5 h-5"/>
@@ -625,14 +754,29 @@ export const ProjectManagementModule: React.FC = () => {
                         {isBn && project.statusBn ? project.statusBn : project.status}
                       </span>
 
-                      {/* Mark 1 & 2: Project Code & COA Badges (Hidden first, shown on hover or click) */}
+                      {/* Mark 1 & 2: Project Code, Invoice & Unified COA Badges */}
                       <div className={`items-center gap-1.5 shrink-0 transition-all duration-200 ${isExpanded ? 'flex' : 'hidden group-hover:flex'}`}>
                         <span className="font-mono text-[10px] font-bold text-slate-600 bg-slate-200/80 px-1.5 py-0.5 rounded-md shrink-0">
                           {project.code}
                         </span>
-                        <span className="font-mono text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md shrink-0" title={`Linked to Chart of Accounts Revenue Account #${projectRevAcc.code}`}>
-                          COA: [{projectRevAcc.code}] {projectRevAcc.name}
-                        </span>
+                        {project.invoiceNo && (
+                          <span className="font-mono text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded-md shrink-0 flex items-center gap-1" title={`Linked to Sales Invoice #${project.invoiceNo}`}>
+                            <Receipt className="w-3 h-3 text-indigo-500" />
+                            Inv: #{project.invoiceNo}
+                          </span>
+                        )}
+                        {(() => {
+                          const coa = project.chartOfAccountId
+                            ? chartOfAccounts.find(a => a.id === project.chartOfAccountId)
+                            : projectRevAcc;
+                          const code = coa?.code || '4051';
+                          const name = coa?.name || 'Project Sales Income';
+                          return (
+                            <span className="font-mono text-[10px] font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-md shrink-0" title={`Unified Chart of Accounts Revenue Account #${code} (${name})`}>
+                              COA: [{code}] {name}
+                            </span>
+                          );
+                        })()}
                       </div>
                     </div>
 
@@ -683,6 +827,11 @@ export const ProjectManagementModule: React.FC = () => {
                           {profile.currencySymbol}
                           {project.totalSales.toLocaleString()}
                         </p>
+                        {(project.totalDue || 0) > 0 && (
+                          <p className="text-[9px] font-extrabold text-amber-600 mt-0.5 leading-none">
+                            Due: {profile.currencySymbol}{(project.totalDue || 0).toLocaleString()}
+                          </p>
+                        )}
                       </div>
 
                       <div className="h-6 w-px bg-slate-200"/>
@@ -723,6 +872,39 @@ export const ProjectManagementModule: React.FC = () => {
 
                     {/* Action buttons */}
                     <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                      {!project.invoiceId ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setLinkingProject(project);
+                            setLinkInvoiceForm({
+                              invoiceId: '',
+                              chartOfAccountId: project.chartOfAccountId || 'coa-4051',
+                              syncSalesItem: project.totalSales === 0,
+                            });
+                          }}
+                          className="px-2 py-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors cursor-pointer flex items-center gap-1"
+                          title="Link this project to a Sales Invoice & unify COA"
+                        >
+                          <Receipt className="w-3 h-3 text-indigo-600" />
+                          <span>+ Link Invoice</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm(`Unlink Sales Invoice #${project.invoiceNo} from this project?`)) {
+                              unlinkInvoiceFromProject(project.id);
+                            }
+                          }}
+                          className="px-2 py-1 text-[10px] font-bold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors cursor-pointer flex items-center gap-1"
+                          title={`Linked to Sales Invoice #${project.invoiceNo} (Click to unlink)`}
+                        >
+                          <Receipt className="w-3 h-3 text-indigo-600" />
+                          <span>#{project.invoiceNo}</span>
+                        </button>
+                      )}
+
                       <button type="button" onClick={() => {
                     setShowSalesModal(project.id);
                     setSalesForm({
@@ -885,34 +1067,87 @@ export const ProjectManagementModule: React.FC = () => {
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
-                                {project.salesItems.map((sales) => (<tr key={sales.id} className="hover:bg-slate-50">
-                                    <td className="py-2">
-                                      <div className="font-semibold text-slate-800">{sales.description}</div>
-                                      <div className="text-[10px] text-slate-400">
-                                        {sales.date} {sales.invoiceNo ? `• ${sales.invoiceNo}` : ''}
-                                      </div>
-                                      {sales.paymentBreakdown && sales.paymentBreakdown.length > 0 ? (<div className="flex flex-wrap gap-1 mt-1">
-                                          {sales.paymentBreakdown.map((pb, pidx) => (<span key={pidx} className="inline-flex items-center gap-1 text-[10px] bg-emerald-50 text-emerald-800 font-bold px-1.5 py-0.5 rounded border border-emerald-200">
-                                              <span>{pb.method}:</span>
-                                              <span className="font-mono">{profile.currencySymbol}{pb.amount.toLocaleString()}</span>
-                                              {pb.note && <span className="text-slate-500 font-normal">({pb.note})</span>}
-                                            </span>))}
-                                        </div>) : sales.paymentMethod ? (<div className="mt-1">
-                                          <span className="text-[10px] bg-slate-100 text-slate-700 font-semibold px-1.5 py-0.5 rounded">
-                                            {sales.paymentMethod}
-                                          </span>
-                                        </div>) : null}
-                                    </td>
-                                    <td className="py-2 text-right font-extrabold text-slate-900">
-                                      {profile.currencySymbol}
-                                      {sales.amount.toLocaleString()}
-                                    </td>
-                                    <td className="py-2 text-center">
-                                      <button type="button" onClick={() => deleteProjectSales(project.id, sales.id)} className="text-slate-300 hover:text-rose-600 p-1">
-                                        <Trash2 className="w-3.5 h-3.5"/>
-                                      </button>
-                                    </td>
-                                  </tr>))}
+                                {project.salesItems.map((sales) => {
+                                    const itemDue = sales.dueAmount !== undefined
+                                      ? Number(sales.dueAmount)
+                                      : (() => {
+                                          const dueRow = (sales.paymentBreakdown || []).find(b => {
+                                            const m = (b.method || '').toLowerCase();
+                                            return m.includes('due') || m.includes('receivable');
+                                          });
+                                          const dueInitial = dueRow ? Number(dueRow.amount) || 0 : 0;
+                                          const pastCols = (sales.collections || []).reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
+                                          return Math.max(0, dueInitial - pastCols);
+                                        })();
+
+                                    return (<tr key={sales.id} className="hover:bg-slate-50">
+                                      <td className="py-2">
+                                        <div className="font-semibold text-slate-800 flex items-center gap-1.5 flex-wrap">
+                                          <span>{sales.description}</span>
+                                          {itemDue > 0 ? (
+                                            <span className="inline-flex items-center text-[9px] font-bold bg-amber-50 text-amber-800 px-1.5 py-0.5 rounded border border-amber-200">
+                                              Due Remaining: {profile.currencySymbol}{itemDue.toLocaleString()}
+                                            </span>
+                                          ) : (
+                                            <span className="inline-flex items-center text-[9px] font-semibold bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded border border-emerald-200">
+                                              ✓ Paid
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="text-[10px] text-slate-400">
+                                          {sales.date} {sales.invoiceNo ? `• ${sales.invoiceNo}` : ''}
+                                        </div>
+                                        {sales.paymentBreakdown && sales.paymentBreakdown.length > 0 ? (<div className="flex flex-wrap gap-1 mt-1">
+                                            {sales.paymentBreakdown.map((pb, pidx) => {
+                                              const isDue = (pb.method || '').toLowerCase().includes('due') || (pb.method || '').toLowerCase().includes('receivable');
+                                              return (
+                                                <span key={pidx} className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded border ${isDue ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-emerald-50 text-emerald-800 border-emerald-200'}`}>
+                                                  <span>{pb.method}:</span>
+                                                  <span className="font-mono">{profile.currencySymbol}{pb.amount.toLocaleString()}</span>
+                                                  {pb.note && <span className="text-slate-500 font-normal">({pb.note})</span>}
+                                                </span>
+                                              );
+                                            })}
+                                          </div>) : sales.paymentMethod ? (<div className="mt-1">
+                                            <span className="text-[10px] bg-slate-100 text-slate-700 font-semibold px-1.5 py-0.5 rounded">
+                                              {sales.paymentMethod}
+                                            </span>
+                                          </div>) : null}
+
+                                        {sales.collections && sales.collections.length > 0 && (
+                                          <div className="flex flex-wrap gap-1 mt-1">
+                                            {sales.collections.map((col, cidx) => (
+                                              <span key={cidx} className="inline-flex items-center gap-1 text-[9px] bg-blue-50 text-blue-800 font-semibold px-1.5 py-0.5 rounded border border-blue-200">
+                                                <span>✓ Collected {profile.currencySymbol}{col.amount.toLocaleString()} via {col.paymentMethod} ({col.date})</span>
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </td>
+                                      <td className="py-2 text-right font-extrabold text-slate-900">
+                                        {profile.currencySymbol}
+                                        {sales.amount.toLocaleString()}
+                                      </td>
+                                      <td className="py-2 text-center">
+                                        <div className="flex items-center justify-center gap-1.5">
+                                          {itemDue > 0 && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleOpenCollectDue(project, sales, itemDue)}
+                                              className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded px-2 py-0.5 shadow-2xs transition-colors cursor-pointer"
+                                              title="Collect / Adjust Project Due"
+                                            >
+                                              <DollarSign className="w-3 h-3" />
+                                              <span>+ Collect Due</span>
+                                            </button>
+                                          )}
+                                          <button type="button" onClick={() => deleteProjectSales(project.id, sales.id)} className="text-slate-300 hover:text-rose-600 p-1" title="Delete Sale">
+                                            <Trash2 className="w-3.5 h-3.5"/>
+                                          </button>
+                                        </div>
+                                      </td>
+                                    </tr>);
+                                  })}
                               </tbody>
                             </table>
                           </div>)}
@@ -998,20 +1233,131 @@ export const ProjectManagementModule: React.FC = () => {
               </button>
             </div>
 
-            <div className="space-y-3 text-xs">
+            <div className="space-y-4 text-xs">
+              {!editingProject && (
+                <div className="p-3 bg-indigo-50/70 border border-indigo-200 rounded-xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="font-bold text-indigo-950 flex items-center gap-1.5 text-xs">
+                      <Receipt className="w-4 h-4 text-indigo-600" />
+                      <span>Create Against Sales Invoice (Optional) / বিক্রয় চালানের বিপরীতে প্রজেক্ট</span>
+                    </label>
+                    <span className="text-[10px] font-semibold text-indigo-600 bg-white px-2 py-0.5 rounded-full border border-indigo-200">
+                      Unified COA
+                    </span>
+                  </div>
+
+                  <select
+                    value={newProject.invoiceId}
+                    onChange={(e) => {
+                      const selectedInvId = e.target.value;
+                      if (!selectedInvId) {
+                        setNewProject(prev => ({
+                          ...prev,
+                          invoiceId: '',
+                        }));
+                        return;
+                      }
+                      const inv = invoices.find(i => i.id === selectedInvId);
+                      if (inv) {
+                        setNewProject(prev => ({
+                          ...prev,
+                          invoiceId: inv.id,
+                          name: prev.name || `${inv.customerName} - Project #${inv.invoiceNo}`,
+                          clientName: inv.customerName,
+                          clientPhone: inv.customerPhone || prev.clientPhone,
+                          budget: inv.grandTotal || prev.budget,
+                          startDate: inv.date || prev.startDate,
+                          chartOfAccountId: inv.chartOfAccountId || prev.chartOfAccountId || 'coa-4051',
+                        }));
+                      }
+                    }}
+                    className="w-full px-3 py-2 border border-indigo-200 bg-white rounded-xl text-xs font-bold text-indigo-950 focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
+                  >
+                    <option value="">-- None (Create Independent Project) --</option>
+                    {invoices.map((inv) => (
+                      <option key={inv.id} value={inv.id}>
+                        {inv.invoiceNo} — {inv.customerName} (Total: {profile.currencySymbol}{inv.grandTotal.toLocaleString()} | Due: {profile.currencySymbol}{inv.dueAmount.toLocaleString()}) {inv.projectId ? ' [Already Linked]' : ''}
+                      </option>
+                    ))}
+                  </select>
+
+                  {newProject.invoiceId && (() => {
+                    const selectedInv = invoices.find(i => i.id === newProject.invoiceId);
+                    if (!selectedInv) return null;
+                    return (
+                      <div className="space-y-2 pt-1 border-t border-indigo-200/60">
+                        <div className="grid grid-cols-3 gap-2 bg-white p-2.5 rounded-lg border border-indigo-100 text-center">
+                          <div>
+                            <span className="text-[10px] text-slate-500 block">Invoice Total</span>
+                            <span className="font-extrabold text-slate-900 text-xs">{profile.currencySymbol}{selectedInv.grandTotal.toLocaleString()}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 block">Collected / Paid</span>
+                            <span className="font-extrabold text-emerald-600 text-xs">{profile.currencySymbol}{selectedInv.paidAmount.toLocaleString()}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 block">Due Amount</span>
+                            <span className="font-extrabold text-amber-600 text-xs">{profile.currencySymbol}{selectedInv.dueAmount.toLocaleString()}</span>
+                          </div>
+                        </div>
+
+                        <label className="flex items-center gap-2 cursor-pointer pt-1">
+                          <input
+                            type="checkbox"
+                            checked={newProject.includeSalesItem}
+                            onChange={(e) => setNewProject(prev => ({ ...prev, includeSalesItem: e.target.checked }))}
+                            className="rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                          />
+                          <span className="font-bold text-slate-800 text-[11px]">
+                            Import invoice billing into project sales (Total: {profile.currencySymbol}{selectedInv.grandTotal.toLocaleString()})
+                          </span>
+                        </label>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {/* UNIFIED CHART OF ACCOUNTS REVENUE HEAD */}
+              <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="font-bold text-emerald-950 flex items-center gap-1.5 text-xs">
+                    <Landmark className="w-4 h-4 text-emerald-600" />
+                    <span>Unified Chart of Accounts Head (সমন্বিত এক হিসাব) *</span>
+                  </label>
+                  <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
+                    Single COA Entry
+                  </span>
+                </div>
+                <p className="text-[11px] text-emerald-800 font-medium">
+                  এই প্রজেক্ট এবং সংশ্লিষ্ট বিক্রয় চালানের হিসাব এই একক COA রেভিনিউ হেডে জমা হবে (কোনো বিভাজন বা ডুপ্লিকেট হবে না)।
+                </p>
+                <select
+                  value={newProject.chartOfAccountId}
+                  onChange={(e) => setNewProject({ ...newProject, chartOfAccountId: e.target.value })}
+                  className="w-full px-3 py-2 border border-emerald-300 bg-white rounded-xl text-xs font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
+                >
+                  {availableRevenueAccounts.map((acc) => (
+                    <option key={acc.id} value={acc.id}>
+                      [{acc.code}] {acc.name} {acc.nameBn ? `(${acc.nameBn})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="font-bold text-slate-700 block mb-1">
                     {'Project Name *'}
                   </label>
-                  <input type="text" required value={newProject.name} onChange={(e) => setNewProject({ ...newProject, name: e.target.value })} placeholder="e.g. Port City Univ 3D Signage Project" className="w-full px-3 py-2 border border-slate-200 rounded-xl"/>
+                  <input type="text" required value={newProject.name} onChange={(e) => setNewProject({ ...newProject, name: e.target.value })} placeholder="e.g. Port City Univ 3D Signage Project" className="w-full px-3 py-2 border border-slate-200 rounded-xl font-bold"/>
                 </div>
 
                 <div>
                   <label className="font-bold text-slate-700 block mb-1">
                     {'Bengali Name'}
                   </label>
-                  <input type="text" value={newProject.nameBn} onChange={(e) => setNewProject({ ...newProject, nameBn: e.target.value })} placeholder=":" className="w-full px-3 py-2 border border-slate-200 rounded-xl"/>
+                  <input type="text" value={newProject.nameBn} onChange={(e) => setNewProject({ ...newProject, nameBn: e.target.value })} placeholder="যেমন: বন্দর নগরী প্রজেক্ট" className="w-full px-3 py-2 border border-slate-200 rounded-xl"/>
                 </div>
               </div>
 
@@ -1020,7 +1366,7 @@ export const ProjectManagementModule: React.FC = () => {
                   <label className="font-bold text-slate-700 block mb-1">
                     {'Client Name *'}
                   </label>
-                  <input type="text" required value={newProject.clientName} onChange={(e) => setNewProject({ ...newProject, clientName: e.target.value })} placeholder="e.g. Apex Apparel Ltd" className="w-full px-3 py-2 border border-slate-200 rounded-xl"/>
+                  <input type="text" required value={newProject.clientName} onChange={(e) => setNewProject({ ...newProject, clientName: e.target.value })} placeholder="e.g. BSRM Steel Ltd" className="w-full px-3 py-2 border border-slate-200 rounded-xl font-bold"/>
                 </div>
 
                 <div>
@@ -1044,8 +1390,8 @@ export const ProjectManagementModule: React.FC = () => {
                     {'Status'}
                   </label>
                   <select value={newProject.status} onChange={(e) => setNewProject({ ...newProject, status: e.target.value as any })} className="w-full px-3 py-2 border border-slate-200 rounded-xl font-bold">
-                    <option value="In Progress">In ProgressIn Progress</option>
-                    <option value="Completed">CompletedCompleted</option>
+                    <option value="In Progress">In Progress</option>
+                    <option value="Completed">Completed</option>
                     <option value="Planning">Planning</option>
                     <option value="On Hold">On Hold</option>
                   </select>
@@ -1066,6 +1412,19 @@ export const ProjectManagementModule: React.FC = () => {
                   </label>
                   <input type="date" value={newProject.endDate} onChange={(e) => setNewProject({ ...newProject, endDate: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-xl"/>
                 </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">
+                  {'Notes / Description'}
+                </label>
+                <textarea
+                  rows={2}
+                  value={newProject.notes}
+                  onChange={(e) => setNewProject({ ...newProject, notes: e.target.value })}
+                  placeholder="Additional project details or work order references..."
+                  className="w-full px-3 py-2 border border-slate-200 rounded-xl"
+                />
               </div>
             </div>
 
@@ -1442,6 +1801,313 @@ export const ProjectManagementModule: React.FC = () => {
             </div>
           </form>
         </div>)}
+
+      {/* COLLECT PROJECT DUE MODAL */}
+      {collectingDueSale && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <form onSubmit={handleConfirmCollectDue} className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-8">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700">
+                  <DollarSign className="w-5 h-5"/>
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">
+                    {'Collect Project Due / বকেয়া আদায় ও সমন্বয়'}
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    {collectingDueSale.project.name} ({collectingDueSale.project.code})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCollectingDueSale(null)}
+                className="text-slate-400 hover:text-slate-700 text-sm font-bold p-1 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Outstanding Due Summary Banner */}
+            <div className="bg-amber-50/80 p-4 rounded-xl border border-amber-200/90 flex items-center justify-between">
+              <div>
+                <p className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">
+                  {'Remaining Due (বকেয়া)'}
+                </p>
+                <p className="text-xl font-black text-amber-900 mt-0.5">
+                  {profile.currencySymbol}{collectingDueSale.dueAmount.toLocaleString()}
+                </p>
+                <p className="text-[11px] text-slate-600 mt-0.5">
+                  Client: <span className="font-semibold">{collectingDueSale.project.clientName}</span>
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Billed</p>
+                <p className="text-sm font-extrabold text-slate-700 font-mono mt-0.5">
+                  {profile.currencySymbol}{collectingDueSale.sale.amount.toLocaleString()}
+                </p>
+                {collectingDueSale.sale.invoiceNo && (
+                  <p className="text-[10px] text-slate-400 mt-0.5">
+                    {collectingDueSale.sale.invoiceNo}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Inputs */}
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    {'Collection Amount (Tk) *'}
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={collectingDueSale.dueAmount}
+                    required
+                    value={collectDueForm.amount}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setCollectDueForm(prev => ({
+                        ...prev,
+                        amount: val === '' ? '' : Math.min(collectingDueSale.dueAmount, Number(val))
+                      }));
+                    }}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-black text-emerald-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
+                    placeholder="Enter collected amount"
+                  />
+                  <span className="text-[10px] text-slate-400 mt-1 block">
+                    Max: {profile.currencySymbol}{collectingDueSale.dueAmount.toLocaleString()}
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    {'Collection Date *'}
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={collectDueForm.date}
+                    onChange={(e) => setCollectDueForm(prev => ({ ...prev, date: e.target.value }))}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-medium focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  {'Receive Into Account (Payment Channel) *'}
+                </label>
+                <select
+                  value={collectDueForm.paymentMethod}
+                  onChange={(e) => setCollectDueForm(prev => ({ ...prev, paymentMethod: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500 bg-white cursor-pointer"
+                >
+                  {collectPaymentAccounts.map((accName, idx) => (
+                    <option key={idx} value={accName}>
+                      {accName}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  • <strong>Debit:</strong> Selected Cash/Bank Account | • <strong>Credit:</strong> 1003 Accounts Receivable - Customers
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  {'Reference / Cheque / TrxID (Optional)'}
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Cheque #58129 / Trx-Nagad-9382"
+                  value={collectDueForm.referenceNo}
+                  onChange={(e) => setCollectDueForm(prev => ({ ...prev, referenceNo: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-medium focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  {'Note / Remarks (Optional)'}
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Paid via bank transfer"
+                  value={collectDueForm.note}
+                  onChange={(e) => setCollectDueForm(prev => ({ ...prev, note: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-medium focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setCollectingDueSale(null)}
+                className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+              >
+                {'Cancel'}
+              </button>
+              <button
+                type="submit"
+                disabled={!collectDueForm.amount || Number(collectDueForm.amount) <= 0}
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer transition-all"
+              >
+                {`Confirm Collection (${profile.currencySymbol}${Number(collectDueForm.amount || 0).toLocaleString()})`}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* LINK SALES INVOICE TO PROJECT MODAL */}
+      {linkingProject && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <form
+            onSubmit={handleLinkInvoiceSubmit}
+            className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 my-8"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-700">
+                  <Receipt className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">
+                    Link Sales Invoice & Unify COA
+                  </h3>
+                  <p className="text-[11px] text-slate-500 font-medium">
+                    Project: <span className="font-bold text-slate-800">{linkingProject.name}</span> [{linkingProject.code}]
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLinkingProject(null)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              {/* Select Invoice */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Select Sales Invoice (চালান নির্বাচন করুন) *
+                </label>
+                <select
+                  required
+                  value={linkInvoiceForm.invoiceId}
+                  onChange={(e) => setLinkInvoiceForm(prev => ({ ...prev, invoiceId: e.target.value }))}
+                  className="w-full px-3 py-2 border border-indigo-200 bg-white rounded-xl text-xs font-bold text-indigo-950 focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">-- Select an Invoice to Link --</option>
+                  {invoices.map((inv) => (
+                    <option key={inv.id} value={inv.id}>
+                      {inv.invoiceNo} — {inv.customerName} (Total: {profile.currencySymbol}{inv.grandTotal.toLocaleString()} | Due: {profile.currencySymbol}{inv.dueAmount.toLocaleString()}) {inv.projectId ? ` [Linked to ${inv.projectCode || 'another project'}]` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {linkInvoiceForm.invoiceId && (() => {
+                const selectedInv = invoices.find(i => i.id === linkInvoiceForm.invoiceId);
+                if (!selectedInv) return null;
+                return (
+                  <div className="bg-indigo-50/60 p-3 rounded-xl border border-indigo-200 space-y-2">
+                    <div className="flex items-center justify-between font-bold text-indigo-950 text-xs">
+                      <span>Invoice #{selectedInv.invoiceNo}</span>
+                      <span>Date: {selectedInv.date}</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 bg-white p-2 rounded-lg border border-indigo-100 text-center text-xs">
+                      <div>
+                        <span className="text-[10px] text-slate-500 block">Total Amount</span>
+                        <span className="font-extrabold text-slate-900">{profile.currencySymbol}{selectedInv.grandTotal.toLocaleString()}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 block">Paid</span>
+                        <span className="font-extrabold text-emerald-600">{profile.currencySymbol}{selectedInv.paidAmount.toLocaleString()}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 block">Due</span>
+                        <span className="font-extrabold text-amber-600">{profile.currencySymbol}{selectedInv.dueAmount.toLocaleString()}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Select Unified COA */}
+              <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="font-bold text-emerald-950 flex items-center gap-1.5 text-xs">
+                    <Landmark className="w-4 h-4 text-emerald-600" />
+                    <span>Unified Chart of Accounts Head (সমন্বিত এক হিসাব) *</span>
+                  </label>
+                  <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
+                    Single Account
+                  </span>
+                </div>
+                <p className="text-[11px] text-emerald-800 font-medium">
+                  এই প্রজেক্ট এবং নির্বাচিত বিক্রয় চালানটির মোট আয় একক এই একাউন্ট হেডে সংকলিত হবে। আলাদা কোনো ডুপ্লিকেট খতিয়ান হবে না।
+                </p>
+                <select
+                  value={linkInvoiceForm.chartOfAccountId}
+                  onChange={(e) => setLinkInvoiceForm(prev => ({ ...prev, chartOfAccountId: e.target.value }))}
+                  className="w-full px-3 py-2 border border-emerald-300 bg-white rounded-xl text-xs font-bold text-slate-800 focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
+                >
+                  {availableRevenueAccounts.map((acc) => (
+                    <option key={acc.id} value={acc.id}>
+                      [{acc.code}] {acc.name} {acc.nameBn ? `(${acc.nameBn})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Sync Sales Checkbox */}
+              <label className="flex items-start gap-2.5 cursor-pointer p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                <input
+                  type="checkbox"
+                  checked={linkInvoiceForm.syncSalesItem}
+                  onChange={(e) => setLinkInvoiceForm(prev => ({ ...prev, syncSalesItem: e.target.checked }))}
+                  className="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                />
+                <div className="space-y-0.5">
+                  <span className="font-bold text-slate-900 block text-xs">
+                    Import invoice billing into project sales / প্রজেক্ট সেলসে চালানের টাকা যোগ করুন
+                  </span>
+                  <span className="text-[11px] text-slate-500 block leading-tight">
+                    চালানের মোট টাকা ও বর্তমান বকেয়া প্রজেক্টের Sales Income এবং Accounts Receivable এ সমন্বয় করবে।
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setLinkingProject(null)}
+                className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!linkInvoiceForm.invoiceId}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer transition-all flex items-center gap-1.5"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Confirm Link & Unify COA</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* DELETE CONFIRMATION MODAL */}
       {projectToDelete && (<div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
