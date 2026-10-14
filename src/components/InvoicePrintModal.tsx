@@ -177,6 +177,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
     const [fetchedInvoice, setFetchedInvoice] = useState<SalesInvoice | null>(null);
     const [isFetchingInvoice, setIsFetchingInvoice] = useState<boolean>(false);
     const [isDownloadingPdf, setIsDownloadingPdf] = useState<boolean>(false);
+    const [showRegion, setShowRegion] = useState<boolean>(false);
+    const [showType, setShowType] = useState<boolean>(false);
     const [isMobileFit, setIsMobileFit] = useState<boolean>(true);
     const [viewportWidth, setViewportWidth] = useState<number>(() => typeof window !== 'undefined' ? window.innerWidth : 1024);
     const sheetRef = React.useRef<HTMLDivElement | null>(null);
@@ -276,6 +278,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                             jobSpecs: '',
                             deliveryDate: q.validUntil,
                             isQuote: true,
+                            showRegionColumn: q.showRegionColumn,
+                            showTypeColumn: q.showTypeColumn,
                         });
                     }
                     else {
@@ -333,7 +337,18 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
         jobSpecs: '',
         deliveryDate: quote.validUntil,
         isQuote: true,
+        showRegionColumn: quote.showRegionColumn,
+        showTypeColumn: quote.showTypeColumn,
     } : null) || fetchedInvoice;
+
+    useEffect(() => {
+        if (invoice) {
+            const hasRegion = Boolean(invoice.showRegionColumn ?? invoice.items?.some((i) => Boolean(i.region)));
+            const hasType = Boolean(invoice.showTypeColumn ?? invoice.items?.some((i) => Boolean(i.type || i.itemType)));
+            setShowRegion(hasRegion);
+            setShowType(hasType);
+        }
+    }, [invoice?.id, invoice?.showRegionColumn, invoice?.showTypeColumn]);
     useEffect(() => {
         if (template === 'POS' && invoice) {
             const qrPayload = [
@@ -468,7 +483,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                   }
                   @page {
                     size: ${template === 'POS' ? '80mm auto !important' : 'A4 portrait !important'};
-                    margin: ${template === 'POS' ? '0mm !important' : '6mm 8mm !important'};
+                    margin: ${template === 'POS' ? '0mm !important' : '8mm 10mm !important'};
                   }
                   html, body {
                     background: #ffffff !important;
@@ -510,8 +525,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                       max-width: 100% !important;
                       min-width: 0 !important;
                       transform: none !important;
-                      min-height: calc(297mm - 14mm) !important;
-                      height: calc(297mm - 14mm) !important;
+                      min-height: calc(297mm - 16mm) !important;
+                      height: auto !important;
                       page-break-after: always !important;
                       break-after: page !important;
                       page-break-inside: avoid !important;
@@ -524,6 +539,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                       margin: 0 auto !important;
                       border: none !important;
                       box-shadow: none !important;
+                      border-radius: 0 !important;
                     }
                     .a4-page-sheet:last-child {
                       page-break-after: auto !important;
@@ -700,8 +716,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
               box-sizing: border-box !important;
             }
             @page {
-              size: ${template === 'POS' ? '80mm auto' : 'A4 portrait'};
-              margin: ${template === 'POS' ? '0' : '6mm 8mm'};
+              size: ${template === 'POS' ? '80mm auto !important' : 'A4 portrait !important'};
+              margin: ${template === 'POS' ? '0mm !important' : '8mm 10mm !important'};
             }
             html, body {
               background: white !important;
@@ -751,6 +767,9 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
               flex-direction: column !important;
               justify-content: space-between !important;
               box-sizing: border-box !important;
+              border: none !important;
+              box-shadow: none !important;
+              border-radius: 0 !important;
             }
             .a4-page-content {
               flex: 1 0 auto !important;
@@ -772,16 +791,17 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 max-width: 100% !important;
                 min-width: 0 !important;
                 transform: none !important;
-                min-height: calc(297mm - 14mm) !important;
-                height: calc(297mm - 14mm) !important;
+                min-height: calc(297mm - 16mm) !important;
+                height: auto !important;
                 page-break-after: always !important;
                 break-after: page !important;
                 page-break-inside: avoid !important;
                 break-inside: avoid !important;
                 border: none !important;
                 box-shadow: none !important;
+                border-radius: 0 !important;
                 padding: 0 !important;
-                margin: 0 !important;
+                margin: 0 auto !important;
                 box-sizing: border-box !important;
               }
               .a4-page-sheet:last-child {
@@ -897,8 +917,25 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 const sheet = targetElements[i];
                 const prevTransform = sheet.style.transform;
                 const prevTransformOrigin = sheet.style.transformOrigin;
+                const prevBoxShadow = sheet.style.boxShadow;
+                const prevBorder = sheet.style.border;
+                const prevBorderRadius = sheet.style.borderRadius;
+                const prevMargin = sheet.style.margin;
+
                 sheet.style.transform = 'none';
                 sheet.style.transformOrigin = 'initial';
+                sheet.style.boxShadow = 'none';
+                sheet.style.border = 'none';
+                sheet.style.borderRadius = '0px';
+                sheet.style.margin = '0 auto';
+
+                const parentWrapper = sheet.parentElement;
+                const prevParentHeight = parentWrapper?.style.height;
+                const prevParentOverflow = parentWrapper?.style.overflow;
+                if (parentWrapper) {
+                    parentWrapper.style.height = 'auto';
+                    parentWrapper.style.overflow = 'visible';
+                }
 
                 let imgData = '';
                 try {
@@ -908,21 +945,48 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                         pixelRatio: 2,
                         skipFonts: true,
                         cacheBust: false,
+                        width: isPos ? (sheet.offsetWidth || 300) : 794,
+                        height: isPos ? (sheet.offsetHeight || 600) : 1123,
+                        style: {
+                            transform: 'none',
+                            boxShadow: 'none',
+                            border: 'none',
+                            borderRadius: '0px',
+                            margin: '0 auto',
+                        },
                     });
                 }
                 catch (pngErr) {
                     console.warn('htmlToImage toPng error, falling back to toJpeg:', pngErr);
                     imgData = await htmlToImage.toJpeg(sheet, {
-                        quality: 0.95,
+                        quality: 0.98,
                         backgroundColor: '#ffffff',
                         pixelRatio: 2,
                         skipFonts: true,
                         cacheBust: false,
+                        width: isPos ? (sheet.offsetWidth || 300) : 794,
+                        height: isPos ? (sheet.offsetHeight || 600) : 1123,
+                        style: {
+                            transform: 'none',
+                            boxShadow: 'none',
+                            border: 'none',
+                            borderRadius: '0px',
+                            margin: '0 auto',
+                        },
                     });
                 }
 
                 sheet.style.transform = prevTransform;
                 sheet.style.transformOrigin = prevTransformOrigin;
+                sheet.style.boxShadow = prevBoxShadow;
+                sheet.style.border = prevBorder;
+                sheet.style.borderRadius = prevBorderRadius;
+                sheet.style.margin = prevMargin;
+
+                if (parentWrapper) {
+                    parentWrapper.style.height = prevParentHeight || '';
+                    parentWrapper.style.overflow = prevParentOverflow || '';
+                }
 
                 if (i > 0) {
                     pdf.addPage();
@@ -1033,7 +1097,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
           }
           @page {
             size: ${template === 'POS' ? '80mm auto !important' : 'A4 portrait !important'};
-            margin: ${template === 'POS' ? '0mm !important' : '6mm 8mm !important'};
+            margin: ${template === 'POS' ? '0mm !important' : '8mm 10mm !important'};
           }
           html, body {
             background: #ffffff !important;
@@ -1064,8 +1128,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
               max-width: 100% !important;
               min-width: 0 !important;
               transform: none !important;
-              min-height: calc(297mm - 14mm) !important;
-              height: calc(297mm - 14mm) !important;
+              min-height: calc(297mm - 16mm) !important;
+              height: auto !important;
               page-break-after: always !important;
               break-after: page !important;
               page-break-inside: avoid !important;
@@ -1078,6 +1142,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
               margin: 0 auto !important;
               border: none !important;
               box-shadow: none !important;
+              border-radius: 0 !important;
             }
             .a4-page-sheet:last-child {
               page-break-after: auto !important;
@@ -1145,6 +1210,31 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                         <span className="hidden sm:inline"></span>
                       </>)}
                   </button>)}
+
+                {/* Column Toggles Pill (COLS: Type, Region) */}
+                {template !== 'POS' && (
+                  <div className="bg-amber-50 border border-amber-200/90 text-amber-900 px-3 py-1.5 rounded-full flex items-center gap-2 text-xs font-semibold shadow-2xs">
+                    <span className="font-black text-amber-950">COLS:</span>
+                    <label className="flex items-center gap-1 cursor-pointer select-none text-slate-800 hover:text-black">
+                      <input
+                        type="checkbox"
+                        checked={showType}
+                        onChange={(e) => setShowType(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
+                      />
+                      <span>Type</span>
+                    </label>
+                    <label className="flex items-center gap-1 cursor-pointer select-none text-slate-800 hover:text-black">
+                      <input
+                        type="checkbox"
+                        checked={showRegion}
+                        onChange={(e) => setShowRegion(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
+                      />
+                      <span>Region</span>
+                    </label>
+                  </div>
+                )}
 
                 {/* Print Document */}
                 <button type="button" onClick={() => handlePrint(false)} disabled={isPrinting} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all" title="Print   Save as PDF">
@@ -1217,6 +1307,31 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 {template === 'POS' && (<button type="button" onClick={() => setIsPrinterBridgeOpen(true)} className="p-2 text-slate-600 hover:text-slate-900 bg-slate-200/80 hover:bg-slate-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold" title={'Printer Agent Status & Setup'}>
                     <Settings className="w-4 h-4 text-slate-700"/>
                   </button>)}
+
+                {/* Column Toggles Pill (COLS: Type, Region) as shown in user picture 2 */}
+                {template !== 'POS' && (
+                  <div className="bg-amber-50 border border-amber-200/90 text-amber-900 px-3 py-1.5 rounded-full flex items-center gap-2 text-xs font-semibold shadow-2xs">
+                    <span className="font-black text-amber-950">COLS:</span>
+                    <label className="flex items-center gap-1 cursor-pointer select-none text-slate-800 hover:text-black">
+                      <input
+                        type="checkbox"
+                        checked={showType}
+                        onChange={(e) => setShowType(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
+                      />
+                      <span>Type</span>
+                    </label>
+                    <label className="flex items-center gap-1 cursor-pointer select-none text-slate-800 hover:text-black">
+                      <input
+                        type="checkbox"
+                        checked={showRegion}
+                        onChange={(e) => setShowRegion(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
+                      />
+                      <span>Region</span>
+                    </label>
+                  </div>
+                )}
 
                 {/* Standard Full Print */}
                 <button type="button" onClick={() => handlePrint(false)} disabled={isPrinting} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all" title={'Print complete document with header and footer'}>
@@ -1318,7 +1433,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                         transformOrigin: 'top center',
                       }
                     : undefined}
-                  className="a4-page-sheet bg-white w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 mx-auto print:mx-0 p-8 print:p-0 rounded-xl print:rounded-none shadow-md print:shadow-none border-2 border-black print:border-none flex flex-col justify-between text-black text-xs shrink-0"
+                  className="a4-page-sheet bg-white w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 mx-auto print:mx-0 p-8 print:p-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0"
                 >
                   <div className="a4-page-content space-y-5 flex-1">
                     {page.isFirstPage ? (
@@ -1428,6 +1543,12 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                           <tr className="bg-black text-white text-[11px] font-black uppercase tracking-wider border-b-2 border-black">
                             <th className="py-2.5 px-3 text-center border-r border-black font-black w-12 text-white">SL</th>
                             <th className="py-2.5 px-3 text-left border-r border-black font-black text-white">SERVICE / ITEM DESCRIPTION</th>
+                            {showType && (
+                              <th className="py-2.5 px-3 text-center border-r border-black font-black text-white w-28">TYPE</th>
+                            )}
+                            {showRegion && (
+                              <th className="py-2.5 px-3 text-center border-r border-black font-black text-white w-28">REGION</th>
+                            )}
                             <th className="py-2.5 px-3 text-center border-r border-black font-black w-16 text-white">UNIT</th>
                             <th className="py-2.5 px-3 text-center border-r border-black font-black w-24 text-white">QTY / SQFT</th>
                             <th className="py-2.5 px-3 text-right border-r border-black font-black w-24 text-white">RATETk</th>
@@ -1451,6 +1572,16 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                                   )}
                                   {item.notes && (<div className="text-[10px] text-black italic font-medium mt-0.5">{item.notes}</div>)}
                                 </td>
+                                {showType && (
+                                  <td className="py-2.5 px-3 text-center font-bold text-black border-r border-black">
+                                    {item.type || item.itemType || '-'}
+                                  </td>
+                                )}
+                                {showRegion && (
+                                  <td className="py-2.5 px-3 text-center font-bold text-black border-r border-black">
+                                    {item.region || '-'}
+                                  </td>
+                                )}
                                 <td className="py-2.5 px-3 text-center font-bold text-black border-r border-black">
                                   {item.unit}
                                 </td>
@@ -1664,7 +1795,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     transform: `scale(${scale})`,
                     transformOrigin: 'top center',
                 }
-                : undefined} className="a4-page-sheet bg-white w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 mx-auto print:mx-0 p-8 print:p-0 rounded-xl print:rounded-none shadow-md print:shadow-none border-2 border-amber-400 print:border-none flex flex-col justify-between text-xs text-slate-900 shrink-0">
+                : undefined} className="a4-page-sheet bg-white w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 mx-auto print:mx-0 p-8 print:p-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-xs text-slate-900 shrink-0">
               <div className="a4-page-content space-y-6 flex-1">
               {/* Header with Brand Logo on Left, QR Banner on Right */}
               <DocumentHeader documentTitle="PRODUCTION WORK ORDER" documentSubtitle={`${profile.name || 'DotColorCommunication'} • Technical Work Order & Service Unit`} documentNo={`WO-${invoice.invoiceNo}`} documentDate={invoice.date} referenceNo={invoice.referenceNo} isPadMode={isPadMode} padTopMarginMm={padTopMarginMm}/>
@@ -1720,8 +1851,10 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                   {invoice.items.map((item, idx) => (<div key={idx} className="p-3 bg-amber-50/50 rounded-xl border border-amber-200 flex items-start justify-between">
                       <div>
                         <span className="font-bold text-sm text-slate-900 block">{item.name}</span>
-                        <div className="text-xs text-amber-900 mt-1 font-semibold">
-                          Category: {item.category}
+                        <div className="text-xs text-amber-900 mt-1 font-semibold flex flex-wrap items-center gap-2">
+                          <span>Category: {item.category}</span>
+                          {item.region && <span className="bg-white px-1.5 py-0.5 rounded border border-amber-200">Region: {item.region}</span>}
+                          {(item.type || item.itemType) && <span className="bg-white px-1.5 py-0.5 rounded border border-amber-200">Type: {item.type || item.itemType}</span>}
                         </div>
                         {item.totalSqft && (<div className="text-xs font-extrabold text-slate-800 mt-0.5">
                             📐 Exact Measurement: {item.width} Feet (W) × {item.height} Feet (H) ={' '}
@@ -1788,7 +1921,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     transform: `scale(${scale})`,
                     transformOrigin: 'top center',
                 }
-                : undefined} className="a4-page-sheet bg-white w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 mx-auto print:mx-0 p-8 print:p-0 rounded-xl print:rounded-none shadow-md print:shadow-none border-2 border-slate-400 print:border-none flex flex-col justify-between text-black text-xs shrink-0">
+                : undefined} className="a4-page-sheet bg-white w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 mx-auto print:mx-0 p-8 print:p-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0">
                 <div className="a4-page-content space-y-6 flex-1">
                 {/* Header with Brand Logo on Left, QR Banner on Right */}
                 <DocumentHeader documentTitle="DELIVERY CHALLAN" documentSubtitle={`${profile.name || 'DotColorCommunication'} • Official Goods & Services Delivery Note`} documentNo={`CH-${invoice.invoiceNo}`} documentDate={invoice.date} referenceNo={invoice.referenceNo} isPadMode={isPadMode} padTopMarginMm={padTopMarginMm}/>
@@ -1847,6 +1980,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     <tr className="bg-slate-900 text-white text-[11px] font-bold uppercase tracking-wider border-b-2 border-slate-900">
                       <th className="py-2.5 px-3 text-center border-r border-slate-700 font-bold w-12">SL</th>
                       <th className="py-2.5 px-3 text-left border-r border-slate-700 font-bold">Description of Goods Delivered</th>
+                      {showType && <th className="py-2.5 px-3 text-center border-r border-slate-700 font-bold w-28">Type</th>}
+                      {showRegion && <th className="py-2.5 px-3 text-center border-r border-slate-700 font-bold w-24">Region</th>}
                       <th className="py-2.5 px-3 text-center border-r border-slate-700 font-bold w-20">Unit</th>
                       <th className="py-2.5 px-3 text-right font-bold w-36">Delivered Quantity</th>
                     </tr>
@@ -1855,6 +1990,16 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     {invoice.items.map((i, idx) => (<tr key={idx} className={`border-b border-slate-300 print:border-slate-400 last:border-b-0 hover:bg-slate-50/60 ${idx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'}`}>
                         <td className="py-2.5 px-3 text-slate-700 font-bold text-center border-r border-slate-300 print:border-slate-400">{idx + 1}</td>
                         <td className="py-2.5 px-3 font-bold text-slate-950 border-r border-slate-300 print:border-slate-400">{i.name}</td>
+                        {showType && (
+                          <td className="py-2.5 px-3 text-center font-medium text-slate-800 border-r border-slate-300 print:border-slate-400">
+                            {i.type || i.itemType || '-'}
+                          </td>
+                        )}
+                        {showRegion && (
+                          <td className="py-2.5 px-3 text-center font-medium text-slate-800 border-r border-slate-300 print:border-slate-400">
+                            {i.region || '-'}
+                          </td>
+                        )}
                         <td className="py-2.5 px-3 text-center font-medium text-slate-800 border-r border-slate-300 print:border-slate-400">{i.unit}</td>
                         <td className="py-2.5 px-3 text-right font-black text-sm text-slate-950">
                           {i.qty} {i.unit}

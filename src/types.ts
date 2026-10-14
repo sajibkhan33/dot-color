@@ -179,6 +179,9 @@ export interface InvoiceItem {
   productId: string;
   name: string;
   category: string;
+  region?: string;
+  type?: string;
+  itemType?: string;
   unit: UnitType;
   unitPrice: number;
   costPrice: number;
@@ -267,7 +270,16 @@ export interface SalesInvoice {
     [key: string]: number | undefined;
   };
   isQuote?: boolean;
+  showRegionColumn?: boolean;
+  showTypeColumn?: boolean;
 }
+
+export const PRESET_INVOICE_ITEM_TYPES = [
+  'Dealer New',
+  'Dealer repair',
+  'Traders New',
+  'Project Sign',
+] as const;
 
 export interface Quotation {
   id: string;
@@ -293,6 +305,8 @@ export interface Quotation {
   notes?: string;
   quoteType?: 'Sales' | 'Custom';
   isConverted?: boolean;
+  showRegionColumn?: boolean;
+  showTypeColumn?: boolean;
 }
 
 export interface PurchaseOrderItem {
@@ -473,6 +487,7 @@ export interface StaffMember {
 export type AuditActionType =
   | 'EXPENSE_RECORDED'
   | 'PAYMENT_COLLECTED'
+  | 'ADVANCE_ADJUSTED'
   | 'INVOICE_CREATED'
   | 'INVOICE_UPDATED'
   | 'PO_CREATED'

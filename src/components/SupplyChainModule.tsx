@@ -1,12 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { PurchaseOrder, Supplier, PaymentMethod, PurchaseItem } from '../types';
+import { getPaymentMethodLiveBalance, calculateSingleAccountBalance, matchChannelToAccount } from '../utils/accountUtils';
 import { Truck, Plus, Search, CheckCircle2, Clock, Building2, DollarSign, AlertCircle, FileCheck, UserCheck, Package, Calendar, Phone, Factory, ArrowRight, Edit2, Trash2, CreditCard, Wallet, Landmark, Smartphone, Receipt, ExternalLink, MapPin, Mail, User, PackageCheck, } from 'lucide-react';
 export const SupplyChainModule: React.FC = () => {
-    const { purchaseOrders = [], suppliers = [], products = [], profile, language, accountBalances, paymentMethods = [], addPurchaseOrder, updatePurchaseOrder, deletePurchaseOrder, receivePurchaseOrder, payPurchaseOrder, paySupplier, paySupplierDue, addSupplier, updateSupplier, deleteSupplier, } = useApp();
+    const { purchaseOrders = [], suppliers = [], products = [], profile, language, accountBalances, paymentMethods = [], chartOfAccounts = [], transactions = [], invoices = [], addPurchaseOrder, updatePurchaseOrder, deletePurchaseOrder, receivePurchaseOrder, payPurchaseOrder, paySupplier, paySupplierDue, addSupplier, updateSupplier, deleteSupplier, } = useApp();
     const activePaymentMethods = useMemo(() => {
         const list = (paymentMethods || []).filter((p) => p.isEnabled);
-        return list.length > 0 ? list : [{ id: 'pm-bank', name: 'Bank Transfer', nameBn: "Bank", type: 'bank' as const, isEnabled: true }];
+        return list.length > 0 ? list : [{ id: 'pm-cash', name: 'Cash', nameBn: 'নগদ', type: 'cash' as const, isEnabled: true }];
     }, [paymentMethods]);
     const [activeSubTab, setActiveSubTab] = useState<'orders' | 'suppliers'>('orders');
     const [searchQuery, setSearchQuery] = useState('');
@@ -30,14 +31,14 @@ export const SupplyChainModule: React.FC = () => {
     const [supplierToDelete, setSupplierToDelete] = useState<Supplier | null>(null);
     const [paySupplierModal, setPaySupplierModal] = useState<Supplier | null>(null);
     const [supplierPayAmount, setSupplierPayAmount] = useState<number>(0);
-    const [supplierPayAccount, setSupplierPayAccount] = useState<string>('BRAC Bank');
+    const [supplierPayAccount, setSupplierPayAccount] = useState<string>(() => activePaymentMethods[0]?.name || 'Cash');
     const [paySupplierTargetPoId, setPaySupplierTargetPoId] = useState<string>('all');
     const [selectedVendorProfile, setSelectedVendorProfile] = useState<Supplier | null>(null);
     // Specific PO Payment Modal
     const [poToPay, setPoToPay] = useState<PurchaseOrder | null>(null);
     const [poPayAmount, setPoPayAmount] = useState<number>(0);
-    const [poPayAccount, setPoPayAccount] = useState<string>('BRAC Bank');
-    const [poPayMethod, setPoPayMethod] = useState<PaymentMethod>('Bank Transfer');
+    const [poPayAccount, setPoPayAccount] = useState<string>(() => activePaymentMethods[0]?.name || 'Cash');
+    const [poPayMethod, setPoPayMethod] = useState<PaymentMethod>(() => activePaymentMethods[0]?.name || 'Cash');
     // New PO form state
     const [poType, setPoType] = useState<'Sales' | 'Custom'>('Sales');
     const [selectedSupplierId, setSelectedSupplierId] = useState<string>((suppliers && suppliers[0]?.id) || '');
@@ -61,7 +62,7 @@ export const SupplyChainModule: React.FC = () => {
         ];
     });
     const [poPaidAmount, setPoPaidAmount] = useState<number>(0);
-    const [poPaymentMethod, setPoPaymentMethod] = useState<PaymentMethod>('Bank Transfer');
+    const [poPaymentMethod, setPoPaymentMethod] = useState<PaymentMethod>(() => activePaymentMethods[0]?.name || 'Cash');
     const [poNotes, setPoNotes] = useState('');
     // New Supplier form state
     const [newSupName, setNewSupName] = useState('');
@@ -127,25 +128,43 @@ export const SupplyChainModule: React.FC = () => {
         const pendingTotal = pendingPOs.reduce((acc, p) => acc + (p.grandTotal ?? p.totalAmount ?? 0), 0);
         const hasAnyPOs = pos.length > 0;
         const totalBills = hasAnyPOs ? recTotal : 0;
-        const balanceDue = hasAnyPOs ? recDue : Number(supplier.balancePayable ?? supplier.dueAmount ?? 0);
+        const balanceDue = hasAnyPOs ? recDue : ((purchaseOrders || []).length > 0 ? 0 : Number(supplier.balancePayable ?? supplier.dueAmount ?? 0));
         const totalPaid = hasAnyPOs ? pos.reduce((acc, p) => acc + (p.paidAmount || 0), 0) : 0;
         return { pos, receivedPOs, pendingPOs, totalBills, totalPaid, balanceDue, pendingTotal };
     };
     const totalProcurement = purchaseOrders.reduce((acc, po) => acc + (po.grandTotal ?? po.totalAmount ?? 0), 0);
-    const totalPayableToSuppliers = (suppliers || []).reduce((acc, s) => acc + getSupplierFinancials(s).balanceDue, 0);
+    const totalPayableToSuppliers = (purchaseOrders && purchaseOrders.length > 0)
+        ? purchaseOrders
+            .filter((p) => p.status === 'Received')
+            .reduce((acc, p) => acc + (p.dueAmount !== undefined ? Number(p.dueAmount) : Math.max(0, (Number(p.grandTotal ?? p.totalAmount ?? 0)) - (Number(p.paidAmount || 0)))), 0)
+        : (suppliers || []).reduce((acc, s) => acc + Number(s.balancePayable ?? s.dueAmount ?? 0), 0);
     const totalPaidToSuppliers = (purchaseOrders || []).reduce((acc, po) => acc + (po.paidAmount || 0), 0);
     const bankBalance = accountBalances?.bank ?? 0;
     const cashBalance = accountBalances?.cash ?? 0;
     const mobileBalance = accountBalances?.mobile ?? 0;
-    const getAccountLiveBalance = (accountName: string) => {
-        const acc = (accountName || '').toLowerCase();
-        if (acc.includes('bank') || acc.includes('brac') || acc.includes('city')) {
-            return bankBalance;
+    const getAccountLiveBalance = (accountOrMethodName: string): number => {
+        if (!accountOrMethodName) return 0;
+        const lower = accountOrMethodName.toLowerCase().trim();
+        // 1. Match payment method from activePaymentMethods
+        const matchedPm = activePaymentMethods.find(
+            (p) => p.name.toLowerCase().trim() === lower || p.id.toLowerCase().trim() === lower
+        );
+        if (matchedPm) {
+            return getPaymentMethodLiveBalance(matchedPm, chartOfAccounts, transactions, invoices, accountBalances);
         }
-        if (acc.includes('bkash') || acc.includes('nagad') || acc.includes('mobile')) {
-            return mobileBalance;
+        // 2. Match directly with Chart of Accounts
+        const coaAcc = matchChannelToAccount(accountOrMethodName, chartOfAccounts, activePaymentMethods);
+        if (coaAcc) {
+            return calculateSingleAccountBalance(coaAcc, transactions, invoices);
         }
-        return cashBalance;
+        // 3. Fallbacks based on keyword
+        if (lower.includes('bank') || lower.includes('city') || lower.includes('southeast') || lower.includes('brac')) {
+            return accountBalances?.bank ?? 0;
+        }
+        if (lower.includes('bkash') || lower.includes('nagad') || lower.includes('mobile')) {
+            return accountBalances?.mobile ?? 0;
+        }
+        return accountBalances?.cash ?? 0;
     };
     const handleAddPoItemRow = () => {
         if (poType === 'Custom') {
@@ -601,8 +620,9 @@ export const SupplyChainModule: React.FC = () => {
                             {po.dueAmount > 0 && (<button type="button" onClick={() => {
                             setPoToPay(po);
                             setPoPayAmount(po.dueAmount);
-                            setPoPayAccount('BRAC Bank');
-                            setPoPayMethod('Bank Transfer');
+                            const defMethod = activePaymentMethods[0]?.name || 'Cash';
+                            setPoPayAccount(defMethod);
+                            setPoPayMethod(defMethod);
                         }} className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded text-[10px] font-bold cursor-pointer transition-colors shadow-2xs" title={`Pay bill for ${po.poNo}`}>
                                 <CreditCard className="w-3 h-3 text-slate-950"/>
                                 <span>{'Pay Bill'}</span>
@@ -648,8 +668,9 @@ export const SupplyChainModule: React.FC = () => {
                         {po.dueAmount > 0 && (<button type="button" onClick={() => {
                         setPoToPay(po);
                         setPoPayAmount(po.dueAmount);
-                        setPoPayAccount('BRAC Bank');
-                        setPoPayMethod('Bank Transfer');
+                        const defMethod = activePaymentMethods[0]?.name || 'Cash';
+                        setPoPayAccount(defMethod);
+                        setPoPayMethod(defMethod);
                     }} className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold flex items-center gap-1 shadow-2xs cursor-pointer transition-colors" title={`Pay bill for ${po.poNo}`}>
                             <CreditCard className="w-3.5 h-3.5"/>
                             <span>{'Pay'}</span>
@@ -784,7 +805,8 @@ export const SupplyChainModule: React.FC = () => {
                           {balanceDue > 0 && (<button type="button" onClick={() => {
                             setPaySupplierModal(s);
                             setSupplierPayAmount(balanceDue);
-                            setSupplierPayAccount('BRAC Bank');
+                            const defMethod = activePaymentMethods[0]?.name || 'Cash';
+                            setSupplierPayAccount(defMethod);
                             setPaySupplierTargetPoId('all');
                         }} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold shadow-2xs whitespace-nowrap inline-flex items-center gap-1 cursor-pointer" title={'Pay Due'}>
                               <CreditCard className="w-3.5 h-3.5"/>
@@ -1033,9 +1055,14 @@ export const SupplyChainModule: React.FC = () => {
                       {'Payment Mode'}
                     </label>
                     <select value={poPaymentMethod} onChange={(e) => setPoPaymentMethod(e.target.value)} className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-semibold">
-                      {activePaymentMethods.map((pm) => (<option key={pm.id} value={pm.name}>
-                          {pm.name} {pm.nameBn ? `(${pm.nameBn})` : ''}
-                        </option>))}
+                      {activePaymentMethods.map((pm) => {
+                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                        return (
+                          <option key={pm.id} value={pm.name}>
+                            {pm.type === 'bank' ? '🏦' : pm.type === 'mfs' ? '📱' : '💵'} {pm.name} {pm.accountNumber ? `(${pm.accountNumber})` : ''} — [{profile.currencySymbol}{bal.toLocaleString()}]
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
                 </div>
@@ -1340,7 +1367,8 @@ export const SupplyChainModule: React.FC = () => {
                     {balanceDue > 0 ? (<button type="button" onClick={() => {
                         setPaySupplierModal(liveVendor);
                         setSupplierPayAmount(balanceDue);
-                        setSupplierPayAccount('BRAC Bank');
+                        const defMethod = activePaymentMethods[0]?.name || 'Cash';
+                        setSupplierPayAccount(defMethod);
                         setPaySupplierTargetPoId('all');
                     }} className="mt-2 w-full py-1.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold shadow-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer">
                         <CreditCard className="w-3.5 h-3.5"/>
@@ -1464,8 +1492,9 @@ export const SupplyChainModule: React.FC = () => {
                                   </button>) : poDue > 0 ? (<button type="button" onClick={() => {
                                     setPoToPay(po);
                                     setPoPayAmount(poDue);
-                                    setPoPayAccount('BRAC Bank');
-                                    setPoPayMethod('Bank Transfer');
+                                    const defMethod = activePaymentMethods[0]?.name || 'Cash';
+                                    setPoPayAccount(defMethod);
+                                    setPoPayMethod(defMethod);
                                 }} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold shadow-2xs inline-flex items-center gap-1 cursor-pointer transition-colors whitespace-nowrap">
                                     <CreditCard className="w-3.5 h-3.5"/>
                                     <span>{'Pay Bill'}</span>
@@ -1599,58 +1628,69 @@ export const SupplyChainModule: React.FC = () => {
                   <label className="font-bold text-slate-700 block mb-1">
                     {'Payment Account & Balance'}
                   </label>
-                  <div className="grid grid-cols-3 gap-1.5 mb-2">
-                    <button type="button" onClick={() => setSupplierPayAccount('BRAC Bank')} className={`p-2 rounded-xl border text-left transition-all cursor-pointer ${supplierPayAccount.includes('Bank') || supplierPayAccount.includes('BRAC')
-                    ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-300'
-                    : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100'}`}>
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-blue-700">
-                        <Landmark className="w-3 h-3"/>
-                        <span>BankBank</span>
-                      </div>
-                      <div className="font-black text-xs text-slate-900 mt-1">
-                        {profile.currencySymbol}{bankBalance.toLocaleString()}
-                      </div>
-                    </button>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-2">
+                    {activePaymentMethods.map((pm) => {
+                      const isSelected = supplierPayAccount.toLowerCase().trim() === pm.name.toLowerCase().trim();
+                      const liveBal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                      const isBank = pm.type === 'bank';
+                      const isMfs = pm.type === 'mfs';
+                      const isCash = pm.type === 'cash';
 
-                    <button type="button" onClick={() => setSupplierPayAccount('Office Cash')} className={`p-2 rounded-xl border text-left transition-all cursor-pointer ${supplierPayAccount.includes('Cash')
-                    ? 'bg-emerald-50 border-emerald-300 ring-1 ring-emerald-300'
-                    : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100'}`}>
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-700">
-                        <Wallet className="w-3 h-3"/>
-                        <span>CashCash</span>
-                      </div>
-                      <div className="font-black text-xs text-slate-900 mt-1">
-                        {profile.currencySymbol}{cashBalance.toLocaleString()}
-                      </div>
-                    </button>
-
-                    <button type="button" onClick={() => setSupplierPayAccount('bKash / Nagad')} className={`p-2 rounded-xl border text-left transition-all cursor-pointer ${supplierPayAccount.includes('bKash') || supplierPayAccount.includes('Nagad')
-                    ? 'bg-purple-50 border-purple-300 ring-1 ring-purple-300'
-                    : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100'}`}>
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-purple-700">
-                        <Smartphone className="w-3 h-3"/>
-                        <span>MobilebKash</span>
-                      </div>
-                      <div className="font-black text-xs text-slate-900 mt-1">
-                        {profile.currencySymbol}{mobileBalance.toLocaleString()}
-                      </div>
-                    </button>
+                      return (
+                        <button
+                          key={pm.id}
+                          type="button"
+                          onClick={() => setSupplierPayAccount(pm.name)}
+                          className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-300 shadow-xs'
+                              : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5 text-[11px] font-bold truncate">
+                            {isBank ? <Landmark className="w-3.5 h-3.5 text-blue-600 shrink-0" /> :
+                             isMfs ? <Smartphone className="w-3.5 h-3.5 text-purple-600 shrink-0" /> :
+                             <Wallet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />}
+                            <span className="truncate text-slate-900">{pm.name}</span>
+                          </div>
+                          <div className="font-black text-xs text-slate-900 mt-1">
+                            {profile.currencySymbol}{liveBal.toLocaleString()}
+                          </div>
+                          <div className="text-[10px] text-slate-500 font-mono truncate mt-0.5">
+                            {pm.accountNumber || (isBank ? (pm.bankName || 'Bank') : isCash ? 'Cash' : 'MFS')}
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
 
-                  <select value={supplierPayAccount} onChange={(e) => setSupplierPayAccount(e.target.value)} className="w-full px-2.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-hidden bg-white">
-                    <option value="BRAC Bank">
-                      🏦 BRAC Bank PLC — {'Balance: '} {profile.currencySymbol}{bankBalance.toLocaleString()}
-                    </option>
-                    <option value="Office Cash">💵 Office CashNagad —{'Balance: '} {profile.currencySymbol}{cashBalance.toLocaleString()}
-                    </option>
-                    <option value="Factory Cash">🏭 Factory CashFactory Cash —{'Balance: '} {profile.currencySymbol}{cashBalance.toLocaleString()}
-                    </option>
-                    <option value="bKash / Nagad">
-                      📱 bKash / Nagad — {'Balance: '} {profile.currencySymbol}{mobileBalance.toLocaleString()}
-                    </option>
-                    <option value="City Bank">
-                      🏦 City Bank PLC — {'Balance: '} {profile.currencySymbol}{bankBalance.toLocaleString()}
-                    </option>
+                  <select
+                    value={supplierPayAccount}
+                    onChange={(e) => setSupplierPayAccount(e.target.value)}
+                    className="w-full px-2.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-hidden bg-white"
+                  >
+                    <optgroup label="Active Payment Methods">
+                      {activePaymentMethods.map((pm) => {
+                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                        return (
+                          <option key={pm.id} value={pm.name}>
+                            {pm.type === 'bank' ? '🏦' : pm.type === 'mfs' ? '📱' : '💵'} {pm.name} {pm.accountNumber ? `(${pm.accountNumber})` : ''} — [{profile.currencySymbol}{bal.toLocaleString()}]
+                          </option>
+                        );
+                      })}
+                    </optgroup>
+                    {chartOfAccounts.filter((a) => a.classification === 'Asset').length > 0 && (
+                      <optgroup label="Chart of Accounts (Assets)">
+                        {chartOfAccounts.filter((a) => a.classification === 'Asset').map((acc) => {
+                          const bal = calculateSingleAccountBalance(acc, transactions, invoices);
+                          return (
+                            <option key={acc.id} value={acc.name}>
+                              #{acc.code} {acc.name} — [{profile.currencySymbol}{bal.toLocaleString()}]
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                    )}
                   </select>
                 </div>
 
@@ -1765,79 +1805,69 @@ export const SupplyChainModule: React.FC = () => {
                   <label className="font-bold text-slate-700 block mb-1">
                     {'Payment Account & Balance'}
                   </label>
-                  <div className="grid grid-cols-3 gap-1.5 mb-2">
-                    <button type="button" onClick={() => {
-                    setPoPayAccount('BRAC Bank');
-                    setPoPayMethod('Bank Transfer');
-                }} className={`p-2 rounded-xl border text-left transition-all cursor-pointer ${poPayAccount.includes('Bank') || poPayAccount.includes('BRAC')
-                    ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-300'
-                    : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100'}`}>
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-blue-700">
-                        <Landmark className="w-3 h-3"/>
-                        <span>BankBank</span>
-                      </div>
-                      <div className="font-black text-xs text-slate-900 mt-1">
-                        {profile.currencySymbol}{bankBalance.toLocaleString()}
-                      </div>
-                    </button>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-2">
+                    {activePaymentMethods.map((pm) => {
+                      const isSelected = poPayAccount.toLowerCase().trim() === pm.name.toLowerCase().trim() ||
+                                         poPayMethod.toLowerCase().trim() === pm.name.toLowerCase().trim();
+                      const liveBal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                      const isBank = pm.type === 'bank';
+                      const isMfs = pm.type === 'mfs';
+                      const isCash = pm.type === 'cash';
 
-                    <button type="button" onClick={() => {
-                    setPoPayAccount('Office Cash');
-                    setPoPayMethod('Cash');
-                }} className={`p-2 rounded-xl border text-left transition-all cursor-pointer ${poPayAccount.includes('Cash')
-                    ? 'bg-emerald-50 border-emerald-300 ring-1 ring-emerald-300'
-                    : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100'}`}>
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-700">
-                        <Wallet className="w-3 h-3"/>
-                        <span>CashCash</span>
-                      </div>
-                      <div className="font-black text-xs text-slate-900 mt-1">
-                        {profile.currencySymbol}{cashBalance.toLocaleString()}
-                      </div>
-                    </button>
-
-                    <button type="button" onClick={() => {
-                    setPoPayAccount('bKash / Nagad');
-                    setPoPayMethod('bKash / Nagad');
-                }} className={`p-2 rounded-xl border text-left transition-all cursor-pointer ${poPayAccount.includes('bKash') || poPayAccount.includes('Nagad')
-                    ? 'bg-purple-50 border-purple-300 ring-1 ring-purple-300'
-                    : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100'}`}>
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-purple-700">
-                        <Smartphone className="w-3 h-3"/>
-                        <span>MobilebKash</span>
-                      </div>
-                      <div className="font-black text-xs text-slate-900 mt-1">
-                        {profile.currencySymbol}{mobileBalance.toLocaleString()}
-                      </div>
-                    </button>
+                      return (
+                        <button
+                          key={pm.id}
+                          type="button"
+                          onClick={() => {
+                            setPoPayAccount(pm.name);
+                            setPoPayMethod(pm.name);
+                          }}
+                          className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-blue-50 border-blue-400 ring-2 ring-blue-300 shadow-xs'
+                              : 'bg-slate-50/70 border-slate-200 hover:bg-slate-100 hover:border-slate-300'
+                          }`}
+                        >
+                          <div className="flex items-center gap-1.5 text-[11px] font-bold truncate">
+                            {isBank ? <Landmark className="w-3.5 h-3.5 text-blue-600 shrink-0" /> :
+                             isMfs ? <Smartphone className="w-3.5 h-3.5 text-purple-600 shrink-0" /> :
+                             <Wallet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />}
+                            <span className="truncate text-slate-900">{pm.name}</span>
+                          </div>
+                          <div className="font-black text-xs text-slate-900 mt-1">
+                            {profile.currencySymbol}{liveBal.toLocaleString()}
+                          </div>
+                          <div className="text-[10px] text-slate-500 font-mono truncate mt-0.5">
+                            {pm.accountNumber || (isBank ? (pm.bankName || 'Bank') : isCash ? 'Cash' : 'MFS')}
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <div>
                     <label className="font-bold text-slate-700 block mb-1">
                       {'Payment Method'}
                     </label>
-                    <select value={poPayMethod} onChange={(e) => {
-                    const m = e.target.value as PaymentMethod;
-                    setPoPayMethod(m);
-                    const matched = activePaymentMethods.find((p) => p.name === m);
-                    if (matched?.linkedAccountId) {
-                        setPoPayAccount(matched.linkedAccountId);
-                    }
-                    else if (m.toLowerCase().includes('cash')) {
-                        setPoPayAccount('Office Cash');
-                    }
-                    else if (m.toLowerCase().includes('bank') || m.toLowerCase().includes('brac') || m.toLowerCase().includes('cheque')) {
-                        setPoPayAccount('BRAC Bank');
-                    }
-                    else if (m.toLowerCase().includes('bkash') || m.toLowerCase().includes('nagad') || m.toLowerCase().includes('rocket')) {
-                        setPoPayAccount('bKash / Nagad');
-                    }
-                }} className="w-full px-2.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-hidden">
-                      {activePaymentMethods.map((pm) => (<option key={pm.id} value={pm.name}>
-                          {pm.name} {pm.nameBn ? `(${pm.nameBn})` : ''}
-                        </option>))}
+                    <select
+                      value={poPayMethod}
+                      onChange={(e) => {
+                        const m = e.target.value;
+                        setPoPayMethod(m);
+                        setPoPayAccount(m);
+                      }}
+                      className="w-full px-2.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-hidden bg-white"
+                    >
+                      {activePaymentMethods.map((pm) => {
+                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                        return (
+                          <option key={pm.id} value={pm.name}>
+                            {pm.type === 'bank' ? '🏦' : pm.type === 'mfs' ? '📱' : '💵'} {pm.name} {pm.accountNumber ? `(${pm.accountNumber})` : ''} — [{profile.currencySymbol}{bal.toLocaleString()}]
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
 
@@ -1845,31 +1875,40 @@ export const SupplyChainModule: React.FC = () => {
                     <label className="font-bold text-slate-700 block mb-1">
                       {'Account'}
                     </label>
-                    <select value={poPayAccount} onChange={(e) => {
-                    const val = e.target.value;
-                    setPoPayAccount(val);
-                    if (val.includes('Cash'))
-                        setPoPayMethod('Cash');
-                    else if (val.includes('Bank'))
-                        setPoPayMethod('Bank Transfer');
-                    else if (val.includes('bKash') || val.includes('Nagad'))
-                        setPoPayMethod('bKash');
-                }} className="w-full px-2.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-hidden">
-                      <option value="BRAC Bank">
-                        🏦 BRAC Bank — {'Bal: '}Tk{bankBalance.toLocaleString()}
-                      </option>
-                      <option value="Office Cash">
-                        💵 Office Cash — {'Bal: '}Tk{cashBalance.toLocaleString()}
-                      </option>
-                      <option value="Factory Cash">
-                        🏭 Factory Cash — {'Bal: '}Tk{cashBalance.toLocaleString()}
-                      </option>
-                      <option value="bKash / Nagad">
-                        📱 bKash / Nagad — {'Bal: '}Tk{mobileBalance.toLocaleString()}
-                      </option>
-                      <option value="City Bank">
-                        🏦 City Bank — {'Bal: '}Tk{bankBalance.toLocaleString()}
-                      </option>
+                    <select
+                      value={poPayAccount}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPoPayAccount(val);
+                        const matched = activePaymentMethods.find((p) => p.name.toLowerCase().trim() === val.toLowerCase().trim() || p.id === val);
+                        if (matched) {
+                          setPoPayMethod(matched.name);
+                        }
+                      }}
+                      className="w-full px-2.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-hidden bg-white"
+                    >
+                      <optgroup label="Active Payment Methods">
+                        {activePaymentMethods.map((pm) => {
+                          const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                          return (
+                            <option key={pm.id} value={pm.name}>
+                              {pm.type === 'bank' ? '🏦' : pm.type === 'mfs' ? '📱' : '💵'} {pm.name} — [{profile.currencySymbol}{bal.toLocaleString()}]
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                      {chartOfAccounts.filter((a) => a.classification === 'Asset').length > 0 && (
+                        <optgroup label="Chart of Accounts (Assets)">
+                          {chartOfAccounts.filter((a) => a.classification === 'Asset').map((acc) => {
+                            const bal = calculateSingleAccountBalance(acc, transactions, invoices);
+                            return (
+                              <option key={acc.id} value={acc.name}>
+                                #{acc.code} {acc.name} — [{profile.currencySymbol}{bal.toLocaleString()}]
+                              </option>
+                            );
+                          })}
+                        </optgroup>
+                      )}
                     </select>
                   </div>
                 </div>

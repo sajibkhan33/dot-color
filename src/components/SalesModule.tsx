@@ -1,11 +1,11 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { SalesInvoice, Quotation, Customer, ProductionStatus } from '../types';
-import { FileText, Printer, Receipt, Plus, Search, CheckCircle2, Clock, Truck, ArrowRight, DollarSign, AlertCircle, Eye, Filter, Layers, Phone, User, Calendar, FileSpreadsheet, SlidersHorizontal, RefreshCw, Edit2, Trash2, X, UserPlus, RotateCcw, AlertTriangle, } from 'lucide-react';
+import { SalesInvoice, Quotation, Customer, ProductionStatus, PRESET_INVOICE_ITEM_TYPES } from '../types';
+import { FileText, Printer, Receipt, Plus, Search, CheckCircle2, Clock, Truck, ArrowRight, DollarSign, AlertCircle, Eye, Filter, Layers, Phone, User, Calendar, FileSpreadsheet, SlidersHorizontal, RefreshCw, Edit2, Trash2, X, UserPlus, RotateCcw, AlertTriangle, Landmark, Smartphone, Banknote, CreditCard, History, ChevronRight, } from 'lucide-react';
 import { exportSalesToExcel } from '../utils/exportUtils';
 import { ReportPrintModal } from './ReportPrintModal';
 import { CreateSalesInvoiceModal } from './CreateSalesInvoiceModal';
-import { getPaymentMethodLiveBalance } from '../utils/accountUtils';
+import { getPaymentMethodLiveBalance, isInvoiceMatchingCustomer, getCustomerInvoiceSummary, getInvoicePayments } from '../utils/accountUtils';
 interface SalesModuleProps {
     onOpenInvoiceModal: (invoiceId: string, mode?: 'invoice' | 'challan' | 'pos', options?: {
         autoPrint?: boolean;
@@ -30,12 +30,20 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
     const [resetSalesFeedback, setResetSalesFeedback] = useState<string | null>(null);
     const [editingQuotation, setEditingQuotation] = useState<Quotation | null>(null);
     const [addedQuoteItems, setAddedQuoteItems] = useState<any[]>([]);
+    const [viewingPaymentDetailsInvoice, setViewingPaymentDetailsInvoice] = useState<SalesInvoice | null>(null);
+    const [selectedCustomerHistory, setSelectedCustomerHistory] = useState<Customer | null>(null);
     // Invoice Editing States
     const [editingInvoice, setEditingInvoice] = useState<SalesInvoice | null>(null);
     const [editInvoiceItems, setEditInvoiceItems] = useState<any[]>([]);
     const [editInvoiceRefNo, setEditInvoiceRefNo] = useState('');
     const [editInvoiceWarehouse, setEditInvoiceWarehouse] = useState<'Factory' | 'Office'>('Factory');
     const [invItemName, setInvItemName] = useState('');
+    const [invItemRegion, setInvItemRegion] = useState('');
+    const [invItemType, setInvItemType] = useState('');
+    const [editInvIsCustomType, setEditInvIsCustomType] = useState<boolean>(false);
+    const [editInvCustomTypes, setEditInvCustomTypes] = useState<string[]>([]);
+    const [editInvShowRegionColumn, setEditInvShowRegionColumn] = useState<boolean>(false);
+    const [editInvShowTypeColumn, setEditInvShowTypeColumn] = useState<boolean>(false);
     const [invItemQty, setInvItemQty] = useState(1);
     const [invItemPrice, setInvItemPrice] = useState(1000);
     const [invSelectedProductId, setInvSelectedProductId] = useState('');
@@ -93,6 +101,9 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
             finalItems.push({
                 productId: invSelectedProductId || `custom-${Date.now()}`,
                 name: invItemName.trim(),
+                region: editInvShowRegionColumn && invItemRegion.trim() ? invItemRegion.trim() : undefined,
+                type: editInvShowTypeColumn && invItemType.trim() ? invItemType.trim() : undefined,
+                itemType: editInvShowTypeColumn && invItemType.trim() ? invItemType.trim() : undefined,
                 unit: 'pcs',
                 unitPrice: invItemPrice,
                 costPrice: Math.round(invItemPrice * 0.6),
@@ -144,11 +155,17 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
             grandTotal: grand,
             dueAmount: due,
             paymentStatus: newPaymentStatus,
+            showRegionColumn: editInvShowRegionColumn,
+            showTypeColumn: editInvShowTypeColumn,
         });
         setEditingInvoice(null);
         setEditInvoiceItems([]);
         setEditInvoiceRefNo('');
         setInvItemName('');
+        setInvItemRegion('');
+        setInvItemType('');
+        setEditInvShowRegionColumn(false);
+        setEditInvShowTypeColumn(false);
         setInvSelectedProductId('');
         setInvItemQty(1);
         setInvItemPrice(1000);
@@ -238,6 +255,7 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
     const [paymentModalInvoice, setPaymentModalInvoice] = useState<SalesInvoice | null>(null);
     const [collectAmount, setCollectAmount] = useState<number>(0);
     const [collectMethod, setCollectMethod] = useState<string>('Cash');
+    const [adjustAdvanceAmount, setAdjustAdvanceAmount] = useState<number>(0);
     // New Quotation Modal
     const [showNewQuoteModal, setShowNewQuoteModal] = useState(false);
     const [quoteType, setQuoteType] = useState<'Sales' | 'Custom'>('Sales');
@@ -248,6 +266,12 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
     const [quoteCustomerAddress, setQuoteCustomerAddress] = useState('');
     const [quoteReferenceNo, setQuoteReferenceNo] = useState('');
     const [quoteItemName, setQuoteItemName] = useState('');
+    const [quoteItemRegion, setQuoteItemRegion] = useState('');
+    const [quoteItemType, setQuoteItemType] = useState('');
+    const [quoteIsCustomType, setQuoteIsCustomType] = useState<boolean>(false);
+    const [quoteCustomTypes, setQuoteCustomTypes] = useState<string[]>([]);
+    const [quoteShowRegionColumn, setQuoteShowRegionColumn] = useState<boolean>(false);
+    const [quoteShowTypeColumn, setQuoteShowTypeColumn] = useState<boolean>(false);
     const [quoteItemQty, setQuoteItemQty] = useState(1);
     const [quoteItemPrice, setQuoteItemPrice] = useState(1000);
     const [quoteDiscount, setQuoteDiscount] = useState(0);
@@ -304,11 +328,15 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
     const totalDue = filteredInvoices.reduce((acc, i) => acc + i.dueAmount, 0);
     const handleCollectSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        if (!paymentModalInvoice || collectAmount <= 0)
+        if (!paymentModalInvoice)
             return;
-        collectInvoicePayment(paymentModalInvoice.id, collectAmount, collectMethod);
+        const totalSettling = (collectAmount || 0) + (adjustAdvanceAmount || 0);
+        if (totalSettling <= 0)
+            return;
+        collectInvoicePayment(paymentModalInvoice.id, collectAmount || 0, collectMethod, adjustAdvanceAmount || 0);
         setPaymentModalInvoice(null);
         setCollectAmount(0);
+        setAdjustAdvanceAmount(0);
     };
     const handleCreateQuote = (e: React.FormEvent) => {
         e.preventDefault();
@@ -321,6 +349,9 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 productId: selectedProductId || `custom-${Date.now()}`,
                 name: quoteItemName.trim(),
                 category: 'BRANDED PROMOTIONAL GIFTS',
+                region: quoteShowRegionColumn && quoteItemRegion.trim() ? quoteItemRegion.trim() : undefined,
+                type: quoteShowTypeColumn && quoteItemType.trim() ? quoteItemType.trim() : undefined,
+                itemType: quoteShowTypeColumn && quoteItemType.trim() ? quoteItemType.trim() : undefined,
                 unit: 'pcs',
                 unitPrice: quoteItemPrice,
                 costPrice: Math.round(quoteItemPrice * 0.6),
@@ -363,6 +394,8 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 grandTotal: grand,
                 notes: quoteNotes,
                 quoteType,
+                showRegionColumn: quoteShowRegionColumn,
+                showTypeColumn: quoteShowTypeColumn,
             });
             setEditingQuotation(null);
         }
@@ -388,6 +421,8 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 status: 'Sent',
                 notes: quoteNotes,
                 quoteType,
+                showRegionColumn: quoteShowRegionColumn,
+                showTypeColumn: quoteShowTypeColumn,
             });
         }
         setShowNewQuoteModal(false);
@@ -400,6 +435,10 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
         setQuoteCustomerAddress('');
         setQuoteReferenceNo('');
         setQuoteItemName('');
+        setQuoteItemRegion('');
+        setQuoteItemType('');
+        setQuoteShowRegionColumn(false);
+        setQuoteShowTypeColumn(false);
         setQuoteItemQty(1);
         setQuoteItemPrice(1000);
         setQuoteDiscount(0);
@@ -642,18 +681,42 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                     </td>
 
                     <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold ${inv.paymentStatus === 'Paid'
-                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                    : inv.paymentStatus === 'Partial'
-                        ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                        : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
-                          {inv.paymentStatus}
-                        </span>
-                        {inv.paymentMethod && (<span className="text-[10.5px] text-slate-500 font-medium">
-                            {inv.paymentMethod}
-                          </span>)}
-                      </div>
+                      {(() => {
+                        const invPayments = getInvoicePayments(inv, transactions, paymentMethods);
+                        return (
+                          <div className="flex flex-col items-center justify-center gap-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold ${inv.paymentStatus === 'Paid'
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : inv.paymentStatus === 'Partial'
+                                    ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                    : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
+                                {inv.paymentStatus}
+                              </span>
+                            </div>
+
+                            {invPayments.length > 1 ? (
+                              <button
+                                type="button"
+                                onClick={() => setViewingPaymentDetailsInvoice(inv)}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-[10px] font-extrabold cursor-pointer transition-colors shadow-2xs"
+                                title={invPayments.map(p => `${p.channel}: ${profile.currencySymbol}${p.amount.toLocaleString()}`).join(' • ')}
+                              >
+                                <span>{invPayments.length} Channels</span>
+                                <span className="text-[9px]">▾</span>
+                              </button>
+                            ) : invPayments.length === 1 ? (
+                              <span className="text-[10px] text-slate-600 font-semibold bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
+                                {invPayments[0].channel}
+                              </span>
+                            ) : inv.paymentMethod ? (
+                              <span className="text-[10px] text-slate-500 font-medium">
+                                {inv.paymentMethod}
+                              </span>
+                            ) : null}
+                          </div>
+                        );
+                      })()}
                     </td>
 
                     <td className="py-2.5 px-3 text-center whitespace-nowrap">
@@ -711,6 +774,15 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                     setInvItemQty(1);
                     setInvItemPrice(1000);
                     setInvSelectedProductId('');
+                    setEditInvShowTypeColumn(inv.showTypeColumn ?? inv.items?.some(i => Boolean(i.type || i.itemType)) ?? false);
+                    setEditInvShowRegionColumn(inv.showRegionColumn ?? inv.items?.some(i => Boolean(i.region)) ?? false);
+                    setInvItemRegion('');
+                    setInvItemType('');
+                    const existingCustomTypes = (inv.items || [])
+                        .map((i: any) => i.type || i.itemType)
+                        .filter((t: any) => t && !PRESET_INVOICE_ITEM_TYPES.includes(t)) as string[];
+                    setEditInvCustomTypes(Array.from(new Set(existingCustomTypes)));
+                    setEditInvIsCustomType(false);
                 }} className="w-6.5 h-6.5 p-1 flex items-center justify-center text-slate-700 hover:text-blue-600 hover:bg-blue-50 rounded-md border border-slate-200 transition-colors cursor-pointer" title="Edit Invoice">
                           <Edit2 className="w-3 h-3"/>
                         </button>
@@ -729,6 +801,7 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                         {inv.dueAmount > 0 && (<button type="button" onClick={() => {
                         setPaymentModalInvoice(inv);
                         setCollectAmount(inv.dueAmount);
+                        setAdjustAdvanceAmount(0);
                     }} className="h-6.5 px-1.5 py-0.5 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md border border-emerald-300 text-[10px] font-bold whitespace-nowrap cursor-pointer transition-colors" title="Collect Due Payment">
                             +Pay
                           </button>)}
@@ -894,6 +967,10 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                         setQuoteNotes(q.notes || '');
                         setSelectedProductId('');
                         setAddedQuoteItems(q.items || []);
+                        setQuoteShowRegionColumn(q.showRegionColumn ?? q.items?.some(i => Boolean(i.region)) ?? false);
+                        setQuoteShowTypeColumn(q.showTypeColumn ?? q.items?.some(i => Boolean(i.type || i.itemType)) ?? false);
+                        setQuoteItemRegion('');
+                        setQuoteItemType('');
                         setShowNewQuoteModal(true);
                     }} className="w-6.5 h-6.5 p-1 flex items-center justify-center text-slate-700 hover:text-blue-600 hover:bg-blue-50 rounded-md border border-slate-200 transition-colors cursor-pointer" title="Edit Quotation">
                             <Edit2 className="w-3 h-3"/>
@@ -975,16 +1052,18 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
               <thead>
                 <tr className="bg-slate-50 text-[11px] font-bold text-slate-500 uppercase border-b border-slate-200">
                   <th className="py-3 px-4">Customer</th>
-                  <th className="py-3 px-4"></th>
-                  <th className="py-3 px-4"></th>
-                  <th className="py-3 px-4 text-right">Total</th>
-                  <th className="py-3 px-4 text-right">Due</th>
+                  <th className="py-3 px-4">Phone / Contact</th>
+                  <th className="py-3 px-4">Address</th>
+                  <th className="py-3 px-4 text-right">Advance Balance</th>
+                  <th className="py-3 px-4 text-right">Total Sales</th>
+                  <th className="py-3 px-4 text-right">Total Paid</th>
+                  <th className="py-3 px-4 text-right">Current Due</th>
                   <th className="py-3 px-4 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredClients.length === 0 ? (<tr>
-                    <td colSpan={6} className="py-10 text-center text-slate-500">
+                    <td colSpan={8} className="py-10 text-center text-slate-500">
                       <div className="max-w-xs mx-auto space-y-2">
                         <User className="w-8 h-8 mx-auto text-slate-300"/>
                         <p className="font-bold text-xs text-slate-700">
@@ -1010,25 +1089,85 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                         </button>
                       </div>
                     </td>
-                  </tr>) : (filteredClients.map((c) => (<tr key={c.id} className="hover:bg-slate-50">
+                  </tr>) : (filteredClients.map((c) => {
+                    const { clientInvoices, totalPurchased, totalPaid, dueAmount } = getCustomerInvoiceSummary(c, invoices);
+                    return (<tr key={c.id} className="hover:bg-slate-50 transition-colors">
                       <td className="py-3 px-4">
                         <div className="font-bold text-slate-900">{c.name}</div>
                         {c.company && (<div className="text-[11px] text-amber-700 font-semibold">{c.company}</div>)}
+                        <span className="text-[10px] text-slate-400 font-medium">
+                          {clientInvoices.length} {clientInvoices.length === 1 ? 'invoice' : 'invoices'}
+                        </span>
                       </td>
-                      <td className="py-3 px-4 text-slate-700 font-medium font-mono">{c.phone}</td>
+                      <td className="py-3 px-4 text-slate-700 font-medium font-mono">{c.phone || '—'}</td>
                       <td className="py-3 px-4 text-slate-500">{c.address || 'Chattogram'}</td>
-                      <td className="py-3 px-4 text-right font-bold text-slate-900">
+                      <td className="py-3 px-4 text-right">
+                        <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-black ${
+                          c.advanceBalance && c.advanceBalance > 0
+                            ? 'bg-indigo-50 text-indigo-700 border border-indigo-200 shadow-2xs'
+                            : 'text-slate-400 font-medium'
+                        }`}>
+                          {profile.currencySymbol}{(c.advanceBalance || 0).toLocaleString()}
+                        </span>
+                        {c.advanceBalance && c.advanceBalance > 0 && dueAmount > 0 && (
+                          <div className="mt-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const dueInv = clientInvoices.find(inv => inv.dueAmount > 0);
+                                if (dueInv) {
+                                  setPaymentModalInvoice(dueInv);
+                                  const adv = Math.min(c.advanceBalance || 0, dueInv.dueAmount);
+                                  setAdjustAdvanceAmount(adv);
+                                  setCollectAmount(Math.max(0, dueInv.dueAmount - adv));
+                                }
+                              }}
+                              className="text-[9.5px] font-black text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-300 px-1.5 py-0.5 rounded-md cursor-pointer transition-colors shadow-2xs inline-flex items-center gap-0.5 whitespace-nowrap"
+                              title="Adjust advance against customer due invoice"
+                            >
+                              <span>Adjust to Due</span>
+                              <ArrowRight className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-right font-black text-slate-900">
                         {profile.currencySymbol}
-                        {c.totalPurchased.toLocaleString()}
+                        {totalPurchased.toLocaleString()}
+                      </td>
+                      <td className="py-3 px-4 text-right font-black text-emerald-700">
+                        {profile.currencySymbol}
+                        {totalPaid.toLocaleString()}
                       </td>
                       <td className="py-3 px-4 text-right">
-                        <span className={`font-black ${c.dueAmount > 0 ? 'text-rose-600 text-sm' : 'text-slate-400'}`}>
+                        <span className={`font-black ${dueAmount > 0 ? 'text-rose-600 text-sm' : 'text-slate-400'}`}>
                           {profile.currencySymbol}
-                          {c.dueAmount.toLocaleString()}
+                          {dueAmount.toLocaleString()}
                         </span>
                       </td>
                       <td className="py-3 px-4 text-center">
-                        <div className="flex items-center justify-center gap-2">
+                        <div className="flex items-center justify-center gap-1.5">
+                          {c.advanceBalance && c.advanceBalance > 0 && dueAmount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const dueInv = clientInvoices.find(inv => inv.dueAmount > 0);
+                                if (dueInv) {
+                                  setPaymentModalInvoice(dueInv);
+                                  const adv = Math.min(c.advanceBalance || 0, dueInv.dueAmount);
+                                  setAdjustAdvanceAmount(adv);
+                                  setCollectAmount(Math.max(0, dueInv.dueAmount - adv));
+                                }
+                              }}
+                              className="p-1.5 text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition-all inline-flex items-center justify-center cursor-pointer"
+                              title="Adjust Advance Against Due"
+                            >
+                              <SlidersHorizontal className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <button type="button" onClick={() => setSelectedCustomerHistory(c)} className="p-1.5 text-indigo-600 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-all inline-flex items-center justify-center cursor-pointer" title={'View Invoices & Payment Ledger'}>
+                            <History className="w-3.5 h-3.5"/>
+                          </button>
                           <button type="button" onClick={() => {
                     setEditingCustomer(c);
                     setCustomerFormData({
@@ -1048,84 +1187,344 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                           </button>
                         </div>
                       </td>
-                    </tr>)))}
+                    </tr>);
+                  }))}
               </tbody>
             </table>
           </div>
         </div>)}
 
       {/* COLLECT DUE MODAL */}
-      {paymentModalInvoice && (<div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <form onSubmit={handleCollectSubmit} className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-4">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <h3 className="font-bold text-slate-900 text-base">
-                {'Collect Due Payment'}
-              </h3>
-              <button type="button" onClick={() => setPaymentModalInvoice(null)} className="text-slate-400 hover:text-slate-600 font-bold">
-                ✕
-              </button>
-            </div>
+      {/* COLLECT DUE MODAL */}
+      {paymentModalInvoice && (() => {
+        const modalPaymentHistory = getInvoicePayments(paymentModalInvoice, transactions, paymentMethods);
+        const modalCustomer = customers.find(c => isInvoiceMatchingCustomer(paymentModalInvoice, c));
+        const availableAdvance = Number(modalCustomer?.advanceBalance) || 0;
+        const maxAdvanceCanUse = Math.min(availableAdvance, paymentModalInvoice.dueAmount);
+        const remainingDueForChannel = Math.max(0, paymentModalInvoice.dueAmount - adjustAdvanceAmount);
+        const totalSettling = (collectAmount || 0) + (adjustAdvanceAmount || 0);
 
-            <div className="text-xs space-y-3">
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                <div className="font-bold text-slate-900">
-                  {paymentModalInvoice.customerName}
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+            <form onSubmit={handleCollectSubmit} className="bg-white rounded-2xl max-w-lg w-full max-h-[92vh] flex flex-col p-5 sm:p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 shrink-0">
+                <div>
+                  <h3 className="font-black text-slate-900 text-base flex items-center gap-2">
+                    <Receipt className="w-5 h-5 text-emerald-600" />
+                    <span>Collect Due Payment</span>
+                  </h3>
+                  <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                    Invoice #{paymentModalInvoice.invoiceNo} • {paymentModalInvoice.date}
+                  </div>
                 </div>
-                <div className="text-slate-500 mt-0.5">Invoice:{paymentModalInvoice.invoiceNo}
-                </div>
-                <div className="mt-2 text-rose-600 font-black text-sm">
-                  {'Current Due: '}
-                  {profile.currencySymbol}
-                  {paymentModalInvoice.dueAmount.toLocaleString()}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentModalInvoice(null);
+                    setAdjustAdvanceAmount(0);
+                    setCollectAmount(0);
+                  }}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors font-bold text-sm cursor-pointer"
+                >
+                  ✕
+                </button>
               </div>
 
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">
-                  {'Amount to Collect *'}
-                </label>
-                <input type="number" step="any" min="1" max={paymentModalInvoice.dueAmount} required value={collectAmount} onChange={(e) => setCollectAmount(Number(e.target.value))} className="w-full px-3 py-2 border border-slate-200 rounded-xl font-black text-base text-emerald-700"/>
-              </div>
+              <div className="overflow-y-auto flex-1 pr-1 my-3 space-y-4 text-xs scrollbar-thin">
+                {/* Customer & Invoice Financial Overview */}
+                <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 space-y-2.5">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="font-extrabold text-slate-900 text-sm">
+                        {paymentModalInvoice.customerName}
+                      </div>
+                      {paymentModalInvoice.customerPhone && (
+                        <div className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5 font-mono">
+                          <Phone className="w-3 h-3 text-slate-400" />
+                          <span>{paymentModalInvoice.customerPhone}</span>
+                        </div>
+                      )}
+                    </div>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold border ${
+                      paymentModalInvoice.paymentStatus === 'Paid'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : 'bg-amber-50 text-amber-700 border-amber-200'
+                    }`}>
+                      {paymentModalInvoice.paymentStatus}
+                    </span>
+                  </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="font-bold text-slate-700 block">
-                    {'Payment Channel *'}
-                  </label>
-                  {(() => {
-                    const selectedPm = activePaymentMethods.find(p => p.name === collectMethod || p.id === collectMethod) || activePaymentMethods[0];
-                    if (!selectedPm) return null;
-                    const bal = getPaymentMethodLiveBalance(selectedPm, chartOfAccounts, transactions, invoices, accountBalances);
-                    return (
-                      <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                        Live: {profile.currencySymbol}{bal.toLocaleString()}
+                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-200/70 text-center">
+                    <div className="bg-white p-2 rounded-lg border border-slate-200/60">
+                      <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Total Invoice</div>
+                      <div className="text-xs sm:text-sm font-black text-slate-900 mt-0.5">
+                        {profile.currencySymbol}{paymentModalInvoice.grandTotal.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="bg-white p-2 rounded-lg border border-slate-200/60">
+                      <div className="text-[10px] text-emerald-600 font-bold uppercase tracking-wider">Total Paid</div>
+                      <div className="text-xs sm:text-sm font-black text-emerald-700 mt-0.5">
+                        {profile.currencySymbol}{paymentModalInvoice.paidAmount.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="bg-white p-2 rounded-lg border border-rose-200/70 bg-rose-50/30">
+                      <div className="text-[10px] text-rose-600 font-bold uppercase tracking-wider">Current Due</div>
+                      <div className="text-xs sm:text-sm font-black text-rose-600 mt-0.5">
+                        {profile.currencySymbol}{paymentModalInvoice.dueAmount.toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Prior Payments Breakdown / Channels Used */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
+                      <History className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Payment History ({modalPaymentHistory.length} receipts)</span>
+                    </div>
+                    <span className="text-[10.5px] font-semibold text-slate-500">
+                      Paid: {profile.currencySymbol}{paymentModalInvoice.paidAmount.toLocaleString()}
+                    </span>
+                  </div>
+
+                  {modalPaymentHistory.length === 0 ? (
+                    <div className="p-3 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400 text-xs">
+                      No prior payments received for this invoice.
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1 scrollbar-thin">
+                      {modalPaymentHistory.map((item, idx) => (
+                        <div key={item.id || idx} className="flex items-center justify-between p-2 rounded-lg bg-slate-50 hover:bg-slate-100/70 border border-slate-200 transition-colors">
+                          <div className="flex items-center gap-2">
+                            <span className="p-1 rounded-md bg-white border border-slate-200 text-slate-700">
+                              {item.channel.toLowerCase().includes('advance') ? (
+                                <Landmark className="w-3.5 h-3.5 text-indigo-600" />
+                              ) : item.channel.toLowerCase().includes('cash') ? (
+                                <Banknote className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : item.channel.toLowerCase().includes('bkash') || item.channel.toLowerCase().includes('nagad') ? (
+                                <Smartphone className="w-3.5 h-3.5 text-pink-600" />
+                              ) : (
+                                <Landmark className="w-3.5 h-3.5 text-blue-600" />
+                              )}
+                            </span>
+                            <div>
+                              <div className="font-extrabold text-slate-800 text-[11.5px]">
+                                {item.channel}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                {item.date} {item.description ? `• ${item.description}` : ''}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="font-black text-emerald-700 text-xs whitespace-nowrap">
+                            +{profile.currencySymbol}{item.amount.toLocaleString()}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Customer Advance Adjustment Box */}
+                {availableAdvance > 0 && (
+                  <div className="p-3.5 bg-indigo-50/70 rounded-xl border border-indigo-200 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="p-1.5 rounded-lg bg-indigo-100 text-indigo-700">
+                          <Landmark className="w-4 h-4" />
+                        </span>
+                        <div>
+                          <div className="font-extrabold text-slate-800 text-xs">Customer Advance Balance</div>
+                          <div className="text-[11px] text-indigo-700 font-bold">
+                            Available Credit: {profile.currencySymbol}{availableAdvance.toLocaleString()}
+                          </div>
+                        </div>
+                      </div>
+                      {maxAdvanceCanUse > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAdjustAdvanceAmount(maxAdvanceCanUse);
+                            setCollectAmount(Math.max(0, paymentModalInvoice.dueAmount - maxAdvanceCanUse));
+                          }}
+                          className="text-[10.5px] font-extrabold text-indigo-700 hover:text-indigo-900 bg-white border border-indigo-200 hover:border-indigo-300 px-2.5 py-1 rounded-lg cursor-pointer transition-colors shadow-2xs"
+                        >
+                          Use Full Advance ({profile.currencySymbol}{maxAdvanceCanUse.toLocaleString()})
+                        </button>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="font-bold text-slate-700 block text-[11px]">
+                          Adjust from Advance ({profile.currencySymbol})
+                        </label>
+                        {adjustAdvanceAmount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAdjustAdvanceAmount(0);
+                              setCollectAmount(paymentModalInvoice.dueAmount);
+                            }}
+                            className="text-[10px] text-rose-600 hover:underline font-bold cursor-pointer"
+                          >
+                            Clear Advance
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        max={maxAdvanceCanUse}
+                        value={adjustAdvanceAmount === 0 ? '' : adjustAdvanceAmount}
+                        onChange={(e) => {
+                          const val = Math.min(maxAdvanceCanUse, Math.max(0, Number(e.target.value) || 0));
+                          setAdjustAdvanceAmount(val);
+                          if ((collectAmount || 0) + val > paymentModalInvoice.dueAmount) {
+                            setCollectAmount(Math.max(0, paymentModalInvoice.dueAmount - val));
+                          }
+                        }}
+                        placeholder="0"
+                        className="w-full px-3 py-2 border border-indigo-200 rounded-xl font-black text-sm text-indigo-700 bg-white focus:ring-1 focus:ring-indigo-400 focus:outline-hidden"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* New Due Collection Form Controls */}
+                <div className="p-3.5 bg-amber-50/50 rounded-xl border border-amber-200/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800 text-xs">
+                      {adjustAdvanceAmount > 0 ? 'Additional Cash / Channel Collection' : 'New Collection Details'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (availableAdvance > 0 && adjustAdvanceAmount === 0) {
+                          setAdjustAdvanceAmount(maxAdvanceCanUse);
+                          setCollectAmount(Math.max(0, paymentModalInvoice.dueAmount - maxAdvanceCanUse));
+                        } else {
+                          setCollectAmount(remainingDueForChannel);
+                        }
+                      }}
+                      className="text-[10.5px] font-extrabold text-amber-700 hover:text-amber-800 underline cursor-pointer"
+                    >
+                      {adjustAdvanceAmount > 0
+                        ? `Collect Remaining (${profile.currencySymbol}${remainingDueForChannel.toLocaleString()})`
+                        : `Collect Full Due (${profile.currencySymbol}${paymentModalInvoice.dueAmount.toLocaleString()})`}
+                    </button>
+                  </div>
+
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">
+                      {adjustAdvanceAmount > 0 ? 'Amount to Collect from Channel' : 'Amount to Collect *'}
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      max={remainingDueForChannel}
+                      value={collectAmount === 0 && adjustAdvanceAmount > 0 ? 0 : (collectAmount || '')}
+                      onChange={(e) => {
+                        const val = Math.max(0, Number(e.target.value) || 0);
+                        setCollectAmount(Math.min(remainingDueForChannel, val));
+                      }}
+                      placeholder="0"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl font-black text-base text-emerald-700 bg-white"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="font-bold text-slate-700 block">
+                        {'Deposit Into Payment Channel *'}
+                      </label>
+                      {(() => {
+                        const selectedPm = activePaymentMethods.find(p => p.name === collectMethod || p.id === collectMethod) || activePaymentMethods[0];
+                        if (!selectedPm) return null;
+                        const bal = getPaymentMethodLiveBalance(selectedPm, chartOfAccounts, transactions, invoices, accountBalances);
+                        return (
+                          <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                            Live: {profile.currencySymbol}{bal.toLocaleString()}
+                          </span>
+                        );
+                      })()}
+                    </div>
+                    <select
+                      value={collectMethod}
+                      onChange={(e) => setCollectMethod(e.target.value)}
+                      disabled={collectAmount <= 0 && adjustAdvanceAmount > 0}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium text-xs bg-white cursor-pointer disabled:bg-slate-100 disabled:text-slate-400"
+                    >
+                      {activePaymentMethods.map((pm) => {
+                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                        return (
+                          <option key={pm.id} value={pm.name}>
+                            {pm.name} {pm.nameBn ? `(${pm.nameBn})` : ''} — [{profile.currencySymbol}{bal.toLocaleString()}]
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+
+                  {/* Settlement Summary Breakdown */}
+                  <div className="bg-white p-2.5 rounded-lg border border-amber-200/60 text-xs space-y-1">
+                    {adjustAdvanceAmount > 0 && (
+                      <div className="flex justify-between text-indigo-700 font-bold">
+                        <span>Advance Adjusted:</span>
+                        <span>+{profile.currencySymbol}{adjustAdvanceAmount.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {collectAmount > 0 && (
+                      <div className="flex justify-between text-emerald-700 font-bold">
+                        <span>Channel Collection ({collectMethod}):</span>
+                        <span>+{profile.currencySymbol}{collectAmount.toLocaleString()}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between text-slate-900 font-black pt-1 border-t border-slate-100">
+                      <span>Total Payment Applied:</span>
+                      <span className="text-emerald-700">+{profile.currencySymbol}{totalSettling.toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between text-slate-500 font-semibold text-[11px]">
+                      <span>Remaining Due After Settlement:</span>
+                      <span className={paymentModalInvoice.dueAmount - totalSettling > 0 ? 'text-rose-600 font-bold' : 'text-emerald-600 font-bold'}>
+                        {profile.currencySymbol}{Math.max(0, paymentModalInvoice.dueAmount - totalSettling).toLocaleString()}
                       </span>
-                    );
-                  })()}
+                    </div>
+                  </div>
                 </div>
-                <select value={collectMethod} onChange={(e) => setCollectMethod(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium text-xs">
-                  {activePaymentMethods.map((pm) => {
-                    const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
-                    return (
-                      <option key={pm.id} value={pm.name}>
-                        {pm.name} {pm.nameBn ? `(${pm.nameBn})` : ''} — [{profile.currencySymbol}{bal.toLocaleString()}]
-                      </option>
-                    );
-                  })}
-                </select>
               </div>
-            </div>
 
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-              <button type="button" onClick={() => setPaymentModalInvoice(null)} className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50">
-                {'Cancel'}
-              </button>
-              <button type="submit" className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-2xs">
-                {'Confirm Collection'}
-              </button>
-            </div>
-          </form>
-        </div>)}
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentModalInvoice(null);
+                    setAdjustAdvanceAmount(0);
+                    setCollectAmount(0);
+                  }}
+                  className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                >
+                  {'Cancel'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={totalSettling <= 0}
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold shadow-2xs cursor-pointer transition-colors"
+                >
+                  {adjustAdvanceAmount > 0 && collectAmount <= 0
+                    ? `Confirm Advance Adjustment (${profile.currencySymbol}${adjustAdvanceAmount.toLocaleString()})`
+                    : adjustAdvanceAmount > 0 && collectAmount > 0
+                    ? `Confirm Collection & Adjustment`
+                    : 'Confirm Collection'}
+                </button>
+              </div>
+            </form>
+          </div>
+        );
+      })()}
 
       {/* EDIT INVOICE MODAL */}
       {editingInvoice && (<div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
@@ -1166,14 +1565,39 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 </div>
               </div>
 
+              {/* Optional Columns Banner */}
+              <div className="bg-amber-50/70 border border-amber-200/80 rounded-xl p-2.5 flex flex-wrap items-center gap-3">
+                <span className="text-amber-900 font-extrabold text-xs tracking-wide uppercase">
+                  OPTIONAL COLUMNS OPTION:
+                </span>
+                <label className="bg-white px-3 py-1.5 rounded-lg border border-amber-200/80 shadow-2xs flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-700 hover:border-amber-400 transition-colors select-none">
+                  <input
+                    type="checkbox"
+                    checked={editInvShowTypeColumn}
+                    onChange={(e) => setEditInvShowTypeColumn(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-slate-300 text-amber-600 focus:ring-amber-500 cursor-pointer accent-amber-600"
+                  />
+                  <span>Show Type Column</span>
+                </label>
+                <label className="bg-white px-3 py-1.5 rounded-lg border border-amber-200/80 shadow-2xs flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-700 hover:border-amber-400 transition-colors select-none">
+                  <input
+                    type="checkbox"
+                    checked={editInvShowRegionColumn}
+                    onChange={(e) => setEditInvShowRegionColumn(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-slate-300 text-amber-600 focus:ring-amber-500 cursor-pointer accent-amber-600"
+                  />
+                  <span>Show Region Column</span>
+                </label>
+              </div>
+
               <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 space-y-3">
                 <div className="font-bold text-slate-800 border-b border-slate-200 pb-1 flex justify-between items-center">
                   <span>{'Add Item Row'}</span>
                   <span className="text-[10px] text-slate-400 font-medium">{'Click Add Row below to save to list'}</span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                  <div className={editInvShowRegionColumn && editInvShowTypeColumn ? "sm:col-span-4" : (editInvShowRegionColumn || editInvShowTypeColumn ? "sm:col-span-5" : "sm:col-span-6")}>
                     <label className="font-bold text-slate-600 block mb-1">
                       {'Service / Item Description *'}
                     </label>
@@ -1199,7 +1623,93 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
+                  {editInvShowTypeColumn && (
+                    <div className="sm:col-span-2">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="font-bold text-slate-600">
+                          {'Type'}
+                        </label>
+                        {editInvIsCustomType && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditInvIsCustomType(false);
+                              setInvItemType('');
+                            }}
+                            className="text-[10px] text-amber-600 hover:text-amber-700 font-bold underline cursor-pointer"
+                          >
+                            List
+                          </button>
+                        )}
+                      </div>
+                      {editInvIsCustomType ? (
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={invItemType}
+                            onChange={(e) => setInvItemType(e.target.value)}
+                            placeholder="Enter custom type..."
+                            autoFocus
+                            className="w-full px-3 py-1.5 pr-7 border border-amber-300 rounded-lg bg-white font-medium focus:ring-1 focus:ring-amber-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditInvIsCustomType(false);
+                              setInvItemType('');
+                            }}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 font-bold cursor-pointer text-xs"
+                            title="Cancel custom"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ) : (
+                        <select
+                          value={invItemType}
+                          onChange={(e) => {
+                            if (e.target.value === '__custom__') {
+                              setEditInvIsCustomType(true);
+                              setInvItemType('');
+                            } else {
+                              setInvItemType(e.target.value);
+                            }
+                          }}
+                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg bg-white font-bold"
+                        >
+                          <option value="">{'-- Select Type --'}</option>
+                          {PRESET_INVOICE_ITEM_TYPES.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                          {editInvCustomTypes.map((ct) => (
+                            <option key={ct} value={ct}>
+                              {ct}
+                            </option>
+                          ))}
+                          <option value="__custom__">{'+ Custom Type...'}</option>
+                        </select>
+                      )}
+                    </div>
+                  )}
+
+                  {editInvShowRegionColumn && (
+                    <div className="sm:col-span-2">
+                      <label className="font-bold text-slate-600 block mb-1">
+                        {'Region'}
+                      </label>
+                      <input
+                        type="text"
+                        value={invItemRegion}
+                        onChange={(e) => setInvItemRegion(e.target.value)}
+                        placeholder="e.g. Dhaka, Chittagong"
+                        className="w-full px-3 py-1.5 border border-slate-200 rounded-lg bg-white font-medium"
+                      />
+                    </div>
+                  )}
+
+                  <div className={editInvShowRegionColumn && editInvShowTypeColumn ? "sm:col-span-4 grid grid-cols-2 gap-2" : (editInvShowRegionColumn || editInvShowTypeColumn ? "sm:col-span-5 grid grid-cols-2 gap-2" : "sm:col-span-6 grid grid-cols-2 gap-2")}>
                     <div>
                       <label className="font-bold text-slate-600 block mb-1">
                         {'Quantity'}
@@ -1225,6 +1735,9 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 const newItem = {
                     productId: invSelectedProductId || `custom-${Date.now()}`,
                     name: invItemName.trim(),
+                    region: editInvShowRegionColumn && invItemRegion.trim() ? invItemRegion.trim() : undefined,
+                    type: editInvShowTypeColumn && invItemType.trim() ? invItemType.trim() : undefined,
+                    itemType: editInvShowTypeColumn && invItemType.trim() ? invItemType.trim() : undefined,
                     unit: 'pcs',
                     unitPrice: invItemPrice,
                     costPrice: Math.round(invItemPrice * 0.6),
@@ -1232,7 +1745,13 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                     totalPrice: subTotal,
                 };
                 setEditInvoiceItems([...editInvoiceItems, newItem]);
+                if (invItemType.trim() && !PRESET_INVOICE_ITEM_TYPES.includes(invItemType.trim() as any) && !editInvCustomTypes.includes(invItemType.trim())) {
+                    setEditInvCustomTypes(prev => [...prev, invItemType.trim()]);
+                }
                 setInvItemName('');
+                setInvItemRegion('');
+                setInvItemType('');
+                setEditInvIsCustomType(false);
                 setInvSelectedProductId('');
                 setInvItemQty(1);
                 setInvItemPrice(1000);
@@ -1254,6 +1773,8 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                         <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold text-[11px]">
                           <th className="p-2 text-center w-10">SL</th>
                           <th className="p-2">{'Description'}</th>
+                          {editInvShowTypeColumn && <th className="p-2 text-center w-24">{'Type'}</th>}
+                          {editInvShowRegionColumn && <th className="p-2 text-center w-24">{'Region'}</th>}
                           <th className="p-2 text-center w-28">{'Qty'}</th>
                           <th className="p-2 text-right w-32">{"RateTk"}</th>
                           <th className="p-2 text-right w-28">{"TotalTk"}</th>
@@ -1264,6 +1785,16 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                         {editInvoiceItems.map((item, idx) => (<tr key={idx} className="hover:bg-slate-50/50">
                             <td className="p-2 text-center text-slate-400">{idx + 1}</td>
                             <td className="p-2 font-semibold text-slate-800">{item.name}</td>
+                            {editInvShowTypeColumn && (
+                              <td className="p-2 text-center font-medium text-slate-700 text-xs">
+                                {item.type || item.itemType || '-'}
+                              </td>
+                            )}
+                            {editInvShowRegionColumn && (
+                              <td className="p-2 text-center font-medium text-slate-700 text-xs">
+                                {item.region || '-'}
+                              </td>
+                            )}
                             <td className="p-1.5 text-center">
                               <div className="flex items-center justify-center gap-1">
                                 <input type="number" step="any" min="1" value={item.qty} onChange={(e) => handleUpdateEditInvoiceItemRow(idx, 'qty', Math.max(1, Number(e.target.value)))} className="w-16 px-1.5 py-1 text-center font-bold text-slate-800 bg-white border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-slate-900"/>
@@ -1412,6 +1943,10 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 setQuoteCustomerPhone('');
                 setQuoteCustomerCompany('');
                 setQuoteItemName('');
+                setQuoteItemRegion('');
+                setQuoteItemType('');
+                setQuoteShowRegionColumn(false);
+                setQuoteShowTypeColumn(false);
                 setQuoteDiscount(0);
                 setQuoteNotes('');
             }} className="text-slate-400 hover:text-slate-600 font-bold">
@@ -1540,6 +2075,31 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 </div>
               </div>
 
+              {/* Optional Columns Banner */}
+              <div className="bg-amber-50/70 border border-amber-200/80 rounded-xl p-2.5 flex flex-wrap items-center gap-3">
+                <span className="text-amber-900 font-extrabold text-xs tracking-wide uppercase">
+                  OPTIONAL COLUMNS OPTION:
+                </span>
+                <label className="bg-white px-3 py-1.5 rounded-lg border border-amber-200/80 shadow-2xs flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-700 hover:border-amber-400 transition-colors select-none">
+                  <input
+                    type="checkbox"
+                    checked={quoteShowTypeColumn}
+                    onChange={(e) => setQuoteShowTypeColumn(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-slate-300 text-amber-600 focus:ring-amber-500 cursor-pointer accent-amber-600"
+                  />
+                  <span>Show Type Column</span>
+                </label>
+                <label className="bg-white px-3 py-1.5 rounded-lg border border-amber-200/80 shadow-2xs flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-700 hover:border-amber-400 transition-colors select-none">
+                  <input
+                    type="checkbox"
+                    checked={quoteShowRegionColumn}
+                    onChange={(e) => setQuoteShowRegionColumn(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-slate-300 text-amber-600 focus:ring-amber-500 cursor-pointer accent-amber-600"
+                  />
+                  <span>Show Region Column</span>
+                </label>
+              </div>
+
               {/* Service / Item Description Field */}
               <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 space-y-3">
                 <div className="font-bold text-slate-800 border-b border-slate-200 pb-1 flex justify-between items-center">
@@ -1547,12 +2107,12 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                   <span className="text-[10px] text-slate-400 font-medium">{'Click Add Row below to save to list'}</span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                  <div className={quoteShowRegionColumn && quoteShowTypeColumn ? "sm:col-span-4" : (quoteShowRegionColumn || quoteShowTypeColumn ? "sm:col-span-5" : "sm:col-span-6")}>
                     <label className="font-bold text-slate-600 block mb-1">
                       {'Service / Item Description *'}
                     </label>
-                    {quoteType === 'Custom' ? (<input type="text" value={quoteItemName} onChange={(e) => setQuoteItemName(e.target.value)} placeholder={'Enter any custom description...'} className="w-full px-3 py-1.5 border border-slate-200 rounded-lg bg-white"/>) : (<select value={selectedProductId} onChange={(e) => {
+                    {quoteType === 'Custom' ? (<input type="text" value={quoteItemName} onChange={(e) => setQuoteItemName(e.target.value)} placeholder={'Enter any custom description...'} className="w-full px-3 py-1.5 border border-slate-200 rounded-lg bg-white font-medium"/>) : (<select value={selectedProductId} onChange={(e) => {
                     const prodId = e.target.value;
                     setSelectedProductId(prodId);
                     const prod = products.find((p) => p.id === prodId);
@@ -1571,7 +2131,93 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                       </select>)}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
+                  {quoteShowTypeColumn && (
+                    <div className="sm:col-span-2">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="font-bold text-slate-600">
+                          {'Type'}
+                        </label>
+                        {quoteIsCustomType && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQuoteIsCustomType(false);
+                              setQuoteItemType('');
+                            }}
+                            className="text-[10px] text-amber-600 hover:text-amber-700 font-bold underline cursor-pointer"
+                          >
+                            List
+                          </button>
+                        )}
+                      </div>
+                      {quoteIsCustomType ? (
+                        <div className="relative">
+                          <input
+                            type="text"
+                            value={quoteItemType}
+                            onChange={(e) => setQuoteItemType(e.target.value)}
+                            placeholder="Enter custom type..."
+                            autoFocus
+                            className="w-full px-3 py-1.5 pr-7 border border-amber-300 rounded-lg bg-white font-medium focus:ring-1 focus:ring-amber-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQuoteIsCustomType(false);
+                              setQuoteItemType('');
+                            }}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 font-bold cursor-pointer text-xs"
+                            title="Cancel custom"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ) : (
+                        <select
+                          value={quoteItemType}
+                          onChange={(e) => {
+                            if (e.target.value === '__custom__') {
+                              setQuoteIsCustomType(true);
+                              setQuoteItemType('');
+                            } else {
+                              setQuoteItemType(e.target.value);
+                            }
+                          }}
+                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg bg-white font-bold"
+                        >
+                          <option value="">{'-- Select Type --'}</option>
+                          {PRESET_INVOICE_ITEM_TYPES.map((opt) => (
+                            <option key={opt} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                          {quoteCustomTypes.map((ct) => (
+                            <option key={ct} value={ct}>
+                              {ct}
+                            </option>
+                          ))}
+                          <option value="__custom__">{'+ Custom Type...'}</option>
+                        </select>
+                      )}
+                    </div>
+                  )}
+
+                  {quoteShowRegionColumn && (
+                    <div className="sm:col-span-2">
+                      <label className="font-bold text-slate-600 block mb-1">
+                        {'Region'}
+                      </label>
+                      <input
+                        type="text"
+                        value={quoteItemRegion}
+                        onChange={(e) => setQuoteItemRegion(e.target.value)}
+                        placeholder="e.g. Dhaka, Chittagong"
+                        className="w-full px-3 py-1.5 border border-slate-200 rounded-lg bg-white font-medium"
+                      />
+                    </div>
+                  )}
+
+                  <div className={quoteShowRegionColumn && quoteShowTypeColumn ? "sm:col-span-4 grid grid-cols-2 gap-2" : (quoteShowRegionColumn || quoteShowTypeColumn ? "sm:col-span-5 grid grid-cols-2 gap-2" : "sm:col-span-6 grid grid-cols-2 gap-2")}>
                     <div>
                       <label className="font-bold text-slate-600 block mb-1">
                         {'Quantity'}
@@ -1598,6 +2244,9 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                     productId: selectedProductId || `custom-${Date.now()}`,
                     name: quoteItemName.trim(),
                     category: 'BRANDED PROMOTIONAL GIFTS',
+                    region: quoteShowRegionColumn && quoteItemRegion.trim() ? quoteItemRegion.trim() : undefined,
+                    type: quoteShowTypeColumn && quoteItemType.trim() ? quoteItemType.trim() : undefined,
+                    itemType: quoteShowTypeColumn && quoteItemType.trim() ? quoteItemType.trim() : undefined,
                     unit: 'pcs',
                     unitPrice: quoteItemPrice,
                     costPrice: Math.round(quoteItemPrice * 0.6),
@@ -1605,7 +2254,13 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                     totalPrice: subTotal,
                 };
                 setAddedQuoteItems([...addedQuoteItems, newItem]);
+                if (quoteItemType.trim() && !PRESET_INVOICE_ITEM_TYPES.includes(quoteItemType.trim() as any) && !quoteCustomTypes.includes(quoteItemType.trim())) {
+                    setQuoteCustomTypes(prev => [...prev, quoteItemType.trim()]);
+                }
                 setQuoteItemName('');
+                setQuoteItemRegion('');
+                setQuoteItemType('');
+                setQuoteIsCustomType(false);
                 setSelectedProductId('');
                 setQuoteItemQty(1);
                 setQuoteItemPrice(1000);
@@ -1627,6 +2282,8 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                         <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold text-[11px]">
                           <th className="p-2 text-center w-10">SL</th>
                           <th className="p-2">{'Description'}</th>
+                          {quoteShowTypeColumn && <th className="p-2 text-center w-24">{'Type'}</th>}
+                          {quoteShowRegionColumn && <th className="p-2 text-center w-24">{'Region'}</th>}
                           <th className="p-2 text-center w-28">{'Qty'}</th>
                           <th className="p-2 text-right w-32">{"RateTk"}</th>
                           <th className="p-2 text-right w-28">{"TotalTk"}</th>
@@ -1637,6 +2294,16 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                         {addedQuoteItems.map((item, idx) => (<tr key={idx} className="hover:bg-slate-50/50">
                             <td className="p-2 text-center text-slate-400">{idx + 1}</td>
                             <td className="p-2 font-semibold text-slate-800">{item.name}</td>
+                            {quoteShowTypeColumn && (
+                              <td className="p-2 text-center font-medium text-slate-700 text-xs">
+                                {item.type || item.itemType || '-'}
+                              </td>
+                            )}
+                            {quoteShowRegionColumn && (
+                              <td className="p-2 text-center font-medium text-slate-700 text-xs">
+                                {item.region || '-'}
+                              </td>
+                            )}
                             <td className="p-1.5 text-center">
                               <div className="flex items-center justify-center gap-1">
                                 <input type="number" step="any" min="1" value={item.qty} onChange={(e) => handleUpdateQuoteItemRow(idx, 'qty', Math.max(1, Number(e.target.value)))} className="w-16 px-1.5 py-1 text-center font-bold text-slate-800 bg-white border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-slate-900"/>
@@ -1766,6 +2433,10 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 setQuoteCustomerCompany('');
                 setQuoteReferenceNo('');
                 setQuoteItemName('');
+                setQuoteItemRegion('');
+                setQuoteItemType('');
+                setQuoteShowRegionColumn(false);
+                setQuoteShowTypeColumn(false);
                 setQuoteDiscount(0);
                 setQuoteDiscountType('amount');
                 setQuoteVatType('percent');
@@ -1988,5 +2659,384 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
             setActiveSubTab('invoices');
             onOpenInvoiceModal(newInvoiceId);
         }}/>
+
+      {/* INVOICE MULTI-CHANNEL PAYMENT DETAILS MODAL */}
+      {viewingPaymentDetailsInvoice && (() => {
+        const invPayments = getInvoicePayments(viewingPaymentDetailsInvoice, transactions, paymentMethods);
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+            <div className="bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150 space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600">
+                    <Receipt className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-slate-900 text-sm sm:text-base">
+                      Payment Channels Breakdown
+                    </h3>
+                    <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                      #{viewingPaymentDetailsInvoice.invoiceNo} • {viewingPaymentDetailsInvoice.customerName}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setViewingPaymentDetailsInvoice(null)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 font-bold text-sm cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Financial summary banner */}
+              <div className="grid grid-cols-3 gap-2 p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
+                <div>
+                  <div className="text-[10px] text-slate-500 font-bold uppercase">Total Invoiced</div>
+                  <div className="text-xs sm:text-sm font-black text-slate-900 mt-0.5">
+                    {profile.currencySymbol}{viewingPaymentDetailsInvoice.grandTotal.toLocaleString()}
+                  </div>
+                </div>
+                <div className="border-x border-slate-200">
+                  <div className="text-[10px] text-emerald-600 font-bold uppercase">Total Paid</div>
+                  <div className="text-xs sm:text-sm font-black text-emerald-700 mt-0.5">
+                    {profile.currencySymbol}{viewingPaymentDetailsInvoice.paidAmount.toLocaleString()}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-rose-600 font-bold uppercase">Due Remaining</div>
+                  <div className="text-xs sm:text-sm font-black text-rose-600 mt-0.5">
+                    {profile.currencySymbol}{viewingPaymentDetailsInvoice.dueAmount.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+
+              {/* Itemized payments list */}
+              <div className="space-y-2">
+                <div className="text-xs font-bold text-slate-700">
+                  Received Payments ({invPayments.length})
+                </div>
+                {invPayments.length === 0 ? (
+                  <div className="p-4 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400 text-xs">
+                    No payment transactions recorded for this invoice.
+                  </div>
+                ) : (
+                  <div className="max-h-56 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                    {invPayments.map((p, idx) => (
+                      <div key={p.id || idx} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 hover:bg-slate-100/70 border border-slate-200 transition-colors">
+                        <div className="flex items-center gap-2.5">
+                          <span className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-700">
+                            {p.channel.toLowerCase().includes('cash') ? (
+                              <Banknote className="w-4 h-4 text-emerald-600" />
+                            ) : p.channel.toLowerCase().includes('bkash') || p.channel.toLowerCase().includes('nagad') ? (
+                              <Smartphone className="w-4 h-4 text-pink-600" />
+                            ) : (
+                              <Landmark className="w-4 h-4 text-blue-600" />
+                            )}
+                          </span>
+                          <div>
+                            <div className="font-black text-slate-800 text-xs">
+                              {p.channel}
+                            </div>
+                            <div className="text-[10.5px] text-slate-400">
+                              {p.date} {p.description ? `• ${p.description}` : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="font-black text-emerald-700 text-sm whitespace-nowrap">
+                          +{profile.currencySymbol}{p.amount.toLocaleString()}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-between items-center pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setViewingPaymentDetailsInvoice(null)}
+                  className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                >
+                  Close
+                </button>
+                {viewingPaymentDetailsInvoice.dueAmount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const target = viewingPaymentDetailsInvoice;
+                      setViewingPaymentDetailsInvoice(null);
+                      setPaymentModalInvoice(target);
+                      setCollectAmount(target.dueAmount);
+                      setAdjustAdvanceAmount(0);
+                    }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-2xs cursor-pointer flex items-center gap-1.5 transition-colors"
+                  >
+                    <span>+ Collect Remaining Due</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* CUSTOMER INVOICES & PAYMENT HISTORY MODAL */}
+      {selectedCustomerHistory && (() => {
+        const { clientInvoices, totalPurchased, totalPaid, dueAmount } = getCustomerInvoiceSummary(selectedCustomerHistory, invoices);
+        const customerTxList = (transactions || []).filter(t => {
+          if (t.type !== 'INCOME') return false;
+          if (clientInvoices.some(inv => (inv.invoiceNo || '').toLowerCase().trim() === (t.refNo || '').toLowerCase().trim())) return true;
+          const custName = (selectedCustomerHistory.name || '').toLowerCase().trim();
+          const txCust = (t.customerOrSupplier || '').toLowerCase().trim();
+          if (custName && (txCust === custName || txCust.includes(custName))) return true;
+          return false;
+        });
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+            <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[92vh] flex flex-col p-5 sm:p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 shrink-0">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 rounded-xl bg-indigo-50 text-indigo-600">
+                    <User className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-slate-900 text-base sm:text-lg flex items-center gap-2">
+                      <span>{selectedCustomerHistory.name}</span>
+                      {selectedCustomerHistory.company && (
+                        <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
+                          {selectedCustomerHistory.company}
+                        </span>
+                      )}
+                    </h3>
+                    <div className="text-xs text-slate-500 flex items-center gap-3 mt-0.5">
+                      <span className="font-mono">{selectedCustomerHistory.phone || 'No phone'}</span>
+                      {selectedCustomerHistory.address && <span>• {selectedCustomerHistory.address}</span>}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedCustomerHistory(null)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 font-bold text-sm cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Financial Metrics Banner */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 my-4 shrink-0 text-center">
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                  <div className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Total Sales</div>
+                  <div className="text-base sm:text-lg font-black text-slate-900 mt-1">
+                    {profile.currencySymbol}{totalPurchased.toLocaleString()}
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">{clientInvoices.length} invoices</div>
+                </div>
+                <div className="bg-emerald-50/60 p-3 rounded-xl border border-emerald-200">
+                  <div className="text-[10px] text-emerald-700 font-bold uppercase tracking-wider">Total Paid</div>
+                  <div className="text-base sm:text-lg font-black text-emerald-700 mt-1">
+                    {profile.currencySymbol}{totalPaid.toLocaleString()}
+                  </div>
+                  <div className="text-[10px] text-emerald-600 mt-0.5">{customerTxList.length} payments</div>
+                </div>
+                <div className="bg-indigo-50/60 p-3 rounded-xl border border-indigo-200">
+                  <div className="text-[10px] text-indigo-700 font-bold uppercase tracking-wider">Advance Balance</div>
+                  <div className="text-base sm:text-lg font-black text-indigo-700 mt-1">
+                    {profile.currencySymbol}{(selectedCustomerHistory.advanceBalance || 0).toLocaleString()}
+                  </div>
+                  {selectedCustomerHistory.advanceBalance && selectedCustomerHistory.advanceBalance > 0 && dueAmount > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const dueInv = clientInvoices.find(inv => inv.dueAmount > 0);
+                        if (dueInv) {
+                          setSelectedCustomerHistory(null);
+                          setPaymentModalInvoice(dueInv);
+                          const adv = Math.min(selectedCustomerHistory.advanceBalance || 0, dueInv.dueAmount);
+                          setAdjustAdvanceAmount(adv);
+                          setCollectAmount(Math.max(0, dueInv.dueAmount - adv));
+                        }
+                      }}
+                      className="mt-1 text-[9.5px] font-black text-indigo-700 hover:text-indigo-900 bg-white border border-indigo-200 hover:border-indigo-300 px-2 py-0.5 rounded cursor-pointer inline-flex items-center gap-1 shadow-2xs"
+                    >
+                      <span>Adjust to Due</span>
+                      <ArrowRight className="w-2.5 h-2.5" />
+                    </button>
+                  ) : (
+                    <div className="text-[10px] text-indigo-600 mt-0.5">Credit Held</div>
+                  )}
+                </div>
+                <div className="bg-rose-50/60 p-3 rounded-xl border border-rose-200">
+                  <div className="text-[10px] text-rose-600 font-bold uppercase tracking-wider">Current Due</div>
+                  <div className="text-base sm:text-lg font-black text-rose-600 mt-1">
+                    {profile.currencySymbol}{dueAmount.toLocaleString()}
+                  </div>
+                  <div className="text-[10px] text-rose-500 mt-0.5">{dueAmount > 0 ? 'Outstanding' : 'Cleared'}</div>
+                </div>
+              </div>
+
+              <div className="overflow-y-auto flex-1 pr-1 space-y-4 text-xs scrollbar-thin">
+                {/* Invoices Section */}
+                <div className="space-y-2">
+                  <div className="font-extrabold text-slate-800 text-xs flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <FileText className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>Sales Invoices ({clientInvoices.length})</span>
+                    </span>
+                  </div>
+
+                  {clientInvoices.length === 0 ? (
+                    <div className="p-4 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400">
+                      No invoices recorded for this customer yet.
+                    </div>
+                  ) : (
+                    <div className="border border-slate-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 text-[10px] font-bold text-slate-500 uppercase border-b border-slate-200">
+                          <tr>
+                            <th className="py-2.5 px-3">Invoice No</th>
+                            <th className="py-2.5 px-3">Date</th>
+                            <th className="py-2.5 px-3 text-right">Total</th>
+                            <th className="py-2.5 px-3 text-right">Paid</th>
+                            <th className="py-2.5 px-3 text-right">Due</th>
+                            <th className="py-2.5 px-3 text-center">Status</th>
+                            <th className="py-2.5 px-3 text-center">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {clientInvoices.map((inv) => (
+                            <tr key={inv.id} className="hover:bg-slate-50">
+                              <td className="py-2 px-3 font-bold text-slate-900 font-mono">
+                                #{inv.invoiceNo}
+                              </td>
+                              <td className="py-2 px-3 text-slate-500">{inv.date}</td>
+                              <td className="py-2 px-3 text-right font-black text-slate-900">
+                                {profile.currencySymbol}{inv.grandTotal.toLocaleString()}
+                              </td>
+                              <td className="py-2 px-3 text-right font-black text-emerald-700">
+                                {profile.currencySymbol}{inv.paidAmount.toLocaleString()}
+                              </td>
+                              <td className="py-2 px-3 text-right font-black text-rose-600">
+                                {inv.dueAmount > 0 ? `${profile.currencySymbol}${inv.dueAmount.toLocaleString()}` : '—'}
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+                                  inv.paymentStatus === 'Paid'
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : inv.paymentStatus === 'Partial'
+                                    ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                    : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                }`}>
+                                  {inv.paymentStatus}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <div className="flex items-center justify-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => onOpenInvoiceModal(inv.id, 'invoice')}
+                                    className="p-1 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded cursor-pointer"
+                                    title="View / Print Invoice"
+                                  >
+                                    <Printer className="w-3.5 h-3.5" />
+                                  </button>
+                                  {inv.dueAmount > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedCustomerHistory(null);
+                                        setPaymentModalInvoice(inv);
+                                        setCollectAmount(inv.dueAmount);
+                                        setAdjustAdvanceAmount(0);
+                                      }}
+                                      className="px-2 py-0.5 text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded cursor-pointer"
+                                      title="Collect Due"
+                                    >
+                                      +Pay
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Payment Ledger Section */}
+                <div className="space-y-2 pt-2">
+                  <div className="font-extrabold text-slate-800 text-xs flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Receipt className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Payment Receipts & Ledger ({customerTxList.length})</span>
+                    </span>
+                  </div>
+
+                  {customerTxList.length === 0 ? (
+                    <div className="p-4 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400">
+                      No payment receipts recorded for this customer yet.
+                    </div>
+                  ) : (
+                    <div className="border border-slate-200 rounded-xl overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 text-[10px] font-bold text-slate-500 uppercase border-b border-slate-200">
+                          <tr>
+                            <th className="py-2.5 px-3">Date</th>
+                            <th className="py-2.5 px-3">Channel / Method</th>
+                            <th className="py-2.5 px-3">Invoice Ref</th>
+                            <th className="py-2.5 px-3">Description</th>
+                            <th className="py-2.5 px-3 text-right">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {customerTxList.map((tx) => (
+                            <tr key={tx.id} className="hover:bg-slate-50">
+                              <td className="py-2 px-3 text-slate-500 whitespace-nowrap">{tx.date}</td>
+                              <td className="py-2 px-3 font-bold text-slate-800 whitespace-nowrap">
+                                <span className="inline-flex items-center gap-1.5">
+                                  {tx.paymentAccount?.toLowerCase().includes('cash') ? (
+                                    <Banknote className="w-3 h-3 text-emerald-600" />
+                                  ) : tx.paymentAccount?.toLowerCase().includes('bkash') || tx.paymentAccount?.toLowerCase().includes('nagad') ? (
+                                    <Smartphone className="w-3 h-3 text-pink-600" />
+                                  ) : (
+                                    <Landmark className="w-3 h-3 text-blue-600" />
+                                  )}
+                                  <span>{tx.paymentAccount || tx.accountHead || 'Cash'}</span>
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 font-mono text-slate-600 whitespace-nowrap">{tx.refNo || '—'}</td>
+                              <td className="py-2 px-3 text-slate-500 truncate max-w-[200px]" title={tx.description}>
+                                {tx.description || tx.category}
+                              </td>
+                              <td className="py-2 px-3 text-right font-black text-emerald-700 whitespace-nowrap">
+                                +{profile.currencySymbol}{tx.amount.toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-3 border-t border-slate-100 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setSelectedCustomerHistory(null)}
+                  className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold shadow-2xs cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>);
 };

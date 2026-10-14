@@ -1,4 +1,4 @@
-import { ChartOfAccount, AccountingTransaction, SalesInvoice, PaymentMethodConfig, AccountBalances } from '../types';
+import { ChartOfAccount, AccountingTransaction, SalesInvoice, PaymentMethodConfig, AccountBalances, Supplier, PurchaseOrder, ProductItem, JournalEntry } from '../types';
 
 /**
  * Normalizes account or channel string for fuzzy matching
@@ -114,13 +114,14 @@ export const doesTransactionMatchAccount = (
 ): boolean => {
     const accNameLower = (acc.name || '').toLowerCase().trim();
     const accCode = (acc.code || '').trim();
-    const payAcc = (tx.paymentAccount || '').toLowerCase().trim();
-    const head = (tx.accountHead || '').toLowerCase().trim();
+    const payAcc = (tx.paymentAccount || tx.account || tx.accountHead || tx.paymentMethod || '').toLowerCase().trim();
+    const head = (tx.accountHead || tx.account || tx.paymentAccount || '').toLowerCase().trim();
     const desc = (tx.description || '').toLowerCase();
 
-    // 1. Exact match by account name or code
+    // 1. Exact match by account ID, code, or name
+    if (tx.account === acc.id || tx.paymentAccount === acc.id || tx.accountHead === acc.id) return true;
     if (payAcc === accNameLower || head === accNameLower) return true;
-    if (accCode && (payAcc === accCode || head === accCode || payAcc.startsWith(accCode + ' ') || head.startsWith(accCode + ' '))) return true;
+    if (accCode && (payAcc === accCode || head === accCode || payAcc.startsWith(accCode + ' ') || head.startsWith(accCode + ' ') || payAcc.endsWith(' ' + accCode))) return true;
 
     const isBkash = accNameLower.includes('bkash') || (acc.nameBn && acc.nameBn.includes('বিকাশ'));
     const isNagad = accNameLower.includes('nagad') || (acc.nameBn && acc.nameBn.includes('নগদ'));
@@ -166,9 +167,9 @@ export const doesTransactionMatchAccount = (
 
     // 4. Cash separation
     if (isCash) {
-        const isOtherChannel = payAcc.includes('bank') || payAcc.includes('bkash') || payAcc.includes('nagad') || payAcc.includes('city') || payAcc.includes('southeast') || payAcc.includes('card');
+        const isOtherChannel = payAcc.includes('bank') || payAcc.includes('bkash') || payAcc.includes('nagad') || payAcc.includes('city') || payAcc.includes('southeast') || payAcc.includes('brac') || payAcc.includes('card') || payAcc.includes('rocket') || payAcc.includes('upay');
         if (!isOtherChannel) {
-            return payAcc.includes('cash') || payAcc === 'office cash' || payAcc === 'factory cash' || head.includes('cash') || payAcc === '';
+            return payAcc.includes('cash') || payAcc === 'office cash' || payAcc === 'factory cash' || head.includes('cash') || (payAcc === '' && head === '');
         }
         return false;
     }
@@ -449,4 +450,372 @@ export const getCashAccountsBreakdown = (
         factoryCash,
         accounts,
     };
+};
+
+/**
+ * Checks whether an accounting transaction is linked to an existing sales invoice or receivable collection
+ * (e.g. POS invoice payments, automated invoice payment sync, client due collection).
+ * These transactions represent collections of accounts receivable, rather than new sales revenue.
+ */
+export const isInvoiceTransaction = (tx: Partial<AccountingTransaction>): boolean => {
+    if (!tx) return false;
+    const ref = (tx.refNo || '').toUpperCase();
+    const desc = (tx.description || '').toLowerCase();
+    const cat = (tx.category || '').toLowerCase();
+    const id = (tx.id || '').toLowerCase();
+
+    if (id.startsWith('tx-auto-inv')) return true;
+    if (ref.startsWith('DCC-INV-') || ref.startsWith('INV-')) return true;
+    if (cat.includes('due collection') || cat.includes('pos payment') || cat.includes('invoice payment')) return true;
+    if (desc.includes('sales invoice payment') || desc.includes('due collection against invoice') || desc.includes('pos payment') || desc.includes('invoice payment')) return true;
+    return false;
+};
+
+/**
+ * Checks whether an accounting transaction is linked to a project sales billing or expense
+ */
+export const isProjectTransaction = (tx: Partial<AccountingTransaction>): boolean => {
+    if (!tx) return false;
+    const ref = (tx.refNo || '').toUpperCase();
+    const desc = (tx.description || '').toLowerCase();
+    const cat = (tx.category || '').toLowerCase();
+    const id = (tx.id || '').toLowerCase();
+
+    if (id.startsWith('tx-prj-')) return true;
+    if (ref.startsWith('PRJ-')) return true;
+    if (cat.includes('project')) return true;
+    if (desc.includes('project income') || desc.includes('project sales') || desc.includes('project expense')) return true;
+    return false;
+};
+
+/**
+ * Checks whether an accounting transaction is a customer advance adjustment
+ * (an internal non-cash offset of an invoice against previously collected customer advance liability).
+ * This is an internal settlement, NOT a new cash inflow or duplicate sales revenue.
+ */
+export const isAdvanceAdjustmentTransaction = (tx: Partial<AccountingTransaction>): boolean => {
+    if (!tx) return false;
+    const cat = (tx.category || '').toLowerCase();
+    const desc = (tx.description || '').toLowerCase();
+    const acc = (tx.paymentAccount || tx.account || tx.accountHead || '').toLowerCase();
+    return (
+        cat.includes('advance adjust') ||
+        cat.includes('অগ্রিম সমন্বয়') ||
+        cat.includes('customer advance adjustment') ||
+        desc.includes('advance adjust') ||
+        desc.includes('adjusted from advance') ||
+        desc.includes('adjusted tk') ||
+        acc === 'customer advance' ||
+        acc.includes('customer advance') ||
+        acc.includes('কাস্টমার অগ্রিম')
+    );
+};
+
+/**
+ * Checks whether an accounting transaction is an advance deposit receipt from a customer
+ * (liability deposit, NOT direct sales revenue).
+ */
+export const isAdvanceDepositTransaction = (tx: Partial<AccountingTransaction>): boolean => {
+    if (!tx) return false;
+    if (isAdvanceAdjustmentTransaction(tx)) return false;
+    const cat = (tx.category || '').toLowerCase();
+    const desc = (tx.description || '').toLowerCase();
+    return (
+        cat.includes('customer advance') ||
+        cat.includes('কাস্টমার অগ্রিম') ||
+        (cat.includes('advance') && !cat.includes('adjust')) ||
+        (cat.includes('অগ্রিম') && !cat.includes('সমন্বয়')) ||
+        desc.includes('advance received') ||
+        desc.includes('অগ্রিম গ্রহণ')
+    );
+};
+
+/**
+ * Checks whether an invoice belongs to a specific customer record (matches by id, phone, or name/company)
+ */
+export const isInvoiceMatchingCustomer = (inv: Partial<SalesInvoice>, c: any): boolean => {
+    if (!inv || !c) return false;
+    if (inv.customerId && inv.customerId === c.id) return true;
+
+    const cPhone = (c.phone || '').replace(/[^0-9]/g, '');
+    const invPhone = (inv.customerPhone || '').replace(/[^0-9]/g, '');
+    if (cPhone.length >= 8 && invPhone.length >= 8 && (cPhone === invPhone || cPhone.endsWith(invPhone) || invPhone.endsWith(cPhone))) {
+        return true;
+    }
+
+    const cName = (c.name || '').toLowerCase().trim();
+    const cCompany = (c.company || '').toLowerCase().trim();
+    const invName = (inv.customerName || '').toLowerCase().trim();
+    const invCompany = (inv.customerCompany || '').toLowerCase().trim();
+
+    if (invCompany && cCompany && (invCompany === cCompany || invCompany.includes(cCompany) || cCompany.includes(invCompany))) return true;
+    if (cCompany && invName && (invName.includes(cCompany) || cCompany.includes(invName))) return true;
+    if (cName && invName && (invName === cName || invName.includes(cName) || cName.includes(invName))) return true;
+
+    return false;
+};
+
+/**
+ * Calculates live financial summary for a customer based on all matching sales invoices
+ */
+export const getCustomerInvoiceSummary = (c: any, allInvoices: SalesInvoice[]) => {
+    const clientInvoices = (allInvoices || []).filter(inv => isInvoiceMatchingCustomer(inv, c));
+
+    const totalPurchased = clientInvoices.length > 0
+        ? clientInvoices.reduce((sum, inv) => sum + (Number(inv.grandTotal) || 0), 0)
+        : (Number(c.totalPurchased) || 0);
+
+    const totalPaid = clientInvoices.length > 0
+        ? clientInvoices.reduce((sum, inv) => sum + (Number(inv.paidAmount) || 0), 0)
+        : Math.max(0, (Number(c.totalPurchased) || 0) - (Number(c.dueAmount) || 0));
+
+    const dueAmount = clientInvoices.length > 0
+        ? clientInvoices.reduce((sum, inv) => sum + (Number(inv.dueAmount) || 0), 0)
+        : (Number(c.dueAmount) || 0);
+
+    const advanceBalance = Number(c.advanceBalance) || 0;
+
+    return {
+        clientInvoices,
+        totalPurchased,
+        totalPaid,
+        dueAmount,
+        advanceBalance,
+    };
+};
+
+export interface InvoicePaymentItem {
+    id: string;
+    date: string;
+    channel: string;
+    amount: number;
+    description: string;
+    category?: string;
+}
+
+/**
+ * Extracts all itemized payment records for a given invoice from accounting transactions and splitPayments
+ */
+export const getInvoicePayments = (
+    inv: SalesInvoice,
+    allTransactions: AccountingTransaction[],
+    paymentMethods?: PaymentMethodConfig[]
+): InvoicePaymentItem[] => {
+    if (!inv) return [];
+    const invNo = (inv.invoiceNo || '').toLowerCase().trim();
+
+    // 1. Check matching income ledger transactions
+    const txMatches = (allTransactions || []).filter(t =>
+        t.type === 'INCOME' &&
+        t.refNo &&
+        t.refNo.toLowerCase().trim() === invNo &&
+        Number(t.amount) > 0
+    );
+
+    if (txMatches.length > 0) {
+        return txMatches.map(t => ({
+            id: t.id,
+            date: t.date,
+            channel: t.paymentAccount || t.accountHead || 'Cash',
+            amount: Number(t.amount) || 0,
+            description: t.description || t.category || 'Payment',
+            category: t.category,
+        }));
+    }
+
+    // 2. Check splitPayments on invoice
+    if (inv.splitPayments && Object.keys(inv.splitPayments).length > 0) {
+        const list: InvoicePaymentItem[] = [];
+        const seen = new Set<string>();
+
+        const keys = Object.keys(inv.splitPayments).filter(k => {
+            const lk = k.toLowerCase();
+            return lk !== 'due' && (Number(inv.splitPayments?.[k]) || 0) > 0;
+        });
+
+        // Pass 1: Named accounts
+        keys.forEach(k => {
+            const amt = Number(inv.splitPayments?.[k]) || 0;
+            const lk = k.toLowerCase();
+            if (['cash', 'card', 'bkash', 'nagad'].includes(lk)) return;
+            const pm = paymentMethods?.find(p => p.id === k);
+            const channelName = pm ? pm.name : k;
+            if (!seen.has(channelName.toLowerCase())) {
+                seen.add(channelName.toLowerCase());
+                list.push({
+                    id: `split-${channelName}`,
+                    date: inv.date,
+                    channel: channelName,
+                    amount: amt,
+                    description: `POS Payment via ${channelName}`,
+                });
+            }
+        });
+
+        // Pass 2: Aliases if list is empty
+        if (list.length === 0) {
+            keys.forEach(k => {
+                const amt = Number(inv.splitPayments?.[k]) || 0;
+                const channelName = k.charAt(0).toUpperCase() + k.slice(1);
+                if (!seen.has(channelName.toLowerCase())) {
+                    seen.add(channelName.toLowerCase());
+                    list.push({
+                        id: `split-${channelName}`,
+                        date: inv.date,
+                        channel: channelName,
+                        amount: amt,
+                        description: `POS Payment via ${channelName}`,
+                    });
+                }
+            });
+        }
+
+        if (list.length > 0) return list;
+    }
+
+    // 3. Fallback to single paymentMethod if paidAmount > 0
+    if ((inv.paidAmount || 0) > 0) {
+        return [{
+            id: `pm-${inv.id}`,
+            date: inv.date,
+            channel: inv.paymentMethod || 'Cash',
+            amount: inv.paidAmount,
+            description: `Payment via ${inv.paymentMethod || 'Cash'}`,
+        }];
+    }
+
+    return [];
+};
+
+/**
+ * Calculates dynamic real-time Accounts Payable (Suppliers) due from Suppliers and Purchase Orders
+ */
+export const calculateTotalSupplierPayables = (
+    suppliers: Supplier[] = [],
+    purchaseOrders: PurchaseOrder[] = []
+): number => {
+    // If purchase orders exist in system, active supplier payables are strictly the dues from Received POs
+    if (purchaseOrders && purchaseOrders.length > 0) {
+        return purchaseOrders
+            .filter((p) => p.status === 'Received')
+            .reduce((sum, p) => {
+                const due = p.dueAmount !== undefined
+                    ? Number(p.dueAmount)
+                    : Math.max(0, (Number(p.grandTotal ?? p.totalAmount ?? 0)) - (Number(p.paidAmount || 0)));
+                return sum + due;
+            }, 0);
+    }
+
+    // Fallback if no purchase orders exist in the system yet
+    return (suppliers || []).reduce((sum, s) => sum + (Number(s.dueAmount) || Number(s.balancePayable) || 0), 0);
+};
+
+/**
+ * Calculates dynamic real-time Raw Materials & Inventory Asset balance from Products, Purchase Orders, Opening Balance & Journal Entries
+ */
+export const calculateInventoryValuation = (
+    products: ProductItem[] = [],
+    purchaseOrders: PurchaseOrder[] = [],
+    account?: ChartOfAccount,
+    journalEntries: JournalEntry[] = []
+): number => {
+    const totalStockValuation = (products || []).reduce(
+        (acc, p) => acc + ((Number(p.stockFactory) || 0) + (Number(p.stockOffice) || 0)) * (Number(p.costPrice) || 0),
+        0
+    );
+    const rawStockValuation = (products || [])
+        .filter((p) => p.isRawMaterial)
+        .reduce(
+            (acc, p) => acc + ((Number(p.stockFactory) || 0) + (Number(p.stockOffice) || 0)) * (Number(p.costPrice) || 0),
+            0
+        );
+    const finishedStockValuation = (products || [])
+        .filter((p) => !p.isRawMaterial)
+        .reduce(
+            (acc, p) => acc + ((Number(p.stockFactory) || 0) + (Number(p.stockOffice) || 0)) * (Number(p.costPrice) || 0),
+            0
+        );
+
+    // Total purchase value of received POs
+    const totalReceivedPurchases = (purchaseOrders || [])
+        .filter((p) => p.status === 'Received')
+        .reduce((acc, po) => acc + Number(po.grandTotal ?? po.totalAmount ?? 0), 0);
+
+    const nameLower = (account?.name || '').toLowerCase();
+    const nameBn = (account?.nameBn || '').toLowerCase();
+    const isFinishedOnly = (account?.code === '1070' || nameLower.includes('finished goods') || nameBn.includes('প্রস্তুতকৃত পণ্য')) && !nameLower.includes('raw');
+
+    // Calculate net adjustment from posted Journal Entries
+    // For Raw Materials & Inventory asset:
+    // - Debit to Raw Materials & Inventory adds to asset (+amt)
+    // - Credit to Raw Materials & Inventory subtracts from asset (-amt)
+    // - Debit to Cost of Goods Sold (COGS) consumes/expenses raw materials (-amt)
+    let journalDelta = 0;
+    const accId = account?.id;
+    const accCode = account?.code;
+    const accNameLower = (account?.name || '').toLowerCase().trim();
+
+    (journalEntries || []).forEach((j) => {
+        // Exclude project revenue/expense journals
+        if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE') return;
+
+        const dName = (j.debitAccountName || '').toLowerCase().trim();
+        const cName = (j.creditAccountName || '').toLowerCase().trim();
+
+        const isCogsDebit = Boolean(
+            dName.includes('cost of goods') ||
+            dName.includes('cogs') ||
+            (dName.includes('raw material') && (dName.includes('cost') || dName.includes('expense') || dName.includes('sold'))) ||
+            dName.includes('বিক্রিত পণ্যের ব্যয়')
+        );
+
+        const isAssetDebit = !isCogsDebit && Boolean(
+            (accId && j.debitAccountId === accId) ||
+            (accCode && (j.debitAccountId === accCode || (j as any).debitAccountCode === accCode)) ||
+            (dName && (
+                dName === accNameLower ||
+                (!dName.includes('cost') && !dName.includes('sold') && !dName.includes('expense') && (
+                    (accNameLower.includes('raw material') && dName.includes('raw material')) ||
+                    (accNameLower.includes('inventory') && dName.includes('inventory'))
+                ))
+            ))
+        );
+
+        const isAssetCredit = Boolean(
+            (accId && j.creditAccountId === accId) ||
+            (accCode && (j.creditAccountId === accCode || (j as any).creditAccountCode === accCode)) ||
+            (cName && (
+                cName === accNameLower ||
+                (!cName.includes('cost') && !cName.includes('sold') && !cName.includes('expense') && (
+                    (accNameLower.includes('raw material') && cName.includes('raw material')) ||
+                    (accNameLower.includes('inventory') && cName.includes('inventory'))
+                ))
+            ))
+        );
+
+        const amt = Number(j.amount) || 0;
+        if (isAssetDebit && !isAssetCredit) {
+            journalDelta += amt;
+        } else if (isAssetCredit && !isAssetDebit) {
+            journalDelta -= amt;
+        } else if (isCogsDebit && !isAssetDebit) {
+            // Materials expensed into Cost of Goods Sold reduce remaining raw materials inventory valuation
+            journalDelta -= amt;
+        }
+    });
+
+    if (isFinishedOnly) {
+        return Math.max(0, finishedStockValuation + (account?.openingBalance || 0) + journalDelta);
+    }
+
+    // For Raw Materials or unified Raw Materials & Inventory account (like 1002 / 1060):
+    const effectiveStockVal = rawStockValuation > 0 ? rawStockValuation : totalStockValuation;
+    const baseVal = Math.max(
+        effectiveStockVal,
+        totalReceivedPurchases,
+        totalStockValuation,
+        account?.openingBalance || 0
+    );
+
+    return Math.max(0, baseVal + journalDelta);
 };

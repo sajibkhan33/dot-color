@@ -496,7 +496,7 @@ export const SettingsModule: React.FC = () => {
         cleanModuleData(mappedKey);
         setCleanConfirmModule(null);
         if (moduleKey === 'WIPE_ALL_EXCEPT_PRODUCTS' || moduleKey === 'RESET_ALL_TRANSACTIONS') {
-            setCleanFeedback('All transactional data (sales, purchases, cash txns, journals, projects, stock & dues) reset successfully. / সকল ট্রানজ্যাকশনাল ডেটা সফলভাবে রিসেট করা হয়েছে।');
+            setCleanFeedback('All transactional data (sales, purchases, cash txns, journals, projects, stock, dues & advances) reset successfully. / সকল ট্রানজ্যাকশনাল ডেটা (লেনদেন, স্টক, বকেয়া ও অগ্রিম) সফলভাবে রিসেট করা হয়েছে।');
         }
         else if (moduleKey === 'invoices' || moduleKey === 'SALES_RESET' || moduleKey === 'SALES') {
             setCleanFeedback('All sales data (invoices, POS orders, quotes, customer dues & sales revenue) reset successfully. / সকল সেলস ডেটা সফলভাবে রিসেট করা হয়েছে।');
@@ -1778,11 +1778,11 @@ export const SettingsModule: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-rose-900 leading-relaxed font-medium">
-                {'Wipes all operational transactions: sales invoices, quotes, purchase orders, cash/bank transactions, journal entries, project financials, and stock movements. Resets all customer & supplier due balances to 0, product stock to 0, and account balances to 0. Product catalog, customer directory, supplier directory, and accounts remain intact.'}
+                {'Wipes all operational transactions: sales invoices, quotes, purchase orders, cash/bank transactions, journal entries, project financials, and stock movements. Resets all customer & supplier due balances to 0, customer advance balances to 0, product stock to 0, and account balances to 0. Product catalog, customer directory, supplier directory, and accounts remain intact.'}
               </p>
               <div className="bg-white/80 rounded-xl p-3 border border-rose-200 text-xs text-rose-900 font-bold flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5"/>
-                <span>{'সকল লেনদেন (সেলস, পারচেজ, ক্যাশ ট্রানজ্যাকশন, জার্নাল, প্রজেক্ট ও স্টক হিস্ট্রি) সম্পূর্ণ মুছে রিসেট হবে। কাস্টমার ও সাপ্লায়ার বকেয়া এবং স্টক ০ হবে। তবে আপনার কাস্টমার, সাপ্লায়ার ও প্রোডাক্ট তালিকা অক্ষত থাকবে।'}</span>
+                <span>{'সকল লেনদেন (সেলস, পারচেজ, ক্যাশ ট্রানজ্যাকশন, জার্নাল, প্রজেক্ট ও স্টক হিস্ট্রি) সম্পূর্ণ মুছে রিসেট হবে। কাস্টমার ও সাপ্লায়ার বকেয়া, কাস্টমার অগ্রিম (Advance) এবং স্টক ০ হবে। তবে আপনার কাস্টমার, সাপ্লায়ার ও প্রোডাক্ট তালিকা অক্ষত থাকবে।'}</span>
               </div>
               <button
                 type="button"
@@ -1987,10 +1987,10 @@ export const SettingsModule: React.FC = () => {
                       {'Are you sure you want to permanently reset all transactional data?'}
                     </p>
                     <p className="text-slate-500 text-[11px] text-center">
-                      {'This will wipe all sales invoices, quotes, purchase orders, cash transactions, journal entries, project records, and stock movements. Customer & supplier balances will be zeroed out, inventory stock reset to 0, and accounts reset to their opening balance. Product, customer, and supplier master directories will remain intact.'}
+                      {'This will wipe all sales invoices, quotes, purchase orders, cash transactions, journal entries, project records, and stock movements. Customer & supplier dues, customer advances will be zeroed out, inventory stock reset to 0, and accounts reset to zero. Product, customer, and supplier master directories will remain intact.'}
                     </p>
                     <div className="bg-rose-50 p-2.5 rounded-xl border border-rose-200 text-rose-800 font-bold text-[11px] text-center">
-                      {'আপনি কি নিশ্চিত যে সমস্ত লেনদেনের ডেটা রিসেট করতে চান? সেলস, পারচেজ, ক্যাশ লেনদেন, প্রজেক্ট ও স্টক হিস্ট্রি রিসেট হবে; তবে প্রোডাক্ট এবং কাস্টমার তালিকা সুরক্ষিত থাকবে।'}
+                      {'আপনি কি নিশ্চিত যে সমস্ত লেনদেনের ডেটা রিসেট করতে চান? সেলস, পারচেজ, ক্যাশ লেনদেন, প্রজেক্ট, কাস্টমার বকেয়া ও অগ্রিম (Advance), এবং স্টক হিস্ট্রি রিসেট হবে; তবে প্রোডাক্ট এবং কাস্টমার তালিকা সুরক্ষিত থাকবে।'}
                     </div>
                   </>
                 ) : (cleanConfirmModule === 'invoices' || cleanConfirmModule === 'SALES_RESET' || cleanConfirmModule === 'SALES') ? (<>

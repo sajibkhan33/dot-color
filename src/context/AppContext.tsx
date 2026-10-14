@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useMemo, useRef 
 import { CompanyProfile, ProductItem, Customer, Supplier, SalesInvoice, Quotation, PurchaseOrder, AccountingTransaction, StockMovement, Language, LocationType, AccountBalances, StaffMember, StaffRole, AuditLogEntry, ChartOfAccount, ExpenseHead, ProductCategory, UserRole, RolePermission, JournalEntry, Project, ProjectExpenseItem, ProjectSalesItem, PaymentMethodConfig, PaymentStatus } from '../types';
 import { INITIAL_COMPANY_PROFILE, INITIAL_PRODUCTS, INITIAL_CUSTOMERS, INITIAL_SUPPLIERS, INITIAL_INVOICES, INITIAL_PURCHASE_ORDERS, INITIAL_TRANSACTIONS, INITIAL_QUOTATIONS, INITIAL_STOCK_MOVEMENTS, INITIAL_STAFF_MEMBERS, INITIAL_AUDIT_LOGS, } from '../data/initialData';
 import { INITIAL_CHART_OF_ACCOUNTS, INITIAL_EXPENSE_HEADS, INITIAL_PRODUCT_CATEGORIES, INITIAL_USER_ROLES, INITIAL_JOURNAL_ENTRIES, INITIAL_PROJECTS, ALL_SYSTEM_PERMISSIONS, INITIAL_PAYMENT_METHODS, } from '../data/accountingAndConfigData';
-import { matchChannelToAccount, calculateSingleAccountBalance, getBankAccountsBreakdown, getMfsAccountsBreakdown, getCashAccountsBreakdown } from '../utils/accountUtils';
+import { matchChannelToAccount, calculateSingleAccountBalance, getBankAccountsBreakdown, getMfsAccountsBreakdown, getCashAccountsBreakdown, isInvoiceTransaction, isProjectTransaction, isInvoiceMatchingCustomer, isAdvanceAdjustmentTransaction, isAdvanceDepositTransaction, calculateTotalSupplierPayables, calculateInventoryValuation } from '../utils/accountUtils';
 const STORAGE_KEY = 'DOT_COLOR_ERP_V1_STATE';
 interface AppContextType {
     profile: CompanyProfile;
@@ -64,7 +64,8 @@ interface AppContextType {
     addInvoice: (invoice: Omit<SalesInvoice, 'id' | 'invoiceNo'>) => SalesInvoice;
     updateInvoice: (id: string, updates: Partial<SalesInvoice>) => void;
     deleteInvoice: (id: string) => void;
-    collectInvoicePayment: (invoiceId: string, amount: number, method: any) => void;
+    collectInvoicePayment: (invoiceId: string, amount: number, method: any, advanceAdjustAmount?: number) => void;
+    adjustCustomerAdvance: (customerId: string, amount: number, invoiceId?: string, notes?: string) => void;
     updateProductionStatus: (invoiceId: string, status: any) => void;
     // Quotations
     addQuotation: (quotation: Omit<Quotation, 'id' | 'quoteNo'>) => Quotation;
@@ -630,34 +631,138 @@ export const AppProvider: React.FC<{
     useEffect(() => {
         if (!chartOfAccounts || chartOfAccounts.length === 0) return;
 
-        const revAcc = chartOfAccounts.find(a => a.classification === 'Revenue' && (a.name.toLowerCase().includes('project') || a.code === '4002' || a.code === '4051' || a.code === '4060'));
-        const expAcc = chartOfAccounts.find(a => a.classification === 'Expense' && (a.name.toLowerCase().includes('project') || a.code === '5206')) ||
+        const totalPrjSales = (projects || []).reduce((s, p) => s + (p.totalSales || 0), 0);
+        const totalPrjExpenses = (projects || []).reduce((s, p) => s + (p.totalExpenses || 0), 0);
+
+        let revAcc = chartOfAccounts.find(a => a.classification === 'Revenue' && (a.code === '4002' || a.code === '4051' || a.code === '4060' || a.id === 'coa-4002' || a.id === 'coa-4051' || a.name.toLowerCase().includes('project')));
+        let expAcc = chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5206' || a.code === '5300' || a.id === 'coa-5206' || a.name.toLowerCase().includes('project'))) ||
                        chartOfAccounts.find(a => a.classification === 'Expense' && a.code === '5100' && a.name.toLowerCase().includes('project'));
         const cogsAcc = chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5010' || a.name.toLowerCase().includes('raw') || a.name.toLowerCase().includes('cost')));
 
-        const totalPrjSales = (projects || []).reduce((s, p) => s + (p.totalSales || 0), 0);
-        const totalPrjExpenses = (projects || []).reduce((s, p) => s + (p.totalExpenses || 0), 0);
+        // Auto-provision 5206 Project Expense if missing from Chart of Accounts
+        if (!expAcc) {
+            const newExpAcc: ChartOfAccount = {
+                id: 'coa-5206',
+                code: '5206',
+                name: 'Project Expense',
+                nameBn: 'প্রজেক্ট খরচ',
+                classification: 'Expense',
+                accountGroup: 'Operating Expenses',
+                normalBalance: 'Debit',
+                openingBalance: 0,
+                currentBalance: totalPrjExpenses,
+                description: 'Direct expenditures, venue execution, logistics, transport, and site installation for customer projects',
+                isSystem: true,
+                isActive: true,
+            };
+            const withExp = [...chartOfAccounts, newExpAcc];
+            setChartOfAccounts(withExp);
+            try {
+                localStorage.setItem(`${STORAGE_KEY}_COA`, JSON.stringify(withExp));
+            } catch {}
+            latestStateRef.current = { ...latestStateRef.current, chartOfAccounts: withExp };
+            triggerImmediatePush();
+            return;
+        }
+
+        // Auto-provision 4002 Project Sales if missing from Chart of Accounts
+        if (!revAcc) {
+            const newRevAcc: ChartOfAccount = {
+                id: 'coa-4002',
+                code: '4002',
+                name: 'Project Sales',
+                nameBn: 'প্রজেক্ট সেলস',
+                classification: 'Revenue',
+                accountGroup: 'Operating Revenue',
+                normalBalance: 'Credit',
+                openingBalance: 0,
+                currentBalance: totalPrjSales,
+                description: 'Revenue from large-scale corporate projects, outdoor signboards, and event fabrications',
+                isSystem: true,
+                isActive: true,
+            };
+            const withRev = [...chartOfAccounts, newRevAcc];
+            setChartOfAccounts(withRev);
+            try {
+                localStorage.setItem(`${STORAGE_KEY}_COA`, JSON.stringify(withRev));
+            } catch {}
+            latestStateRef.current = { ...latestStateRef.current, chartOfAccounts: withRev };
+            triggerImmediatePush();
+            return;
+        }
 
         let coaNeedsUpdate = false;
         const updatedCOA = chartOfAccounts.map(acc => {
             // 1. Dedicated Project Expense Account
-            const isProjectExp = (expAcc && acc.id === expAcc.id) || acc.code === '5206' || acc.name.toLowerCase().trim() === 'project expense';
+            const isProjectExp = (expAcc && acc.id === expAcc.id) || acc.code === '5206' || acc.code === '5300' || acc.id === 'coa-5206' || acc.name.toLowerCase().trim() === 'project expense';
             if (isProjectExp) {
                 const targetExpBal = (acc.openingBalance || 0) + totalPrjExpenses;
                 if (acc.currentBalance !== targetExpBal) {
                     coaNeedsUpdate = true;
                     return { ...acc, currentBalance: targetExpBal };
                 }
+                return acc;
             }
-            // 2. Cost of Goods Sold Account (5010) - recover if it mistakenly absorbed project expenses
-            if (cogsAcc && acc.id === cogsAcc.id) {
-                if (totalPrjExpenses > 0 && expAcc && acc.currentBalance >= totalPrjExpenses && expAcc.currentBalance < totalPrjExpenses) {
-                    coaNeedsUpdate = true;
-                    const correctedBal = Math.max(acc.openingBalance || 0, acc.currentBalance - totalPrjExpenses);
-                    return { ...acc, currentBalance: correctedBal };
+            // 2. Cost of Goods Sold Account (5001 / 5010)
+            const isCogsAcc = acc.classification === 'Expense' && (
+                (cogsAcc && acc.id === cogsAcc.id) ||
+                acc.code === '5001' ||
+                acc.code === '5010' ||
+                acc.id === 'coa-5001' ||
+                acc.id === 'coa-5010' ||
+                acc.name.toLowerCase().includes('cost of goods') ||
+                acc.name.toLowerCase().includes('cogs') ||
+                (acc.name.toLowerCase().includes('raw material') && acc.classification === 'Expense') ||
+                acc.nameBn?.includes('বিক্রিত পণ্যের ব্যয়')
+            );
+            if (isCogsAcc) {
+                let currentBase = acc.currentBalance;
+                if (totalPrjExpenses > 0 && expAcc && currentBase >= totalPrjExpenses && expAcc.currentBalance < totalPrjExpenses) {
+                    currentBase = Math.max(acc.openingBalance || 0, currentBase - totalPrjExpenses);
                 }
+
+                const poExpenses = (transactions || [])
+                    .filter(t => t.type === 'EXPENSE' && (
+                        (t.category && (t.category.toLowerCase().includes('raw') || t.category.toLowerCase().includes('purchase') || t.category.toLowerCase().includes('po'))) ||
+                        (t.description && (t.description.toLowerCase().includes('purchase') || t.description.toLowerCase().includes('po') || t.description.toLowerCase().includes('raw')))
+                    ))
+                    .reduce((s, t) => s + t.amount, 0);
+
+                let journalCogsDelta = 0;
+                (journalEntries || []).forEach(j => {
+                    if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE') return;
+                    const dName = (j.debitAccountName || '').toLowerCase().trim();
+                    const cName = (j.creditAccountName || '').toLowerCase().trim();
+                    const isDebit = Boolean(
+                        j.debitAccountId === acc.id ||
+                        j.debitAccountId === acc.code ||
+                        dName === acc.name.toLowerCase().trim() ||
+                        dName.includes('cost of goods') ||
+                        dName.includes('cogs') ||
+                        (dName.includes('raw material') && (dName.includes('cost') || dName.includes('sold') || dName.includes('expense'))) ||
+                        dName.includes('বিক্রিত পণ্যের ব্যয়')
+                    );
+                    const isCredit = Boolean(
+                        j.creditAccountId === acc.id ||
+                        j.creditAccountId === acc.code ||
+                        cName === acc.name.toLowerCase().trim() ||
+                        cName.includes('cost of goods') ||
+                        cName.includes('cogs') ||
+                        (cName.includes('raw material') && (cName.includes('cost') || cName.includes('sold') || cName.includes('expense'))) ||
+                        cName.includes('বিক্রিত পণ্যের ব্যয়')
+                    );
+                    if (isDebit && !isCredit) journalCogsDelta += (Number(j.amount) || 0);
+                    else if (isCredit && !isDebit) journalCogsDelta -= (Number(j.amount) || 0);
+                });
+
+                const targetCogsBal = Math.max(currentBase, poExpenses, (acc.openingBalance || 0) + journalCogsDelta);
+                if (acc.currentBalance !== targetCogsBal) {
+                    coaNeedsUpdate = true;
+                    return { ...acc, currentBalance: targetCogsBal };
+                }
+                return acc;
             }
-            // 3. Fix: If any non-project expense account (like 5100 Wastage Expense) wrongly had totalPrjExpenses assigned, revert it:
+            // 3. Fix: If any non-project expense account (like 5100 or 5201 Staff Salaries) wrongly had totalPrjExpenses assigned, revert it:
             if (acc.classification === 'Expense' && !isProjectExp && !acc.name.toLowerCase().includes('project')) {
                 if (totalPrjExpenses > 0 && acc.currentBalance === totalPrjExpenses) {
                     coaNeedsUpdate = true;
@@ -665,13 +770,23 @@ export const AppProvider: React.FC<{
                 }
             }
             // 4. Dedicated Project Revenue Account (4002 / 4051 Project Sales)
-            const isProjectRev = (revAcc && acc.id === revAcc.id) || acc.code === '4002' || acc.code === '4051' || acc.name.toLowerCase().trim() === 'project sales';
+            const isProjectRev = acc.classification === 'Revenue' && (
+                (revAcc && acc.id === revAcc.id) || 
+                acc.code === '4002' || 
+                acc.code === '4051' || 
+                acc.code === '4060' ||
+                acc.id === 'coa-4002' ||
+                acc.id === 'coa-4051' ||
+                acc.name.toLowerCase().includes('project') ||
+                acc.nameBn?.includes('প্রজেক্ট')
+            );
             if (isProjectRev) {
                 const targetRevBal = (acc.openingBalance || 0) + totalPrjSales;
                 if (acc.currentBalance !== targetRevBal) {
                     coaNeedsUpdate = true;
                     return { ...acc, currentBalance: targetRevBal };
                 }
+                return acc;
             }
             // 5. Dedicated Customer Accounts Receivable Account (1003 / 1050 / Accounts Receivable - Customers)
             const isCustomerReceivable = acc.classification === 'Asset' && (
@@ -688,37 +803,158 @@ export const AppProvider: React.FC<{
                 const totalInvoiceCustomerDue = (invoices || []).reduce((s, inv) => s + (Number(inv.dueAmount) || 0), 0);
                 const totalCustomerRecordDue = (customers || []).reduce((s, c) => s + (Number(c.dueAmount) || 0), 0);
                 const totalCustomerDue = Math.max(totalInvoiceCustomerDue, totalCustomerRecordDue);
-                if (totalCustomerDue > 0 && acc.currentBalance !== totalCustomerDue) {
+                const targetReceivableBal = totalCustomerDue > 0 ? totalCustomerDue : (acc.openingBalance || 0);
+                if (acc.currentBalance !== targetReceivableBal) {
                     coaNeedsUpdate = true;
-                    return { ...acc, currentBalance: totalCustomerDue };
+                    return { ...acc, currentBalance: targetReceivableBal };
                 }
+                return acc;
             }
 
-            // 4. Sales Revenue Account (4001)
-            const isSalesRevenue = (
-                acc.classification === 'Revenue' && (
-                    acc.code === '4001' ||
-                    acc.code === '4010' ||
-                    acc.id === 'coa-4001' ||
-                    acc.name.toLowerCase().includes('sales revenue') ||
-                    acc.nameBn?.includes('বিক্রয়') ||
-                    acc.nameBn?.includes('বিক্রয়')
-                )
+            // 5b. Dedicated Inventory & Raw Materials Asset Account (1002 / 1060 / 1070 / coa-1060 / coa-1070)
+            const isInventory = acc.classification === 'Asset' && (
+                acc.id === 'coa-1060' ||
+                acc.id === 'coa-1070' ||
+                acc.code === '1002' ||
+                acc.code === '1060' ||
+                acc.code === '1070' ||
+                acc.name.toLowerCase().includes('raw material') ||
+                acc.name.toLowerCase().includes('inventory') ||
+                acc.name.toLowerCase().includes('finished goods') ||
+                acc.name.toLowerCase().includes('stock') ||
+                acc.nameBn?.includes('কাঁচামাল') ||
+                acc.nameBn?.includes('ইনভেন্টরি')
+            );
+            if (isInventory) {
+                const targetInventoryBal = calculateInventoryValuation(products, purchaseOrders, acc, journalEntries);
+                if (acc.currentBalance !== targetInventoryBal) {
+                    coaNeedsUpdate = true;
+                    return { ...acc, currentBalance: targetInventoryBal };
+                }
+                return acc;
+            }
+
+            // 4. Dedicated Accounts Payable (Suppliers) Account (2001 / 2010 / coa-2010)
+            const isPayable = acc.classification === 'Liability' && (
+                acc.code === '2001' ||
+                acc.code === '2010' ||
+                acc.id === 'coa-2010' ||
+                (acc.name.toLowerCase().includes('payable') && acc.name.toLowerCase().includes('supplier')) ||
+                acc.name.toLowerCase().includes('accounts payable') ||
+                acc.nameBn?.includes('সাপ্লায়ার দেনা') ||
+                acc.nameBn?.includes('প্রদেয় হিসাব')
+            );
+            if (isPayable) {
+                const totalSupplierDue = calculateTotalSupplierPayables(suppliers, purchaseOrders);
+                const targetPayableBal = totalSupplierDue > 0 ? totalSupplierDue : (acc.openingBalance || 0);
+                if (acc.currentBalance !== targetPayableBal) {
+                    coaNeedsUpdate = true;
+                    return { ...acc, currentBalance: targetPayableBal };
+                }
+                return acc;
+            }
+
+            // 5. Sales Revenue Account (4001 / General Invoices) - strictly exclude Project Revenue
+            const isSalesRevenue = !isProjectRev && acc.classification === 'Revenue' && (
+                acc.code === '4001' ||
+                acc.code === '4010' ||
+                acc.id === 'coa-4001' ||
+                acc.name.toLowerCase().includes('sales revenue') ||
+                acc.name.toLowerCase().trim() === 'sales' ||
+                acc.nameBn?.includes('বিক্রয়') ||
+                acc.nameBn?.includes('বিক্রয়')
             );
             if (isSalesRevenue) {
                 const totalInvoiceSales = (invoices || []).reduce((s, inv) => s + (Number(inv.grandTotal) || (Number(inv.paidAmount) + Number(inv.dueAmount)) || 0), 0);
-                const txSalesRevenue = (transactions || []).filter(t => t.type === 'INCOME' && (
-                    t.category?.toLowerCase().includes('sales') ||
-                    t.category?.toLowerCase().includes('due collection') ||
-                    t.category?.toLowerCase().includes('pos') ||
-                    t.refNo?.startsWith('DCC-INV-') ||
-                    t.description?.toLowerCase().includes('invoice') ||
-                    t.description?.toLowerCase().includes('pos payment')
-                )).reduce((s, t) => s + t.amount, 0);
-                const targetSalesBal = Math.max(acc.openingBalance || 0, totalInvoiceSales, txSalesRevenue);
-                if (targetSalesBal > 0 && acc.currentBalance !== targetSalesBal) {
+                const invoiceSalesFromTx = (transactions || []).filter(t => t.type === 'INCOME' && isInvoiceTransaction(t)).reduce((s, t) => s + t.amount, 0);
+                const effectiveInvoiceSales = Math.max(totalInvoiceSales, invoiceSalesFromTx);
+                const directSalesRevenue = (transactions || []).filter(t => 
+                    t.type === 'INCOME' && 
+                    !isInvoiceTransaction(t) && 
+                    !isProjectTransaction(t) && 
+                    !isAdvanceDepositTransaction(t) && 
+                    !isAdvanceAdjustmentTransaction(t) && (
+                        (t.category && (
+                            t.category.toLowerCase().includes('sales') ||
+                            t.category.toLowerCase().includes('বিক্রয়') ||
+                            t.category.toLowerCase().includes('বিক্রয়')
+                        )) ||
+                        t.refNo?.startsWith('INC-')
+                    )
+                ).reduce((s, t) => s + t.amount, 0);
+                const targetSalesBal = (acc.openingBalance || 0) + effectiveInvoiceSales + directSalesRevenue;
+                if (acc.currentBalance !== targetSalesBal) {
                     coaNeedsUpdate = true;
                     return { ...acc, currentBalance: targetSalesBal };
+                }
+                return acc;
+            }
+
+            // 6. Customer Advance Liability (2020 / 2002 / coa-2020)
+            const isAdvanceLiability = acc.classification === 'Liability' && (
+                acc.code === '2020' ||
+                acc.code === '2002' ||
+                acc.id === 'coa-2020' ||
+                acc.name.toLowerCase().includes('advance') ||
+                acc.name.toLowerCase().includes('deposit') ||
+                acc.nameBn?.includes('অগ্রিম')
+            );
+            if (isAdvanceLiability) {
+                const matchingAdvance = (transactions || []).filter(t => t.type === 'INCOME' && !isInvoiceTransaction(t) && (
+                    t.category?.toLowerCase().includes('advance') ||
+                    t.category?.toLowerCase().includes('অগ্রিম') ||
+                    t.description?.toLowerCase().includes('advance') ||
+                    t.description?.toLowerCase().includes('অগ্রিম')
+                )).reduce((s, t) => s + t.amount, 0);
+
+                const matchingAdvanceAdjusted = (transactions || []).filter(t => (
+                    t.category?.toLowerCase().includes('advance adjust') ||
+                    t.category?.toLowerCase().includes('অগ্রিম সমন্বয়') ||
+                    t.category?.toLowerCase().includes('advance adjustment') ||
+                    t.description?.toLowerCase().includes('advance adjust') ||
+                    t.description?.toLowerCase().includes('adjusted from advance') ||
+                    t.description?.toLowerCase().includes('advance adjustment')
+                )).reduce((s, t) => s + t.amount, 0);
+
+                const netMatchingAdvance = Math.max(0, (acc.openingBalance || 0) + matchingAdvance - matchingAdvanceAdjusted);
+                const totalCustomerAdvance = (customers || []).reduce((s, c) => s + (Number(c.advanceBalance) || 0), 0);
+                const targetAdvanceBal = totalCustomerAdvance > 0 
+                    ? totalCustomerAdvance 
+                    : netMatchingAdvance;
+
+                if (acc.currentBalance !== targetAdvanceBal) {
+                    coaNeedsUpdate = true;
+                    return { ...acc, currentBalance: targetAdvanceBal };
+                }
+            }
+
+            // 6. Any other dynamic User-created Revenue Account
+            const isOtherRevenue = acc.classification === 'Revenue' && !isSalesRevenue && !isProjectRev;
+            if (isOtherRevenue) {
+                const accNameLower = (acc.name || '').toLowerCase();
+                const accNameBn = (acc.nameBn || '').toLowerCase();
+                const matchingDirect = (transactions || []).filter(t => 
+                    t.type === 'INCOME' && 
+                    !isInvoiceTransaction(t) && 
+                    !isProjectTransaction(t) && 
+                    !isAdvanceDepositTransaction(t) && 
+                    !isAdvanceAdjustmentTransaction(t) && (
+                        (t.category && (
+                            accNameLower.includes(t.category.toLowerCase()) ||
+                            t.category.toLowerCase().includes(accNameLower) ||
+                            (accNameBn && t.category.toLowerCase().includes(accNameBn)) ||
+                            (accNameBn && accNameBn.includes(t.category.toLowerCase()))
+                        )) ||
+                        (t.accountHead && (
+                            accNameLower.includes(t.accountHead.toLowerCase()) ||
+                            t.accountHead.toLowerCase().includes(accNameLower)
+                        ))
+                    )
+                ).reduce((s, t) => s + t.amount, 0);
+                const targetBal = (acc.openingBalance || 0) + matchingDirect;
+                if (matchingDirect > 0 && acc.currentBalance !== targetBal) {
+                    coaNeedsUpdate = true;
+                    return { ...acc, currentBalance: targetBal };
                 }
             }
             return acc;
@@ -783,7 +1019,99 @@ export const AppProvider: React.FC<{
                 suppliers: cleanedSuppliers,
             };
         }
-    }, [projects, chartOfAccounts, invoices, customers, purchaseOrders, suppliers]);
+    }, [projects, chartOfAccounts, invoices, customers, purchaseOrders, suppliers, products, journalEntries, transactions]);
+
+    // Automatic reconciliation of Customer totalPurchased and dueAmount from live Sales Invoices
+    useEffect(() => {
+        if (!customers || customers.length === 0 || !invoices) return;
+
+        let custsChanged = false;
+        const reconciled = customers.map(c => {
+            const clientInvoices = invoices.filter(inv => isInvoiceMatchingCustomer(inv, c));
+            if (clientInvoices.length > 0) {
+                const totalPurchased = clientInvoices.reduce((s, inv) => s + (Number(inv.grandTotal) || 0), 0);
+                const dueAmount = clientInvoices.reduce((s, inv) => s + (Number(inv.dueAmount) || 0), 0);
+
+                if (Number(c.totalPurchased) !== totalPurchased || Number(c.dueAmount) !== dueAmount) {
+                    custsChanged = true;
+                    return { ...c, totalPurchased, dueAmount };
+                }
+            }
+            return c;
+        });
+
+        if (custsChanged) {
+            setCustomers(reconciled);
+            try {
+                localStorage.setItem(`${STORAGE_KEY}_CUSTOMERS`, JSON.stringify(reconciled));
+            } catch {}
+            latestStateRef.current = {
+                ...latestStateRef.current,
+                customers: reconciled,
+            };
+            triggerImmediatePush();
+        }
+    }, [invoices, customers]);
+
+    // Automatic reconciliation of Supplier totalPurchased, dueAmount, and balancePayable from live Purchase Orders
+    useEffect(() => {
+        if (!suppliers || suppliers.length === 0) return;
+
+        let suppsChanged = false;
+        const reconciled = suppliers.map(s => {
+            const sId = s.id;
+            const sName = (s.name || '').toLowerCase().trim();
+            const sCompany = (s.company || '').toLowerCase().trim();
+            const sPhone = (s.phone || '').replace(/\D/g, '');
+
+            const pos = (purchaseOrders || []).filter(p => {
+                const pSuppId = p.supplierId || '';
+                const pSuppName = (p.supplierName || '').toLowerCase().trim();
+                const pSuppPhone = (p.supplierPhone || '').replace(/\D/g, '');
+                return (
+                    (sId && pSuppId === sId) ||
+                    (sName && pSuppName === sName) ||
+                    (sName && pSuppName && (pSuppName.includes(sName) || sName.includes(pSuppName))) ||
+                    (sCompany && pSuppName === sCompany) ||
+                    (sCompany && pSuppName && (pSuppName.includes(sCompany) || sCompany.includes(pSuppName))) ||
+                    (sPhone && pSuppPhone && sPhone === pSuppPhone)
+                );
+            });
+
+            if (pos.length > 0) {
+                const receivedPOs = pos.filter(p => p.status === 'Received');
+                const totalPurchased = pos.reduce((sum, p) => sum + (Number(p.grandTotal ?? p.totalAmount) || 0), 0);
+                const recDue = receivedPOs.reduce((acc, p) => acc + (
+                    p.dueAmount !== undefined
+                        ? Number(p.dueAmount)
+                        : Math.max(0, (Number(p.grandTotal ?? p.totalAmount ?? 0)) - (Number(p.paidAmount || 0)))
+                ), 0);
+
+                if (Number(s.totalPurchased) !== totalPurchased || Number(s.dueAmount) !== recDue || Number(s.balancePayable) !== recDue) {
+                    suppsChanged = true;
+                    return { ...s, totalPurchased, dueAmount: recDue, balancePayable: recDue };
+                }
+            } else if ((purchaseOrders || []).length > 0) {
+                if (Number(s.totalPurchased) !== 0 || Number(s.dueAmount) !== 0 || Number(s.balancePayable) !== 0) {
+                    suppsChanged = true;
+                    return { ...s, totalPurchased: 0, dueAmount: 0, balancePayable: 0 };
+                }
+            }
+            return s;
+        });
+
+        if (suppsChanged) {
+            setSuppliers(reconciled);
+            try {
+                localStorage.setItem(`${STORAGE_KEY}_SUPPLIERS`, JSON.stringify(reconciled));
+            } catch {}
+            latestStateRef.current = {
+                ...latestStateRef.current,
+                suppliers: reconciled,
+            };
+            triggerImmediatePush();
+        }
+    }, [purchaseOrders, suppliers]);
 
     // Automatic real-time synchronization between Sales Invoices and Accounting Transactions
     useEffect(() => {
@@ -795,10 +1123,15 @@ export const AppProvider: React.FC<{
                 .map(t => (t.refNo || '').toLowerCase().trim())
         );
 
+        const deletedRefs = new Set(
+            safeGetLocalStorage<string[]>(`${STORAGE_KEY}_DELETED_TX_REFS`, [])
+                .map(r => r.toLowerCase().trim())
+        );
+
         const missingTxs: AccountingTransaction[] = [];
         invoices.forEach(inv => {
             const ref = (inv.invoiceNo || '').toLowerCase().trim();
-            if (!ref || recordedRefs.has(ref)) return;
+            if (!ref || recordedRefs.has(ref) || deletedRefs.has(ref)) return;
 
             if (inv.splitPayments && Object.keys(inv.splitPayments).length > 0) {
                 Object.entries(inv.splitPayments).forEach(([channel, amt]) => {
@@ -1023,13 +1356,17 @@ export const AppProvider: React.FC<{
             invoiceNo,
         };
         setInvoices((prev) => [newInvoice, ...prev]);
+        const advanceApplied = Number(data.splitPayments?.['Customer Advance']) || 0;
         // Update Customer safely
         setCustomers((prev) => prev.map((c) => {
-            if (c.id === data.customerId || (Boolean(data.customerPhone) && c.phone === data.customerPhone)) {
+            if (isInvoiceMatchingCustomer(newInvoice, c)) {
                 return {
                     ...c,
                     totalPurchased: (c.totalPurchased || 0) + (Number(data.grandTotal) || 0),
                     dueAmount: (c.dueAmount || 0) + (Number(data.dueAmount) || 0),
+                    advanceBalance: advanceApplied > 0 
+                        ? Math.max(0, (Number(c.advanceBalance) || 0) - advanceApplied)
+                        : c.advanceBalance,
                 };
             }
             return c;
@@ -1043,6 +1380,22 @@ export const AppProvider: React.FC<{
             Object.entries(data.splitPayments).forEach(([key, val]) => {
                 const amt = Number(val) || 0;
                 if (amt <= 0 || key.toLowerCase() === 'due') return;
+
+                if (key === 'Customer Advance' || key.toLowerCase().includes('advance')) {
+                    txs.push({
+                        id: generateUniqueId('tx'),
+                        date: data.date,
+                        type: 'INCOME',
+                        category: 'Customer Advance Adjustment',
+                        amount: amt,
+                        paymentAccount: 'Customer Advance',
+                        accountHead: 'Customer Advance',
+                        refNo: invoiceNo,
+                        customerOrSupplier: data.customerName,
+                        description: `Adjusted Tk ${amt.toLocaleString()} from Customer Advance for invoice ${invoiceNo} (${data.customerName})`,
+                    });
+                    return;
+                }
 
                 const matchedCoa = matchChannelToAccount(key, chartOfAccounts, paymentMethods);
                 const matchedPm = paymentMethods.find((p) => p.id === key || p.name.toLowerCase() === key.toLowerCase());
@@ -1142,38 +1495,102 @@ export const AppProvider: React.FC<{
         return newInvoice;
     };
     const updateInvoice = (id: string, updates: Partial<SalesInvoice>) => {
-        setInvoices((prev) => prev.map((inv) => (inv.id === id ? { ...inv, ...updates } : inv)));
+        const currentInvoices = latestStateRef.current.invoices || invoices;
+        const nextInvoices = currentInvoices.map((inv) => (inv.id === id ? { ...inv, ...updates } : inv));
+        setInvoices(nextInvoices);
+        try {
+            localStorage.setItem(`${STORAGE_KEY}_INVOICES`, JSON.stringify(nextInvoices));
+        } catch {}
+
+        const updatedInv = nextInvoices.find(inv => inv.id === id);
+        if (updatedInv) {
+            const currentCusts = latestStateRef.current.customers || customers;
+            const nextCusts = currentCusts.map((c: Customer) => {
+                if (isInvoiceMatchingCustomer(updatedInv, c)) {
+                    const clientInvoices = nextInvoices.filter(i => isInvoiceMatchingCustomer(i, c));
+                    const totalPurchased = clientInvoices.reduce((s, i) => s + (Number(i.grandTotal) || 0), 0);
+                    const dueAmount = clientInvoices.reduce((s, i) => s + (Number(i.dueAmount) || 0), 0);
+                    return { ...c, totalPurchased, dueAmount };
+                }
+                return c;
+            });
+            setCustomers(nextCusts);
+            try {
+                localStorage.setItem(`${STORAGE_KEY}_CUSTOMERS`, JSON.stringify(nextCusts));
+            } catch {}
+            latestStateRef.current = {
+                ...latestStateRef.current,
+                invoices: nextInvoices,
+                customers: nextCusts,
+            };
+        } else {
+            latestStateRef.current = {
+                ...latestStateRef.current,
+                invoices: nextInvoices,
+            };
+        }
+        triggerImmediatePush();
     };
-    const collectInvoicePayment = (invoiceId: string, amount: number, method: any) => {
-        const targetInv = invoices.find((i) => i.id === invoiceId);
+    const collectInvoicePayment = (invoiceId: string, amount: number, method: any, advanceAdjustAmount: number = 0) => {
+        const currentInvoices = latestStateRef.current.invoices || invoices;
+        const targetInv = currentInvoices.find((i) => i.id === invoiceId);
         if (!targetInv)
             return;
-        addAuditLog({
-            staffId: activeStaff.id,
-            staffName: activeStaff.name,
-            staffRole: activeStaff.role,
-            location: 'Office',
-            actionType: 'PAYMENT_COLLECTED',
-            entityType: 'Sales',
-            refNo: targetInv.invoiceNo,
-            details: `Collected payment of Tk ${amount.toLocaleString()} via ${method} for invoice ${targetInv.invoiceNo} (${targetInv.customerName})`,
-            detailsBn: undefined,
-            amount: amount,
-            severity: 'success',
-        });
-        const newPaid = targetInv.paidAmount + amount;
+
+        const advanceAdjust = Math.max(0, Number(advanceAdjustAmount) || 0);
+        const cashCollect = Math.max(0, Number(amount) || 0);
+        const totalPaymentApplied = cashCollect + advanceAdjust;
+        if (totalPaymentApplied <= 0) return;
+
+        if (advanceAdjust > 0) {
+            addAuditLog({
+                staffId: activeStaff.id,
+                staffName: activeStaff.name,
+                staffRole: activeStaff.role,
+                location: 'Office',
+                actionType: 'ADVANCE_ADJUSTED',
+                entityType: 'Sales',
+                refNo: targetInv.invoiceNo,
+                details: `Adjusted payment of Tk ${advanceAdjust.toLocaleString()} from Customer Advance for invoice ${targetInv.invoiceNo} (${targetInv.customerName})`,
+                amount: advanceAdjust,
+                severity: 'success',
+            });
+        }
+
+        if (cashCollect > 0) {
+            addAuditLog({
+                staffId: activeStaff.id,
+                staffName: activeStaff.name,
+                staffRole: activeStaff.role,
+                location: 'Office',
+                actionType: 'PAYMENT_COLLECTED',
+                entityType: 'Sales',
+                refNo: targetInv.invoiceNo,
+                details: `Collected payment of Tk ${cashCollect.toLocaleString()} via ${method} for invoice ${targetInv.invoiceNo} (${targetInv.customerName})`,
+                amount: cashCollect,
+                severity: 'success',
+            });
+        }
+
+        const newPaid = targetInv.paidAmount + totalPaymentApplied;
         const newDue = Math.max(0, targetInv.grandTotal - newPaid);
         const newStatus: PaymentStatus = newDue <= 0 ? 'Paid' : 'Partial';
+
         // Resolve exact channel account in Chart of Accounts
         const matchedPm = paymentMethods.find((p) => p.id === method || p.name.toLowerCase() === (method || '').toLowerCase());
         const targetCoa = matchChannelToAccount(method, chartOfAccounts, paymentMethods);
         const resolvedAccount = targetCoa ? targetCoa.name : (matchedPm?.name || method || 'Office Cash');
 
         // Update invoice
-        setInvoices((prev) => prev.map((inv) => {
+        const updatedInvoices = currentInvoices.map((inv) => {
             if (inv.id !== invoiceId) return inv;
             const existingSplits = { ...(inv.splitPayments || {}) };
-            existingSplits[resolvedAccount] = (existingSplits[resolvedAccount] || 0) + amount;
+            if (cashCollect > 0) {
+                existingSplits[resolvedAccount] = (existingSplits[resolvedAccount] || 0) + cashCollect;
+            }
+            if (advanceAdjust > 0) {
+                existingSplits['Customer Advance'] = (existingSplits['Customer Advance'] || 0) + advanceAdjust;
+            }
             return {
                 ...inv,
                 paidAmount: newPaid,
@@ -1181,25 +1598,180 @@ export const AppProvider: React.FC<{
                 paymentStatus: newStatus,
                 splitPayments: existingSplits,
             };
-        }));
-        // Update customer due
-        if (targetInv.customerId) {
-            setCustomers((custs) => custs.map((c) => (c.id === targetInv.customerId ? { ...c, dueAmount: Math.max(0, c.dueAmount - amount) } : c)));
-        }
+        });
+        setInvoices(updatedInvoices);
+        try {
+            localStorage.setItem(`${STORAGE_KEY}_INVOICES`, JSON.stringify(updatedInvoices));
+        } catch {}
+
+        // Update customer due and total purchases safely
+        const currentCusts = latestStateRef.current.customers || customers;
+        const updatedCusts = currentCusts.map((c) => {
+            if (isInvoiceMatchingCustomer(targetInv, c)) {
+                const clientInvoices = updatedInvoices.filter(inv => isInvoiceMatchingCustomer(inv, c));
+                const totalPurchased = clientInvoices.length > 0
+                    ? clientInvoices.reduce((s, inv) => s + (Number(inv.grandTotal) || 0), 0)
+                    : (c.totalPurchased || 0);
+                const dueAmount = clientInvoices.length > 0
+                    ? clientInvoices.reduce((s, inv) => s + (Number(inv.dueAmount) || 0), 0)
+                    : Math.max(0, (c.dueAmount || 0) - totalPaymentApplied);
+                const currentAdv = Number(c.advanceBalance) || 0;
+                const newAdv = Math.max(0, currentAdv - advanceAdjust);
+                return { ...c, totalPurchased, dueAmount, advanceBalance: newAdv };
+            }
+            return c;
+        });
+        setCustomers(updatedCusts);
+        try {
+            localStorage.setItem(`${STORAGE_KEY}_CUSTOMERS`, JSON.stringify(updatedCusts));
+        } catch {}
+
         // Add transaction with guaranteed unique ID and exact channel
+        const newTxsToAdd: AccountingTransaction[] = [];
+        if (cashCollect > 0) {
+            newTxsToAdd.push({
+                id: generateUniqueId('tx'),
+                date: new Date().toISOString().slice(0, 10),
+                type: 'INCOME',
+                category: 'Client Due Collection',
+                amount: cashCollect,
+                paymentAccount: resolvedAccount,
+                accountHead: resolvedAccount,
+                refNo: targetInv.invoiceNo,
+                customerOrSupplier: targetInv.customerName,
+                description: `Due collection against invoice ${targetInv.invoiceNo} via ${resolvedAccount}`,
+            });
+        }
+        if (advanceAdjust > 0) {
+            newTxsToAdd.push({
+                id: generateUniqueId('tx'),
+                date: new Date().toISOString().slice(0, 10),
+                type: 'INCOME',
+                category: 'Customer Advance Adjustment',
+                amount: advanceAdjust,
+                paymentAccount: 'Customer Advance',
+                accountHead: 'Customer Advance',
+                refNo: targetInv.invoiceNo,
+                customerOrSupplier: targetInv.customerName,
+                description: `Adjusted Tk ${advanceAdjust.toLocaleString()} from Customer Advance against invoice ${targetInv.invoiceNo}`,
+            });
+        }
+
+        const currentTxs = latestStateRef.current.transactions || transactions;
+        const updatedTxs = ensureUniqueTransactions([...newTxsToAdd, ...currentTxs]);
+        setTransactions(updatedTxs);
+        try {
+            localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(updatedTxs));
+        } catch {}
+
+        // Update Chart of Accounts Customer Advance liability and Customer Receivable accounts immediately
+        const newTotalCustomerAdvance = updatedCusts.reduce((s, c) => s + (Number(c.advanceBalance) || 0), 0);
+        const newTotalCustomerDue = updatedInvoices.reduce((s, inv) => s + (Number(inv.dueAmount) || 0), 0);
+        const currentCoa = latestStateRef.current.chartOfAccounts || chartOfAccounts;
+        const updatedCoa = currentCoa.map((acc) => {
+            const isAdvanceLiability = acc.classification === 'Liability' && (
+                acc.code === '2020' ||
+                acc.code === '2002' ||
+                acc.id === 'coa-2020' ||
+                acc.name.toLowerCase().includes('advance') ||
+                acc.name.toLowerCase().includes('deposit') ||
+                acc.nameBn?.includes('অগ্রিম')
+            );
+            if (isAdvanceLiability) {
+                return { ...acc, currentBalance: newTotalCustomerAdvance };
+            }
+            const isCustomerReceivable = acc.classification === 'Asset' && (
+                acc.id === 'coa-1050' ||
+                acc.code === '1003' ||
+                acc.code === '1050' ||
+                (acc.name.toLowerCase().includes('customer') && acc.name.toLowerCase().includes('receivable')) ||
+                acc.name.toLowerCase().includes('trade debtor') ||
+                acc.nameBn?.includes('কাস্টমার বকেয়া') ||
+                acc.nameBn?.includes('প্রাপ্য হিসাব') ||
+                (acc.name.toLowerCase().includes('receivable') && !acc.name.toLowerCase().includes('aggregator') && !acc.name.toLowerCase().includes('staff'))
+            );
+            if (isCustomerReceivable) {
+                return { ...acc, currentBalance: newTotalCustomerDue > 0 ? newTotalCustomerDue : (acc.openingBalance || 0) };
+            }
+            return acc;
+        });
+        setChartOfAccounts(updatedCoa);
+        try {
+            localStorage.setItem(`${STORAGE_KEY}_COA`, JSON.stringify(updatedCoa));
+            localStorage.setItem(`${STORAGE_KEY}_CHART_OF_ACCOUNTS`, JSON.stringify(updatedCoa));
+        } catch {}
+
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            invoices: updatedInvoices,
+            customers: updatedCusts,
+            transactions: updatedTxs,
+            chartOfAccounts: updatedCoa,
+        };
+        triggerImmediatePush();
+    };
+
+    const adjustCustomerAdvance = (customerId: string, amount: number, invoiceId?: string, notes?: string) => {
+        if (amount <= 0) return;
+        if (invoiceId) {
+            collectInvoicePayment(invoiceId, 0, 'Customer Advance', amount);
+            return;
+        }
+        const currentCusts = latestStateRef.current.customers || customers;
+        const cust = currentCusts.find((c) => c.id === customerId);
+        if (!cust) return;
+
+        const currentInvoices = latestStateRef.current.invoices || invoices;
+        const dueInv = currentInvoices.find((inv) => isInvoiceMatchingCustomer(inv, cust) && inv.dueAmount > 0);
+        if (dueInv) {
+            collectInvoicePayment(dueInv.id, 0, 'Customer Advance', Math.min(amount, dueInv.dueAmount));
+            return;
+        }
+
+        const newAdv = Math.max(0, (Number(cust.advanceBalance) || 0) - amount);
+        const updatedCusts = currentCusts.map((c) => c.id === customerId ? { ...c, advanceBalance: newAdv } : c);
+        setCustomers(updatedCusts);
+        try { localStorage.setItem(`${STORAGE_KEY}_CUSTOMERS`, JSON.stringify(updatedCusts)); } catch {}
+
         const newTx: AccountingTransaction = {
             id: generateUniqueId('tx'),
             date: new Date().toISOString().slice(0, 10),
             type: 'INCOME',
-            category: 'Client Due Collection',
+            category: 'Customer Advance Adjustment',
             amount: amount,
-            paymentAccount: resolvedAccount,
-            accountHead: resolvedAccount,
-            refNo: targetInv.invoiceNo,
-            customerOrSupplier: targetInv.customerName,
-            description: `Due collection against invoice ${targetInv.invoiceNo} via ${resolvedAccount}`,
+            paymentAccount: 'Customer Advance',
+            accountHead: 'Customer Advance',
+            refNo: `ADV-ADJ-${Date.now().toString().slice(-4)}`,
+            customerOrSupplier: cust.name,
+            description: notes || `Direct adjustment of advance balance for ${cust.name}`,
         };
-        setTransactions((txs) => ensureUniqueTransactions([newTx, ...txs]));
+        const currentTxs = latestStateRef.current.transactions || transactions;
+        const updatedTxs = ensureUniqueTransactions([newTx, ...currentTxs]);
+        setTransactions(updatedTxs);
+        try { localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(updatedTxs)); } catch {}
+
+        const newTotalCustomerAdvance = updatedCusts.reduce((s, c) => s + (Number(c.advanceBalance) || 0), 0);
+        const currentCoa = latestStateRef.current.chartOfAccounts || chartOfAccounts;
+        const updatedCoa = currentCoa.map((acc) => {
+            const isAdvanceLiability = acc.classification === 'Liability' && (
+                acc.code === '2020' || acc.code === '2002' || acc.id === 'coa-2020' ||
+                acc.name.toLowerCase().includes('advance') || acc.name.toLowerCase().includes('deposit') || acc.nameBn?.includes('অগ্রিম')
+            );
+            if (isAdvanceLiability) {
+                return { ...acc, currentBalance: newTotalCustomerAdvance };
+            }
+            return acc;
+        });
+        setChartOfAccounts(updatedCoa);
+        try { localStorage.setItem(`${STORAGE_KEY}_CHART_OF_ACCOUNTS`, JSON.stringify(updatedCoa)); } catch {}
+
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            customers: updatedCusts,
+            transactions: updatedTxs,
+            chartOfAccounts: updatedCoa,
+        };
+        triggerImmediatePush();
     };
     const updateProductionStatus = (invoiceId: string, status: any) => {
         setInvoices((prev) => prev.map((inv) => (inv.id === invoiceId ? { ...inv, productionStatus: status } : inv)));
@@ -1265,6 +1837,8 @@ export const AppProvider: React.FC<{
             productionStatus: 'Queued',
             warehouseLocation: 'Factory',
             notes: `Generated from Quotation #${q.quoteNo}. ${q.notes || ''}`,
+            showRegionColumn: q.showRegionColumn,
+            showTypeColumn: q.showTypeColumn,
         });
         updateQuotation(quotationId, { status: 'Approved', isConverted: true });
         return created;
@@ -1541,7 +2115,7 @@ export const AppProvider: React.FC<{
                 type: 'EXPENSE',
                 category: 'Raw Material Purchase',
                 amount: data.paidAmount,
-                paymentAccount: data.destination === 'Factory' ? 'BRAC Bank' : 'Office Cash',
+                paymentAccount: data.paymentMethod || 'Cash',
                 refNo: poNo,
                 customerOrSupplier: data.supplierName,
                 description: `Payment for Purchase Order ${poNo} - ${data.items.map((i) => i.name).join(', ')}`,
@@ -1550,14 +2124,42 @@ export const AppProvider: React.FC<{
         }
         // Auto receive stock if marked Received
         if (data.status === 'Received' && data.items.length > 0) {
-            setProducts((prev) => prev.map((p) => {
-                const item = data.items.find((i) => i.productId === p.id);
-                if (item) {
-                    const locKey = data.destination === 'Factory' ? 'stockFactory' : 'stockOffice';
-                    return { ...p, [locKey]: p[locKey] + item.qty };
-                }
-                return p;
-            }));
+            setProducts((prev) => {
+                const existingProductIds = new Set(prev.map(p => p.id));
+                const updated = prev.map((p) => {
+                    const item = data.items.find((i) => i.productId === p.id);
+                    if (item) {
+                        const locKey = data.destination === 'Factory' ? 'stockFactory' : 'stockOffice';
+                        return { 
+                            ...p, 
+                            [locKey]: (p[locKey] || 0) + item.qty,
+                            costPrice: p.costPrice > 0 ? p.costPrice : item.unitCost
+                        };
+                    }
+                    return p;
+                });
+                const toAdd: ProductItem[] = [];
+                data.items.forEach(item => {
+                    if (!existingProductIds.has(item.productId)) {
+                        toAdd.push({
+                            id: item.productId,
+                            name: item.name,
+                            nameBn: '',
+                            code: `RM-${Math.floor(100 + Math.random() * 900)}`,
+                            category: 'Raw Materials',
+                            unit: item.unit || 'pcs',
+                            costPrice: item.unitCost,
+                            sellingPrice: Math.round(item.unitCost * 1.2),
+                            stockOffice: data.destination === 'Office' ? item.qty : 0,
+                            stockFactory: data.destination === 'Factory' ? item.qty : 0,
+                            minStockAlert: 5,
+                            isRawMaterial: true,
+                            description: `Purchased via PO ${poNo}`,
+                        });
+                    }
+                });
+                return [...updated, ...toAdd];
+            });
             const movements: StockMovement[] = data.items.map((item, idx) => ({
                 id: generateUniqueId(`sm-${idx}-${item.productId}`),
                 date: new Date().toISOString().replace('T', ' ').slice(0, 16),
@@ -1634,15 +2236,44 @@ export const AppProvider: React.FC<{
             return s;
         }));
         if (updatedItems.length > 0) {
-            setProducts((prev) => prev.map((p) => {
-                const item = updatedItems.find((i) => i.productId === p.id);
-                if (item) {
-                    const rQty = item.receivedQty !== undefined ? item.receivedQty : item.qty;
-                    const locKey = po.destination === 'Factory' ? 'stockFactory' : 'stockOffice';
-                    return { ...p, [locKey]: p[locKey] + rQty };
-                }
-                return p;
-            }));
+            setProducts((prev) => {
+                const existingProductIds = new Set(prev.map(p => p.id));
+                const updated = prev.map((p) => {
+                    const item = updatedItems.find((i) => i.productId === p.id);
+                    if (item) {
+                        const rQty = item.receivedQty !== undefined ? item.receivedQty : item.qty;
+                        const locKey = po.destination === 'Factory' ? 'stockFactory' : 'stockOffice';
+                        return { 
+                            ...p, 
+                            [locKey]: (p[locKey] || 0) + rQty,
+                            costPrice: p.costPrice > 0 ? p.costPrice : item.unitCost
+                        };
+                    }
+                    return p;
+                });
+                const toAdd: ProductItem[] = [];
+                updatedItems.forEach(item => {
+                    if (!existingProductIds.has(item.productId)) {
+                        const rQty = item.receivedQty !== undefined ? item.receivedQty : item.qty;
+                        toAdd.push({
+                            id: item.productId,
+                            name: item.name,
+                            nameBn: '',
+                            code: `RM-${Math.floor(100 + Math.random() * 900)}`,
+                            category: 'Raw Materials',
+                            unit: item.unit || 'pcs',
+                            costPrice: item.unitCost,
+                            sellingPrice: Math.round(item.unitCost * 1.2),
+                            stockOffice: po.destination === 'Office' ? rQty : 0,
+                            stockFactory: po.destination === 'Factory' ? rQty : 0,
+                            minStockAlert: 5,
+                            isRawMaterial: true,
+                            description: `Purchased via PO ${po.poNo}`,
+                        });
+                    }
+                });
+                return [...updated, ...toAdd];
+            });
             const movements: StockMovement[] = updatedItems.map((item, idx) => {
                 const rQty = item.receivedQty !== undefined ? item.receivedQty : item.qty;
                 return {
@@ -1674,7 +2305,7 @@ export const AppProvider: React.FC<{
             severity: 'info',
         });
     };
-    const payPurchaseOrder = (poId: string, amount: number, paymentAccount: any = 'BRAC Bank', paymentMethod: any = 'Bank Transfer') => {
+    const payPurchaseOrder = (poId: string, amount: number, paymentAccount: any = 'Cash', paymentMethod: any = 'Cash') => {
         const po = purchaseOrders.find((p) => p.id === poId);
         if (!po)
             return;
@@ -1698,12 +2329,15 @@ export const AppProvider: React.FC<{
             : p));
         // 2. Also reduce the Supplier's due amount / balance payable
         const poSupName = po.supplierName?.toLowerCase().trim();
+        const poSupPhone = (po.supplierPhone || '').replace(/\D/g, '');
         setSuppliers((prev) => prev.map((s) => {
             const sName = s.name?.toLowerCase().trim();
             const sCompany = s.company?.toLowerCase().trim();
+            const sPhone = (s.phone || '').replace(/\D/g, '');
             const matches = (po.supplierId && s.id === po.supplierId) ||
-                (poSupName && sName && sName === poSupName) ||
-                (poSupName && sCompany && sCompany === poSupName);
+                (poSupName && sName && (sName === poSupName || sName.includes(poSupName) || poSupName.includes(sName))) ||
+                (poSupName && sCompany && (sCompany === poSupName || sCompany.includes(poSupName) || poSupName.includes(sCompany))) ||
+                (poSupPhone && sPhone && poSupPhone === sPhone);
             if (matches) {
                 const currentSupDue = Number(s.dueAmount ?? s.balancePayable ?? 0);
                 const updatedSupDue = Math.max(0, currentSupDue - safeAmount);
@@ -1722,7 +2356,7 @@ export const AppProvider: React.FC<{
             type: 'EXPENSE',
             category: 'Raw Materials / PO Payment',
             amount: safeAmount,
-            paymentAccount: paymentAccount || (po.destination === 'Factory' ? 'BRAC Bank' : 'Office Cash'),
+            paymentAccount: paymentAccount || paymentMethod || 'Cash',
             refNo: po.poNo,
             customerOrSupplier: po.supplierName,
             description: `Payment for Purchase Order ${po.poNo} (${newStatus}) - Supplier: ${po.supplierName}`,
@@ -1805,7 +2439,7 @@ export const AppProvider: React.FC<{
             type: 'EXPENSE',
             category: 'Supplier Due Payment',
             amount: safeAmount,
-            paymentAccount: account || 'BRAC Bank',
+            paymentAccount: account || 'Cash',
             customerOrSupplier: sup?.company || sup?.name || 'Vendor',
             description: `Payment to supplier ${sup?.name} for clearing dues`,
         };
@@ -1818,7 +2452,7 @@ export const AppProvider: React.FC<{
             actionType: 'SUPPLIER_PAID',
             entityType: 'Supply Chain',
             refNo: `SUP-PAY-${Date.now().toString().slice(-4)}`,
-            details: `Paid supplier due of Tk ${safeAmount.toLocaleString()} to ${sup?.company || sup?.name || 'Vendor'} via ${account || 'BRAC Bank'}`,
+            details: `Paid supplier due of Tk ${safeAmount.toLocaleString()} to ${sup?.company || sup?.name || 'Vendor'} via ${account || 'Cash'}`,
             detailsBn: undefined,
             amount: safeAmount,
             severity: 'warning',
@@ -1831,6 +2465,7 @@ export const AppProvider: React.FC<{
             id: `cust-${Date.now()}`,
             totalPurchased: 0,
             dueAmount: 0,
+            advanceBalance: Number(cust.advanceBalance) || 0,
             createdAt: new Date().toISOString().slice(0, 10),
         };
         setCustomers((prev) => {
@@ -1845,9 +2480,7 @@ export const AppProvider: React.FC<{
             customers: [newCust, ...(latestStateRef.current.customers || []).filter((c) => c.id !== newCust.id)],
         };
         isCloudLoadedRef.current = true;
-        setTimeout(() => {
-            syncWithCloud();
-        }, 100);
+        triggerImmediatePush();
         return newCust;
     };
     const updateCustomer = (id: string, updates: Partial<Customer>) => {
@@ -1863,9 +2496,7 @@ export const AppProvider: React.FC<{
             customers: (latestStateRef.current.customers || []).map((c) => (c.id === id ? { ...c, ...updates } : c)),
         };
         isCloudLoadedRef.current = true;
-        setTimeout(() => {
-            syncWithCloud();
-        }, 100);
+        triggerImmediatePush();
     };
     const addSupplier = (sup: Omit<Supplier, 'id' | 'totalPurchased' | 'dueAmount'>): Supplier => {
         const newSup: Supplier = {
@@ -2010,11 +2641,18 @@ export const AppProvider: React.FC<{
 
         const currentCusts = latestStateRef.current.customers || customers;
         const nextCusts = currentCusts.map((c: Customer) => {
-            if (c.id === inv.customerId) {
+            if (isInvoiceMatchingCustomer(inv, c)) {
+                const clientInvoices = nextInvoices.filter(i => isInvoiceMatchingCustomer(i, c));
+                const totalPurchased = clientInvoices.length > 0
+                    ? clientInvoices.reduce((s, i) => s + (Number(i.grandTotal) || 0), 0)
+                    : 0;
+                const dueAmount = clientInvoices.length > 0
+                    ? clientInvoices.reduce((s, i) => s + (Number(i.dueAmount) || 0), 0)
+                    : 0;
                 return {
                     ...c,
-                    totalPurchased: Math.max(0, c.totalPurchased - inv.grandTotal),
-                    dueAmount: Math.max(0, c.dueAmount - inv.dueAmount),
+                    totalPurchased,
+                    dueAmount,
                 };
             }
             return c;
@@ -2745,11 +3383,27 @@ export const AppProvider: React.FC<{
     };
     // Accounting
     const addTransaction = (tx: Omit<AccountingTransaction, 'id'>) => {
+        const resolvedAccount = tx.paymentAccount || tx.account || tx.accountHead || tx.paymentMethod || 'Cash in Hand';
         const newTx: AccountingTransaction = {
             ...tx,
+            account: resolvedAccount,
+            paymentAccount: resolvedAccount,
+            accountHead: resolvedAccount,
+            paymentMethod: tx.paymentMethod || resolvedAccount,
             id: generateUniqueId('tx'),
         };
-        setTransactions((prev) => ensureUniqueTransactions([newTx, ...prev]));
+        const currentList = latestStateRef.current.transactions || transactions;
+        const nextTxs = ensureUniqueTransactions([newTx, ...currentList]);
+        setTransactions(nextTxs);
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            transactions: nextTxs,
+        };
+        try {
+            localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(nextTxs));
+        } catch {}
+        triggerImmediatePush();
+
         const isExp = tx.type === 'EXPENSE';
         addAuditLog({
             staffId: activeStaff.id,
@@ -2759,17 +3413,74 @@ export const AppProvider: React.FC<{
             actionType: isExp ? 'EXPENSE_RECORDED' : 'PAYMENT_COLLECTED',
             entityType: 'Accounting',
             refNo: tx.refNo || `TX-${newTx.id.slice(-6)}`,
-            details: `Recorded ${isExp ? 'expense' : 'income'}: ${tx.description} (${tx.category}) - Tk ${tx.amount.toLocaleString()} via ${tx.account || tx.paymentAccount || 'Cash'}`,
+            details: `Recorded ${isExp ? 'expense' : 'income'}: ${tx.description} (${tx.category}) - Tk ${tx.amount.toLocaleString()} via ${resolvedAccount}`,
             detailsBn: undefined,
             amount: tx.amount,
             severity: isExp ? 'info' : 'success',
         });
     };
     const updateTransaction = (id: string, updates: Partial<AccountingTransaction>) => {
-        setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, ...updates } : t)));
+        const currentList = latestStateRef.current.transactions || transactions;
+        const nextTxs = currentList.map((t) => {
+            if (t.id !== id) return t;
+            const updatedAccount = updates.paymentAccount || updates.account || updates.accountHead || updates.paymentMethod || t.paymentAccount || t.account;
+            return {
+                ...t,
+                ...updates,
+                account: updatedAccount,
+                paymentAccount: updatedAccount,
+                accountHead: updatedAccount,
+                paymentMethod: updates.paymentMethod || updatedAccount,
+            };
+        });
+        setTransactions(nextTxs);
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            transactions: nextTxs,
+        };
+        try {
+            localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(nextTxs));
+        } catch {}
+        triggerImmediatePush();
     };
     const deleteTransaction = (id: string) => {
-        setTransactions((prev) => prev.filter((t) => t.id !== id));
+        const currentList = latestStateRef.current.transactions || transactions;
+        const txToDelete = currentList.find(t => t.id === id || (id && t.refNo === id));
+        const nextTxs = currentList.filter(t => t.id !== id && (!txToDelete || t !== txToDelete));
+        setTransactions(nextTxs);
+        latestStateRef.current = {
+            ...latestStateRef.current,
+            transactions: nextTxs,
+        };
+        try {
+            localStorage.setItem(`${STORAGE_KEY}_TRANSACTIONS`, JSON.stringify(nextTxs));
+        } catch {}
+
+        if (txToDelete?.refNo) {
+            const existingDeleted = safeGetLocalStorage<string[]>(`${STORAGE_KEY}_DELETED_TX_REFS`, []);
+            const updatedDeleted = Array.from(new Set([...existingDeleted, id, txToDelete.refNo]));
+            try {
+                localStorage.setItem(`${STORAGE_KEY}_DELETED_TX_REFS`, JSON.stringify(updatedDeleted));
+            } catch {}
+        }
+
+        triggerImmediatePush();
+
+        if (txToDelete) {
+            addAuditLog({
+                staffId: activeStaff.id,
+                staffName: activeStaff.name,
+                staffRole: activeStaff.role,
+                location: 'Office',
+                actionType: 'PROFILE_UPDATED',
+                entityType: 'Accounting',
+                refNo: txToDelete.refNo || `TX-${id.slice(-6)}`,
+                details: `Deleted ledger transaction: ${txToDelete.description} (${txToDelete.category}) - Tk ${txToDelete.amount.toLocaleString()}`,
+                detailsBn: undefined,
+                amount: txToDelete.amount,
+                severity: 'warning',
+            });
+        }
     };
     const updateJournalEntry = (id: string, updates: Partial<JournalEntry>) => {
         setJournalEntries((prev) => prev.map((je) => (je.id === id ? { ...je, ...updates } : je)));
@@ -2868,7 +3579,7 @@ export const AppProvider: React.FC<{
     };
 
     const resolveProjectExpenseAccount = () => {
-        return chartOfAccounts.find(a => a.classification === 'Expense' && (a.name.toLowerCase().includes('project') || a.code === '5206')) ||
+        return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5206' || a.code === '5300' || a.id === 'coa-5206' || a.name.toLowerCase().includes('project'))) ||
                chartOfAccounts.find(a => a.classification === 'Expense' && a.code === '5100' && a.name.toLowerCase().includes('project')) ||
                chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5010' || a.name.toLowerCase().includes('raw') || a.name.toLowerCase().includes('cost'))) ||
                chartOfAccounts.find(a => a.classification === 'Expense') ||
@@ -2919,7 +3630,7 @@ export const AppProvider: React.FC<{
     };
 
     const resolveProjectRevenueAccount = () => {
-        return chartOfAccounts.find(a => a.classification === 'Revenue' && (a.code === '4051' || a.name.toLowerCase().includes('project') || a.code === '4060')) ||
+        return chartOfAccounts.find(a => a.classification === 'Revenue' && (a.code === '4002' || a.code === '4051' || a.id === 'coa-4002' || a.id === 'coa-4051' || a.name.toLowerCase().includes('project') || a.code === '4060')) ||
                chartOfAccounts.find(a => a.classification === 'Revenue' && a.code === '4020') ||
                chartOfAccounts.find(a => a.classification === 'Revenue') ||
                chartOfAccounts[0];
@@ -3508,12 +4219,14 @@ export const AppProvider: React.FC<{
             // 4. Remove Sales Revenue transactions and POS invoice payment records
             const currentTxs = latestStateRef.current.transactions || transactions;
             const nextTxs = currentTxs.filter((t: AccountingTransaction) => {
-                const isSalesCategory = t.category === 'Sales Revenue' || t.category === 'Customer Payment';
+                const isSalesCategory = t.category === 'Sales Revenue' || t.category === 'Customer Payment' || t.category === 'Customer Advance Adjustment';
                 const isInvoiceRef = Boolean(t.refNo && (t.refNo.startsWith('DCC-INV-') || t.refNo.startsWith('inv-')));
                 const isPosDesc = Boolean(t.description && (
                     t.description.startsWith('POS Payment:') ||
                     t.description.startsWith('Sales Invoice payment') ||
-                    t.description.startsWith('Invoice Due Payment:')
+                    t.description.startsWith('Invoice Due Payment:') ||
+                    t.description.startsWith('Adjusted Tk') ||
+                    t.description.includes('Customer Advance')
                 ));
                 return !(isSalesCategory || isInvoiceRef || isPosDesc);
             });
@@ -3686,7 +4399,7 @@ export const AppProvider: React.FC<{
                 (j: JournalEntry) => j.source === 'PROJECT_EXPENSE' || j.source === 'PROJECT_SALES'
             );
             const cleanedCOA = (latestStateRef.current.chartOfAccounts || chartOfAccounts).map((acc: ChartOfAccount) => {
-                const isPrj = acc.code === '5206' || acc.code === '4002' || acc.code === '4051' || acc.name.toLowerCase().includes('project');
+                const isPrj = acc.code === '5206' || acc.code === '5300' || acc.code === '4002' || acc.code === '4051' || acc.code === '4060' || acc.name.toLowerCase().includes('project');
                 if (isPrj) {
                     return { ...acc, currentBalance: acc.openingBalance || 0 };
                 }
@@ -3745,7 +4458,7 @@ export const AppProvider: React.FC<{
         else if (moduleKey === 'WIPE_ALL_EXCEPT_PRODUCTS' || moduleKey === 'RESET_ALL_TRANSACTIONS') {
             const zeroStockProducts = (latestStateRef.current.products || products).map((p: ProductItem) => ({ ...p, stockFactory: 0, stockOffice: 0 }));
             const zeroBalCOA = (latestStateRef.current.chartOfAccounts || chartOfAccounts).map((acc: ChartOfAccount) => ({ ...acc, openingBalance: 0, currentBalance: 0 }));
-            const zeroDuesCustomers = (latestStateRef.current.customers || customers).map((c: Customer) => ({ ...c, totalPurchased: 0, dueAmount: 0 }));
+            const zeroDuesCustomers = (latestStateRef.current.customers || customers).map((c: Customer) => ({ ...c, totalPurchased: 0, dueAmount: 0, advanceBalance: 0 }));
             const zeroDuesSuppliers = (latestStateRef.current.suppliers || suppliers).map((s: Supplier) => ({ ...s, totalPurchased: 0, balancePayable: 0, dueAmount: 0 }));
 
             setInvoices([]);
@@ -3781,8 +4494,8 @@ export const AppProvider: React.FC<{
                 location: 'All',
                 actionType: 'DATA_CLEANED',
                 entityType: 'System',
-                details: 'Full transactional reset: Wiped all invoices, quotes, POs, accounting transactions, journal entries, projects, and stock movements. Reset customer/supplier dues to 0, product stock to 0, and account balances to 0.',
-                detailsBn: 'সম্পূর্ণ ট্রানজ্যাকশনাল ডেটা রিসেট করা হয়েছে (বিক্রয়, ক্রয়, ক্যাশ লেনদেন, জার্নাল, প্রজেক্ট, স্টক ও ব্যালেন্স শূন্য)।',
+                details: 'Full transactional reset: Wiped all invoices, quotes, POs, accounting transactions, journal entries, projects, and stock movements. Reset customer dues and advances to 0, supplier dues to 0, product stock to 0, and account balances to 0.',
+                detailsBn: 'সম্পূর্ণ ট্রানজ্যাকশনাল ডেটা রিসেট করা হয়েছে (বিক্রয়, ক্রয়, ক্যাশ লেনদেন, জার্নাল, প্রজেক্ট, স্টক, কাস্টমার বকেয়া ও অগ্রিম এবং ব্যালেন্স শূন্য)।',
                 severity: 'critical',
             });
 
@@ -4344,12 +5057,15 @@ export const AppProvider: React.FC<{
 
         // Apply ledger transactions
         transactions.forEach((tx) => {
-            const acct = (tx.paymentAccount || tx.account || '').toLowerCase();
+            const acct = (tx.paymentAccount || tx.account || tx.accountHead || tx.paymentMethod || '').toLowerCase();
+            if (isAdvanceAdjustmentTransaction(tx) || acct.includes('advance') || acct.includes('অগ্রিম')) {
+                return; // Internal advance adjustment does not change cash/bank/mobile liquid balances
+            }
             const delta = tx.type === 'INCOME' ? tx.amount : tx.type === 'EXPENSE' ? -tx.amount : 0;
             
             if (acct.includes('bkash') || acct.includes('nagad') || acct.includes('rocket') || acct.includes('wallet') || acct.includes('mobile') || acct.includes('বিকাশ') || acct.includes('নগদ')) {
                 mobile += delta;
-            } else if (acct.includes('bank') || acct.includes('brac') || acct.includes('city') || acct.includes('card') || acct.includes('cheque') || acct.includes('plc') || (profile.bankName && acct.includes(profile.bankName.toLowerCase()))) {
+            } else if (acct.includes('bank') || acct.includes('brac') || acct.includes('city') || acct.includes('southeast') || acct.includes('card') || acct.includes('cheque') || acct.includes('plc') || (profile.bankName && acct.includes(profile.bankName.toLowerCase()))) {
                 bank += delta;
             } else {
                 cash += delta;
@@ -4442,6 +5158,7 @@ export const AppProvider: React.FC<{
             updateInvoice,
             deleteInvoice,
             collectInvoicePayment,
+            adjustCustomerAdvance,
             updateProductionStatus,
             addQuotation,
             updateQuotation,

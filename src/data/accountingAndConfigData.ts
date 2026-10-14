@@ -644,6 +644,20 @@ export const INITIAL_CHART_OF_ACCOUNTS: ChartOfAccount[] = [
         isSystem: true,
         isActive: true,
     },
+    {
+        id: 'coa-4070',
+        code: '4070',
+        name: 'Scrap & Waste Material Sales',
+        nameBn: 'স্ক্র্যাপ ও ঝুট মালামাল বিক্রয়',
+        classification: 'Revenue',
+        accountGroup: 'Operating Revenue',
+        normalBalance: 'Credit',
+        openingBalance: 0,
+        currentBalance: 0,
+        description: 'Revenue from sale of scrap flex, leftover sticker rolls, offcut acrylic, and waste materials',
+        isSystem: false,
+        isActive: true,
+    },
     // 5000 - EXPENSES
     {
         id: 'coa-5010',
@@ -758,8 +772,8 @@ export const INITIAL_CHART_OF_ACCOUNTS: ChartOfAccount[] = [
         isActive: true,
     },
     {
-        id: 'coa-5100',
-        code: '5100',
+        id: 'coa-5206',
+        code: '5206',
         name: 'Project Expense',
         nameBn: 'প্রজেক্ট খরচ',
         classification: 'Expense',

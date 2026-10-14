@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { InvoiceItem, PaymentMethod, ProductionStatus, UnitType } from '../types';
+import { InvoiceItem, PaymentMethod, ProductionStatus, UnitType, PRESET_INVOICE_ITEM_TYPES } from '../types';
 import { X, FileText, Plus, Trash2, Calendar, User, Phone, Building, CheckCircle2, Percent, Hash, Truck, DollarSign, Search, UserPlus, } from 'lucide-react';
 interface CreateSalesInvoiceModalProps {
     isOpen: boolean;
@@ -42,9 +42,16 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
     const [warehouseLocation, setWarehouseLocation] = useState<'Factory' | 'Office'>('Factory');
     // Items in Invoice
     const [items, setItems] = useState<InvoiceItem[]>([]);
+    // Optional Columns Configuration
+    const [showRegionColumn, setShowRegionColumn] = useState<boolean>(false);
+    const [showTypeColumn, setShowTypeColumn] = useState<boolean>(false);
     // Item Entry Row
     const [selectedProductId, setSelectedProductId] = useState('');
     const [itemName, setItemName] = useState('');
+    const [itemRegion, setItemRegion] = useState('');
+    const [itemTypeStr, setItemTypeStr] = useState('');
+    const [isCustomType, setIsCustomType] = useState<boolean>(false);
+    const [invoiceCustomTypes, setInvoiceCustomTypes] = useState<string[]>([]);
     const [itemCategory, setItemCategory] = useState('BRANDED PROMOTIONAL GIFTS');
     const [itemUnit, setItemUnit] = useState<UnitType>('pcs');
     const [itemQty, setItemQty] = useState(1);
@@ -112,6 +119,9 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
             productId: selectedProductId || `custom-${Date.now()}`,
             name: itemName.trim(),
             category: itemCategory,
+            region: showRegionColumn && itemRegion.trim() ? itemRegion.trim() : undefined,
+            type: showTypeColumn && itemTypeStr.trim() ? itemTypeStr.trim() : undefined,
+            itemType: showTypeColumn && itemTypeStr.trim() ? itemTypeStr.trim() : undefined,
             unit: itemUnit,
             unitPrice: itemPrice,
             costPrice: Math.round(itemPrice * 0.6),
@@ -123,9 +133,15 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
             notes: itemNotes.trim() || undefined,
         };
         setItems([...items, newItem]);
+        if (itemTypeStr.trim() && !PRESET_INVOICE_ITEM_TYPES.includes(itemTypeStr.trim() as any) && !invoiceCustomTypes.includes(itemTypeStr.trim())) {
+            setInvoiceCustomTypes((prev) => [...prev, itemTypeStr.trim()]);
+        }
         // Reset Item Entry Row
         setSelectedProductId('');
         setItemName('');
+        setItemRegion('');
+        setItemTypeStr('');
+        setIsCustomType(false);
         setItemQty(1);
         setItemPrice(1000);
         setItemWidth('');
@@ -198,6 +214,9 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
                 productId: selectedProductId || `custom-${Date.now()}`,
                 name: itemName.trim(),
                 category: itemCategory,
+                region: showRegionColumn && itemRegion.trim() ? itemRegion.trim() : undefined,
+                type: showTypeColumn && itemTypeStr.trim() ? itemTypeStr.trim() : undefined,
+                itemType: showTypeColumn && itemTypeStr.trim() ? itemTypeStr.trim() : undefined,
                 unit: itemUnit,
                 unitPrice: itemPrice,
                 costPrice: Math.round(itemPrice * 0.6),
@@ -213,6 +232,10 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
             alert('Please add at least one item!');
             return;
         }
+        const selectedCust = customerMode === 'existing' ? customers.find((c) => c.id === selectedCustomerId) : null;
+        const advanceToUse = selectedCust ? Math.min(Number(selectedCust.advanceBalance) || 0, effectivePaid) : 0;
+        const channelPaid = Math.max(0, effectivePaid - advanceToUse);
+
         const created = addInvoice({
             date: invoiceDate,
             referenceNo: referenceNo.trim() || undefined,
@@ -239,11 +262,14 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
             warehouseLocation,
             notes: notes.trim() || undefined,
             jobSpecs: jobSpecs.trim() || undefined,
+            showRegionColumn,
+            showTypeColumn,
             splitPayments: {
-                cash: paymentMethod.toLowerCase().includes('cash') ? effectivePaid : 0,
-                card: paymentMethod.toLowerCase().includes('card') || paymentMethod.toLowerCase().includes('bank') ? effectivePaid : 0,
-                bkash: paymentMethod.toLowerCase().includes('bkash') ? effectivePaid : 0,
-                nagad: paymentMethod.toLowerCase().includes('nagad') ? effectivePaid : 0,
+                cash: paymentMethod.toLowerCase().includes('cash') ? channelPaid : 0,
+                card: paymentMethod.toLowerCase().includes('card') || paymentMethod.toLowerCase().includes('bank') ? channelPaid : 0,
+                bkash: paymentMethod.toLowerCase().includes('bkash') ? channelPaid : 0,
+                nagad: paymentMethod.toLowerCase().includes('nagad') ? channelPaid : 0,
+                ...(advanceToUse > 0 ? { 'Customer Advance': advanceToUse } : {}),
                 due: dueAmount,
             },
         });
@@ -520,9 +546,34 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
               </span>
             </div>
 
+            {/* Optional Columns Banner */}
+            <div className="bg-amber-50/70 border border-amber-200/80 rounded-xl p-2.5 flex flex-wrap items-center gap-3">
+              <span className="text-amber-900 font-extrabold text-xs tracking-wide uppercase">
+                OPTIONAL COLUMNS OPTION:
+              </span>
+              <label className="bg-white px-3 py-1.5 rounded-lg border border-amber-200/80 shadow-2xs flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-700 hover:border-amber-400 transition-colors select-none">
+                <input
+                  type="checkbox"
+                  checked={showTypeColumn}
+                  onChange={(e) => setShowTypeColumn(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-slate-300 text-amber-600 focus:ring-amber-500 cursor-pointer accent-amber-600"
+                />
+                <span>Show Type Column</span>
+              </label>
+              <label className="bg-white px-3 py-1.5 rounded-lg border border-amber-200/80 shadow-2xs flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-700 hover:border-amber-400 transition-colors select-none">
+                <input
+                  type="checkbox"
+                  checked={showRegionColumn}
+                  onChange={(e) => setShowRegionColumn(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-slate-300 text-amber-600 focus:ring-amber-500 cursor-pointer accent-amber-600"
+                />
+                <span>Show Region Column</span>
+              </label>
+            </div>
+
             {/* Entry Row Inputs */}
             <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-              <div className="sm:col-span-3">
+              <div className={showRegionColumn && showTypeColumn ? "sm:col-span-3" : (showRegionColumn || showTypeColumn ? "sm:col-span-3" : "sm:col-span-3")}>
                 <label className="font-bold text-slate-600 block mb-1 text-[11px] truncate">
                   {'Service / Item Name *'}
                 </label>
@@ -546,6 +597,93 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
                       </option>))}
                   </select>)}
               </div>
+
+              {showTypeColumn && (
+                <div className="sm:col-span-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-bold text-slate-600 text-[11px] truncate">
+                      {'Type'}
+                    </label>
+                    {isCustomType && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCustomType(false);
+                          setItemTypeStr('');
+                        }}
+                        className="text-[10px] text-amber-600 hover:text-amber-700 font-bold underline cursor-pointer"
+                        title="Back to list"
+                      >
+                        List
+                      </button>
+                    )}
+                  </div>
+                  {isCustomType ? (
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={itemTypeStr}
+                        onChange={(e) => setItemTypeStr(e.target.value)}
+                        placeholder="Enter custom type..."
+                        autoFocus
+                        className="w-full px-2 py-1.5 pr-6 bg-white border border-amber-300 rounded-lg font-bold text-xs focus:ring-1 focus:ring-amber-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsCustomType(false);
+                          setItemTypeStr('');
+                        }}
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold cursor-pointer"
+                        title="Cancel custom"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ) : (
+                    <select
+                      value={itemTypeStr}
+                      onChange={(e) => {
+                        if (e.target.value === '__custom__') {
+                          setIsCustomType(true);
+                          setItemTypeStr('');
+                        } else {
+                          setItemTypeStr(e.target.value);
+                        }
+                      }}
+                      className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-xs focus:ring-1 focus:ring-slate-900"
+                    >
+                      <option value="">{'-- Select Type --'}</option>
+                      {PRESET_INVOICE_ITEM_TYPES.map((opt) => (
+                        <option key={opt} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                      {invoiceCustomTypes.map((ct) => (
+                        <option key={ct} value={ct}>
+                          {ct}
+                        </option>
+                      ))}
+                      <option value="__custom__">{'+ Custom Type...'}</option>
+                    </select>
+                  )}
+                </div>
+              )}
+
+              {showRegionColumn && (
+                <div className="sm:col-span-2">
+                  <label className="font-bold text-slate-600 block mb-1 text-[11px] truncate">
+                    {'Region'}
+                  </label>
+                  <input
+                    type="text"
+                    value={itemRegion}
+                    onChange={(e) => setItemRegion(e.target.value)}
+                    placeholder="e.g. Dhaka, Chittagong"
+                    className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-xs focus:ring-1 focus:ring-slate-900"
+                  />
+                </div>
+              )}
 
               <div className="sm:col-span-1">
                 <label className="font-bold text-slate-600 block mb-1 text-[11px] truncate">
@@ -582,14 +720,14 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
                 <input type="number" step="any" min="1" value={itemQty} onChange={(e) => setItemQty(Math.max(1, Number(e.target.value)))} className="w-full px-1.5 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-xs text-center"/>
               </div>
 
-              <div className="sm:col-span-2">
+              <div className={showRegionColumn && showTypeColumn ? "sm:col-span-1" : "sm:col-span-2"}>
                 <label className="font-bold text-slate-600 block mb-1 text-[11px] truncate">
                   {"Unit RateTk"}
                 </label>
                 <input type="number" step="any" min="0" value={itemPrice} onChange={(e) => setItemPrice(Math.max(0, Number(e.target.value)))} className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-xs text-right"/>
               </div>
 
-              <div className="sm:col-span-3 flex items-end">
+              <div className={showRegionColumn && showTypeColumn ? "sm:col-span-1 flex items-end" : (showRegionColumn || showTypeColumn ? "sm:col-span-2 flex items-end" : "sm:col-span-3 flex items-end")}>
                 <button type="button" onClick={handleAddItemRow} className="w-full py-1.5 px-3 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-colors cursor-pointer">
                   <Plus className="w-3.5 h-3.5"/>
                   <span>{'+ Add Item'}</span>
@@ -604,6 +742,8 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
                     <tr className="bg-slate-100 text-slate-600 font-bold text-[11px] border-b border-slate-200">
                       <th className="p-2.5 text-center w-10">SL</th>
                       <th className="p-2.5">{'Description'}</th>
+                      {showTypeColumn && <th className="p-2.5 text-center w-24">{'Type'}</th>}
+                      {showRegionColumn && <th className="p-2.5 text-center w-24">{'Region'}</th>}
                       <th className="p-2.5 text-center w-20">{'Unit'}</th>
                       <th className="p-2.5 text-center w-28">{'Qty'}</th>
                       <th className="p-2.5 text-right w-32">{"RateTk"}</th>
@@ -620,6 +760,16 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
                             </div>)}
                           {item.notes && (<div className="text-[10px] text-slate-500 italic">{item.notes}</div>)}
                         </td>
+                        {showTypeColumn && (
+                          <td className="p-2.5 text-center font-medium text-slate-700 text-xs">
+                            {item.type || item.itemType || '-'}
+                          </td>
+                        )}
+                        {showRegionColumn && (
+                          <td className="p-2.5 text-center font-medium text-slate-700 text-xs">
+                            {item.region || '-'}
+                          </td>
+                        )}
                         <td className="p-2.5 text-center font-medium text-slate-600">{item.unit}</td>
                         <td className="p-2 text-center">
                           <div className="flex items-center justify-center gap-1">
@@ -752,7 +902,22 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
                 </div>
 
                 {/* Quick Paid Presets */}
-                <div className="flex justify-end gap-1.5">
+                <div className="flex justify-end gap-1.5 flex-wrap">
+                  {customerMode === 'existing' && (() => {
+                    const cust = customers.find((c) => c.id === selectedCustomerId);
+                    const adv = Number(cust?.advanceBalance) || 0;
+                    if (adv <= 0) return null;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => setPaidAmount(Math.min(adv, grandTotal))}
+                        className="px-2 py-0.5 bg-indigo-100 hover:bg-indigo-200 text-indigo-800 rounded text-[10px] font-extrabold cursor-pointer flex items-center gap-1 shadow-2xs"
+                        title={`Customer has ${profile.currencySymbol}${adv.toLocaleString()} advance balance`}
+                      >
+                        <span>Adjust Advance ({profile.currencySymbol}{Math.min(adv, grandTotal).toLocaleString()})</span>
+                      </button>
+                    );
+                  })()}
                   <button type="button" onClick={() => setPaidAmount(grandTotal)} className="px-2 py-0.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded text-[10px] font-extrabold cursor-pointer">
                     {'Full Paid'}
                   </button>

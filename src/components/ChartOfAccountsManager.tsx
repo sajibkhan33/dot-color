@@ -3,9 +3,9 @@ import { useApp } from '../context/AppContext';
 import { ChartOfAccount } from '../types';
 import { BookOpen, Plus, Search, Filter, Edit2, Trash2, Lock, CheckCircle2, AlertCircle, X, FileText, Printer, Layers, ArrowUpDown, Download, Upload, } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { calculateSingleAccountBalance } from '../utils/accountUtils';
+import { calculateSingleAccountBalance, calculateTotalSupplierPayables, calculateInventoryValuation, isInvoiceTransaction, isProjectTransaction, isAdvanceAdjustmentTransaction, isAdvanceDepositTransaction } from '../utils/accountUtils';
 export const ChartOfAccountsManager: React.FC = () => {
-    const { chartOfAccounts, invoices = [], transactions = [], accountBalances, suppliers = [], customers = [], language, profile, addChartOfAccount, updateChartOfAccount, deleteChartOfAccount, checkPermission, projects = [], syncProjectsWithAccounting } = useApp();
+    const { chartOfAccounts, invoices = [], transactions = [], accountBalances, suppliers = [], customers = [], purchaseOrders = [], products = [], journalEntries = [], language, profile, addChartOfAccount, updateChartOfAccount, deleteChartOfAccount, checkPermission, projects = [], syncProjectsWithAccounting } = useApp();
     const [searchQuery, setSearchQuery] = useState('');
     const [filterClassification, setFilterClassification] = useState<string>('ALL');
     const [showAddModal, setShowAddModal] = useState(false);
@@ -30,13 +30,33 @@ export const ChartOfAccountsManager: React.FC = () => {
     // Real-time dynamic Chart of Accounts synced with Ledger Transactions, Projects & Balances
     const liveAccounts = useMemo(() => {
         const totalTxIncome = (transactions || []).filter(t => t.type === 'INCOME').reduce((s, t) => s + t.amount, 0);
-        const totalSupplierDue = (suppliers || []).reduce((s, sup) => s + (sup.dueAmount || sup.balancePayable || 0), 0);
+        const totalSupplierDue = calculateTotalSupplierPayables(suppliers, purchaseOrders);
         const totalInvoiceCustomerDue = (invoices || []).reduce((s, inv) => s + (Number(inv.dueAmount) || 0), 0);
         const totalCustomerRecordDue = (customers || []).reduce((s, c) => s + (Number(c.dueAmount) || 0), 0);
         const totalCustomerDue = Math.max(totalInvoiceCustomerDue, totalCustomerRecordDue);
+        const totalCustomerAdvance = (customers || []).reduce((s, c) => s + (Number(c.advanceBalance) || 0), 0);
         const totalProjectSales = (projects || []).reduce((s, p) => s + (p.totalSales || 0), 0);
         const totalProjectExpenses = (projects || []).reduce((s, p) => s + (p.totalExpenses || 0), 0);
         const totalInvoiceSales = (invoices || []).reduce((s, inv) => s + (Number(inv.grandTotal) || (Number(inv.paidAmount) + Number(inv.dueAmount)) || 0), 0);
+
+        // Dynamic detection of primary advance liability account (e.g. 2020 or 2002 Customer Advance)
+        const advanceAccounts = chartOfAccounts.filter(a => 
+            a.classification === 'Liability' && (
+                a.code === '2020' || 
+                a.code === '2002' || 
+                a.id === 'coa-2020' || 
+                (a.name || '').toLowerCase().includes('advance') || 
+                (a.name || '').toLowerCase().includes('deposit') || 
+                a.nameBn?.includes('অগ্রিম')
+            )
+        );
+        const primaryAdvanceAccId = (
+            advanceAccounts.find(a => a.id === 'coa-2020') ||
+            advanceAccounts.find(a => (a.name || '').toLowerCase().includes('customer advance') || a.nameBn?.includes('কাস্টমার অগ্রিম')) ||
+            advanceAccounts.find(a => a.code === '2020') ||
+            advanceAccounts.find(a => a.code === '2002') ||
+            advanceAccounts[0]
+        )?.id;
 
         // Dynamic detection of primary accounts that survives renaming or re-coding
         const nonProjectRevenueAccounts = chartOfAccounts.filter(a => 
@@ -44,13 +64,16 @@ export const ChartOfAccountsManager: React.FC = () => {
             !a.name.toLowerCase().includes('project') && 
             !a.nameBn?.includes('প্রজেক্ট') && 
             a.code !== '4002' && 
-            a.id !== 'coa-4002'
+            a.code !== '4051' &&
+            a.code !== '4060' &&
+            a.id !== 'coa-4002' &&
+            a.id !== 'coa-4051'
         );
         const primarySalesAccountId = (
             nonProjectRevenueAccounts.find(a => a.id === 'coa-4001') ||
             nonProjectRevenueAccounts.find(a => a.isSystem) ||
-            nonProjectRevenueAccounts.find(a => a.name.toLowerCase().includes('sales') || a.nameBn?.includes('বিক্রয়') || a.nameBn?.includes('বিক্রয়')) ||
             nonProjectRevenueAccounts.find(a => a.code === '4001' || a.code === '4010') ||
+            nonProjectRevenueAccounts.find(a => a.name.toLowerCase().includes('sales') || a.nameBn?.includes('বিক্রয়') || a.nameBn?.includes('বিক্রয়')) ||
             nonProjectRevenueAccounts[0]
         )?.id;
 
@@ -88,73 +111,233 @@ export const ChartOfAccountsManager: React.FC = () => {
                 );
 
                 if (isCustomerReceivable) {
-                    liveBal = totalCustomerDue > 0 ? totalCustomerDue : acc.currentBalance;
+                    liveBal = totalCustomerDue > 0 ? totalCustomerDue : (acc.openingBalance || 0);
                 } else if (isInventory) {
-                    liveBal = acc.currentBalance;
+                    liveBal = calculateInventoryValuation(products, purchaseOrders, acc, journalEntries);
                 } else {
                     // Dynamic individual live balance calculation for Cash, City Bank PLC, Southeast Bank, Nagad, bKash, etc.
                     liveBal = calculateSingleAccountBalance(acc, transactions, invoices);
                 }
             } else if (acc.classification === 'Liability') {
-                const isPayable = acc.code === '2001' || acc.code === '2010' || nameLower.includes('payable') || nameBn.includes('দেনা');
+                const isPayable = acc.code === '2001' || acc.code === '2010' || nameLower.includes('payable') || nameLower.includes('supplier') || nameBn.includes('দেনা') || nameBn.includes('প্রদেয়');
+                const isAdvanceLiability = acc.code === '2020' || acc.code === '2002' || acc.id === 'coa-2020' || nameLower.includes('advance') || nameLower.includes('deposit') || nameBn.includes('অগ্রিম');
+
                 if (isPayable) {
-                    liveBal = totalSupplierDue > 0 ? totalSupplierDue : acc.currentBalance;
-                }
-            } else if (acc.classification === 'Revenue') {
-                const isProjectRev = acc.id === 'coa-4002' || acc.code === '4002' || acc.code === '4051' || acc.code === '4060' || nameLower.includes('project') || nameBn.includes('প্রজেক্ট');
-                const isSalesRev = acc.id === primarySalesAccountId || acc.code === '4001' || acc.code === '4010' || nameLower.includes('sales') || nameBn.includes('বিক্রয়') || nameBn.includes('বিক্রয়');
-
-                const matching = (transactions || [])
-                    .filter(t => t.type === 'INCOME' && (
-                        (t.category && (nameLower.includes(t.category.toLowerCase()) || (t.categoryBn && nameBn.includes(t.categoryBn.toLowerCase())))) ||
-                        (t.accountHead && (nameLower.includes(t.accountHead.toLowerCase()) || (t.accountHead && nameBn.includes(t.accountHead.toLowerCase())))) ||
-                        (isProjectRev && (t.category?.toLowerCase().includes('project') || t.refNo?.startsWith('PRJ-'))) ||
-                        (isSalesRev && (
-                            t.category?.toLowerCase().includes('sales') ||
-                            t.category?.toLowerCase().includes('due collection') ||
-                            t.category?.toLowerCase().includes('pos') ||
-                            t.refNo?.startsWith('DCC-INV-') ||
-                            t.description?.toLowerCase().includes('invoice') ||
-                            t.description?.toLowerCase().includes('pos payment')
-                        ))
-                    ))
-                    .reduce((s, t) => s + t.amount, 0);
-
-                if (isProjectRev) {
-                    liveBal = Math.max(acc.currentBalance, matching, totalProjectSales);
-                } else if (isSalesRev) {
-                    const otherRev = chartOfAccounts
-                        .filter(a => a.classification === 'Revenue' && a.id !== acc.id && (a.code === '4002' || a.id === 'coa-4002' || a.name.toLowerCase().includes('project')))
-                        .reduce((s, a) => s + (a.currentBalance || 0), 0);
-                    liveBal = Math.max(acc.currentBalance, matching, totalInvoiceSales, totalTxIncome - otherRev);
-                } else if (matching > 0) {
-                    liveBal = Math.max(acc.currentBalance, matching);
-                }
-            } else if (acc.classification === 'Expense') {
-                const isProjectExp = nameLower.includes('project') || acc.code === '5206';
-                const matching = (transactions || [])
-                    .filter(t => t.type === 'EXPENSE' && (
-                        (t.category && nameLower.includes(t.category.toLowerCase())) ||
-                        (t.accountHead && nameLower.includes(t.accountHead.toLowerCase())) ||
-                        (isProjectExp && (t.category?.toLowerCase().includes('project') || t.refNo?.startsWith('PRJ-')))
-                    ))
-                    .reduce((s, t) => s + t.amount, 0);
-
-                if (isProjectExp) {
-                    liveBal = Math.max(acc.currentBalance, matching, totalProjectExpenses);
-                } else if (acc.code === '5010') {
-                    const poExpenses = (transactions || [])
-                        .filter(t => t.type === 'EXPENSE' && !t.refNo?.startsWith('PRJ-') && (
-                            (t.category && (t.category.toLowerCase().includes('raw') || t.category.toLowerCase().includes('purchase') || t.category.toLowerCase().includes('po'))) ||
-                            (t.description && (t.description.toLowerCase().includes('purchase') || t.description.toLowerCase().includes('po')))
+                    liveBal = totalSupplierDue > 0 ? totalSupplierDue : (acc.openingBalance || 0);
+                } else if (isAdvanceLiability) {
+                    const matchingAdvance = (transactions || [])
+                        .filter(t => t.type === 'INCOME' && !isInvoiceTransaction(t) && (
+                            (t.category && (t.category.toLowerCase().includes('advance') || t.category.toLowerCase().includes('অগ্রিম') || nameLower.includes(t.category.toLowerCase()))) ||
+                            (t.description && (t.description.toLowerCase().includes('advance') || t.description.toLowerCase().includes('অগ্রিম')))
                         ))
                         .reduce((s, t) => s + t.amount, 0);
-                    const base5010 = (acc.currentBalance === totalProjectExpenses && totalProjectExpenses > 0)
+
+                    const matchingAdvanceAdjusted = (transactions || [])
+                        .filter(t => (
+                            (t.category && (t.category.toLowerCase().includes('advance adjust') || t.category.toLowerCase().includes('অগ্রিম সমন্বয়') || t.category.toLowerCase().includes('advance adjustment'))) ||
+                            (t.description && (t.description.toLowerCase().includes('advance adjust') || t.description.toLowerCase().includes('adjusted from advance') || t.description.toLowerCase().includes('advance adjustment')))
+                        ))
+                        .reduce((s, t) => s + t.amount, 0);
+
+                    const netMatchingAdvance = Math.max(0, (acc.openingBalance || 0) + matchingAdvance - matchingAdvanceAdjusted);
+
+                    if (acc.id === primaryAdvanceAccId || advanceAccounts.length <= 1) {
+                        liveBal = totalCustomerAdvance > 0 
+                            ? totalCustomerAdvance 
+                            : netMatchingAdvance;
+                    } else {
+                        liveBal = netMatchingAdvance;
+                    }
+                }
+            } else if (acc.classification === 'Revenue') {
+                const isProjectRev = (
+                    acc.id === 'coa-4002' || 
+                    acc.id === 'coa-4051' || 
+                    acc.code === '4002' || 
+                    acc.code === '4051' || 
+                    acc.code === '4060' || 
+                    nameLower.includes('project') || 
+                    nameBn.includes('প্রজেক্ট')
+                );
+                const isSalesRev = !isProjectRev && (
+                    acc.id === primarySalesAccountId || 
+                    acc.code === '4001' || 
+                    acc.code === '4010' || 
+                    acc.id === 'coa-4001' ||
+                    nameLower.includes('sales revenue') || 
+                    nameLower.trim() === 'sales' ||
+                    (nameLower.includes('sales') && !nameLower.includes('project')) || 
+                    ((nameBn.includes('বিক্রয়') || nameBn.includes('বিক্রয়')) && !nameBn.includes('প্রজেক্ট'))
+                );
+
+                if (isProjectRev) {
+                    const projectMatching = (transactions || [])
+                        .filter(t => t.type === 'INCOME' && isProjectTransaction(t))
+                        .reduce((s, t) => s + t.amount, 0);
+                    liveBal = (acc.openingBalance || 0) + Math.max(projectMatching, totalProjectSales);
+                } else if (isSalesRev) {
+                    // Invoice payments are already counted in totalInvoiceSales (accrual basis).
+                    // We also include invoiceSalesFromTx as fallback if invoices array is empty.
+                    const invoiceSalesFromTx = (transactions || [])
+                        .filter(t => t.type === 'INCOME' && isInvoiceTransaction(t))
+                        .reduce((s, t) => s + t.amount, 0);
+                    const effectiveInvoiceSales = Math.max(totalInvoiceSales, invoiceSalesFromTx);
+
+                    // Direct non-invoice operating incomes (e.g. scrap sales, counter direct sales, INC- vouchers)
+                    const directMatchingSales = (transactions || [])
+                        .filter(t => 
+                            t.type === 'INCOME' && 
+                            !isInvoiceTransaction(t) && 
+                            !isProjectTransaction(t) && 
+                            !isAdvanceDepositTransaction(t) && 
+                            !isAdvanceAdjustmentTransaction(t) && (
+                                (t.category && (
+                                    nameLower.includes(t.category.toLowerCase()) || 
+                                    (acc.nameBn && acc.nameBn.toLowerCase().includes(t.category.toLowerCase())) || 
+                                    t.category.toLowerCase().includes('sales') || 
+                                    t.category.toLowerCase().includes('বিক্রয়')
+                                )) ||
+                                // Default INC- direct incomes to primary sales revenue if not explicitly claimed by another specific active COA revenue head
+                                (t.refNo?.startsWith('INC-') && !chartOfAccounts.some(otherAcc => 
+                                    otherAcc.id !== acc.id && 
+                                    otherAcc.classification === 'Revenue' && 
+                                    otherAcc.name.toLowerCase() === (t.category || '').toLowerCase()
+                                ))
+                            )
+                        )
+                        .reduce((s, t) => s + t.amount, 0);
+
+                    liveBal = (acc.openingBalance || 0) + effectiveInvoiceSales + directMatchingSales;
+                } else {
+                    // Other specific revenue accounts (dynamically matching any category added by the user)
+                    const matchingDirect = (transactions || [])
+                        .filter(t => 
+                            t.type === 'INCOME' && 
+                            !isInvoiceTransaction(t) && 
+                            !isProjectTransaction(t) && 
+                            !isAdvanceDepositTransaction(t) && 
+                            !isAdvanceAdjustmentTransaction(t) && (
+                                (t.category && (
+                                    nameLower.includes(t.category.toLowerCase()) || 
+                                    t.category.toLowerCase().includes(nameLower) ||
+                                    (acc.nameBn && acc.nameBn.toLowerCase().includes(t.category.toLowerCase())) ||
+                                    (acc.nameBn && t.category.toLowerCase().includes(acc.nameBn.toLowerCase()))
+                                )) ||
+                                (t.accountHead && (
+                                    nameLower.includes(t.accountHead.toLowerCase()) || 
+                                    t.accountHead.toLowerCase().includes(nameLower) ||
+                                    (acc.nameBn && acc.nameBn.toLowerCase().includes(t.accountHead.toLowerCase())) ||
+                                    (acc.nameBn && t.accountHead.toLowerCase().includes(acc.nameBn.toLowerCase()))
+                                )) ||
+                                (t.description && (
+                                    nameLower.includes(t.description.toLowerCase()) || 
+                                    t.description.toLowerCase().includes(nameLower) ||
+                                    (acc.nameBn && acc.nameBn.toLowerCase().includes(t.description.toLowerCase())) ||
+                                    (acc.nameBn && t.description.toLowerCase().includes(acc.nameBn.toLowerCase()))
+                                ))
+                            )
+                        )
+                        .reduce((s, t) => s + t.amount, 0);
+
+                    liveBal = Math.max(acc.currentBalance, (acc.openingBalance || 0) + matchingDirect);
+                }
+            } else if (acc.classification === 'Expense') {
+                const isProjectExp = (
+                    acc.id === 'coa-5206' || 
+                    acc.code === '5206' || 
+                    acc.code === '5300' ||
+                    nameLower.includes('project') || 
+                    nameBn.includes('প্রজেক্ট')
+                );
+
+                const isPrjTx = (t: any) => (
+                    isProjectTransaction(t) || 
+                    (t.refNo && (t.refNo.startsWith('PRJ-') || (projects || []).some(p => p.code === t.refNo)))
+                );
+
+                const isCogs = (
+                    acc.code === '5001' ||
+                    acc.code === '5010' ||
+                    acc.id === 'coa-5001' ||
+                    acc.id === 'coa-5010' ||
+                    nameLower.includes('cost of goods') ||
+                    nameLower.includes('cogs') ||
+                    (nameLower.includes('raw material') && acc.classification === 'Expense') ||
+                    nameBn.includes('বিক্রিত পণ্যের ব্যয়')
+                );
+
+                // Calculate net impact from posted Journal Entries (Debit increases Expense, Credit decreases Expense)
+                let journalExpDelta = 0;
+                (journalEntries || []).forEach(j => {
+                    if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE') return;
+                    const dName = (j.debitAccountName || '').toLowerCase().trim();
+                    const cName = (j.creditAccountName || '').toLowerCase().trim();
+                    const amt = Number(j.amount) || 0;
+
+                    const isDebit = Boolean(
+                        (acc.id && j.debitAccountId === acc.id) ||
+                        (acc.code && (j.debitAccountId === acc.code || (j as any).debitAccountCode === acc.code)) ||
+                        (dName && (
+                            dName === nameLower ||
+                            (isCogs && (
+                                dName.includes('cost of goods') ||
+                                dName.includes('cogs') ||
+                                (dName.includes('raw material') && (dName.includes('cost') || dName.includes('sold') || dName.includes('expense'))) ||
+                                dName.includes('বিক্রিত পণ্যের ব্যয়')
+                            ))
+                        ))
+                    );
+
+                    const isCredit = Boolean(
+                        (acc.id && j.creditAccountId === acc.id) ||
+                        (acc.code && (j.creditAccountId === acc.code || (j as any).creditAccountCode === acc.code)) ||
+                        (cName && (
+                            cName === nameLower ||
+                            (isCogs && (
+                                cName.includes('cost of goods') ||
+                                cName.includes('cogs') ||
+                                (cName.includes('raw material') && (cName.includes('cost') || cName.includes('sold') || cName.includes('expense'))) ||
+                                cName.includes('বিক্রিত পণ্যের ব্যয়')
+                            ))
+                        ))
+                    );
+
+                    if (isDebit && !isCredit) journalExpDelta += amt;
+                    else if (isCredit && !isDebit) journalExpDelta -= amt;
+                });
+
+                if (isProjectExp) {
+                    const projectMatching = (transactions || [])
+                        .filter(t => t.type === 'EXPENSE' && (
+                            isPrjTx(t) ||
+                            (t.category && (t.category.toLowerCase().includes('project') || t.category.toLowerCase().includes('প্রজেক্ট'))) ||
+                            (t.accountHead && (t.accountHead.toLowerCase().includes('project') || t.accountHead.toLowerCase().includes('প্রজেক্ট')))
+                        ))
+                        .reduce((s, t) => s + t.amount, 0);
+                    liveBal = (acc.openingBalance || 0) + Math.max(projectMatching, totalProjectExpenses, journalExpDelta);
+                } else if (isCogs) {
+                    const poExpenses = (transactions || [])
+                        .filter(t => t.type === 'EXPENSE' && !isPrjTx(t) && (
+                            (t.category && (t.category.toLowerCase().includes('raw') || t.category.toLowerCase().includes('purchase') || t.category.toLowerCase().includes('po'))) ||
+                            (t.description && (t.description.toLowerCase().includes('purchase') || t.description.toLowerCase().includes('po') || t.description.toLowerCase().includes('raw')))
+                        ))
+                        .reduce((s, t) => s + t.amount, 0);
+                    const baseCogs = (acc.currentBalance === totalProjectExpenses && totalProjectExpenses > 0)
                         ? (acc.openingBalance || 0)
                         : (acc.currentBalance > totalProjectExpenses ? acc.currentBalance - totalProjectExpenses : acc.currentBalance);
-                    liveBal = Math.max(base5010, poExpenses);
-                } else if (matching > 0) {
-                    liveBal = Math.max(acc.currentBalance, matching);
+                    liveBal = Math.max(baseCogs, poExpenses, (acc.openingBalance || 0) + journalExpDelta);
+                } else {
+                    const matching = (transactions || [])
+                        .filter(t => t.type === 'EXPENSE' && !isPrjTx(t) && (
+                            (t.category && (nameLower.includes(t.category.toLowerCase()) || t.category.toLowerCase().includes(nameLower))) ||
+                            (t.accountHead && (nameLower.includes(t.accountHead.toLowerCase()) || t.accountHead.toLowerCase().includes(nameLower)))
+                        ))
+                        .reduce((s, t) => s + t.amount, 0);
+                    // Reclaim if non-project account mistakenly absorbed project expenses
+                    const baseBal = (acc.currentBalance === totalProjectExpenses && totalProjectExpenses > 0)
+                        ? (acc.openingBalance || 0)
+                        : acc.currentBalance;
+                    liveBal = Math.max(baseBal, matching, (acc.openingBalance || 0) + journalExpDelta);
                 }
             }
 
@@ -163,7 +346,7 @@ export const ChartOfAccountsManager: React.FC = () => {
                 currentBalance: liveBal,
             };
         });
-    }, [chartOfAccounts, transactions, accountBalances, suppliers, customers, projects, invoices]);
+    }, [chartOfAccounts, transactions, accountBalances, suppliers, customers, projects, invoices, purchaseOrders, products, journalEntries]);
 
     // Classification stats
     const stats = useMemo(() => {
@@ -172,6 +355,10 @@ export const ChartOfAccountsManager: React.FC = () => {
         let totalEquity = 0;
         let totalRevenue = 0;
         let totalExpenses = 0;
+        let salesRevenue = 0;
+        let projectRevenue = 0;
+        let generalExpenses = 0;
+        let projectExpenses = 0;
         liveAccounts.forEach((acc) => {
             if (acc.classification === 'Asset')
                 totalAssets += acc.currentBalance;
@@ -179,24 +366,55 @@ export const ChartOfAccountsManager: React.FC = () => {
                 totalLiabilities += acc.currentBalance;
             else if (acc.classification === 'Equity')
                 totalEquity += acc.currentBalance;
-            else if (acc.classification === 'Revenue')
+            else if (acc.classification === 'Revenue') {
                 totalRevenue += acc.currentBalance;
-            else if (acc.classification === 'Expense')
+                const isPrj = (
+                    acc.code === '4002' || 
+                    acc.code === '4051' || 
+                    acc.code === '4060' || 
+                    acc.id === 'coa-4002' || 
+                    acc.id === 'coa-4051' || 
+                    (acc.name || '').toLowerCase().includes('project') || 
+                    (acc.nameBn || '').includes('প্রজেক্ট')
+                );
+                if (isPrj) {
+                    projectRevenue += acc.currentBalance;
+                } else {
+                    salesRevenue += acc.currentBalance;
+                }
+            }
+            else if (acc.classification === 'Expense') {
                 totalExpenses += acc.currentBalance;
+                const isPrj = (
+                    acc.code === '5206' || 
+                    acc.code === '5300' || 
+                    acc.id === 'coa-5206' || 
+                    (acc.name || '').toLowerCase().includes('project') || 
+                    (acc.nameBn || '').includes('প্রজেক্ট')
+                );
+                if (isPrj) {
+                    projectExpenses += acc.currentBalance;
+                } else {
+                    generalExpenses += acc.currentBalance;
+                }
+            }
         });
 
-        const txRevenue = (transactions || []).filter(t => t.type === 'INCOME').reduce((s, t) => s + t.amount, 0);
-        const invoiceRevenue = (invoices || []).reduce((s, inv) => s + (Number(inv.grandTotal) || (Number(inv.paidAmount) + Number(inv.dueAmount)) || 0), 0);
         const txExpense = (transactions || []).filter(t => t.type === 'EXPENSE').reduce((s, t) => s + t.amount, 0);
 
         return { 
             totalAssets, 
             totalLiabilities, 
             totalEquity, 
-            totalRevenue: Math.max(totalRevenue, txRevenue, invoiceRevenue), 
+            totalRevenue, 
+            salesRevenue,
+            projectRevenue,
+            generalExpenses,
+            projectExpenses,
             totalExpenses: Math.max(totalExpenses, txExpense) 
         };
-    }, [liveAccounts, transactions, invoices]);
+    }, [liveAccounts, transactions]);
+
     const filteredAccounts = useMemo(() => {
         return liveAccounts.filter((acc) => {
             if (filterClassification !== 'ALL' && acc.classification !== filterClassification) {
@@ -211,6 +429,10 @@ export const ChartOfAccountsManager: React.FC = () => {
                 acc.accountGroup.toLowerCase().includes(q));
         });
     }, [liveAccounts, filterClassification, searchQuery]);
+
+    const filteredAccountsTotal = useMemo(() => {
+        return filteredAccounts.reduce((sum, acc) => sum + (Number(acc.currentBalance) || 0), 0);
+    }, [filteredAccounts]);
     const generateNextCode = (cls: string, group: string): string => {
         // 1. Find max code within exact same Classification + Account Group
         const sameGroupAccounts = chartOfAccounts.filter((a) => a.classification === cls && a.accountGroup.toLowerCase() === group.toLowerCase());
@@ -431,6 +653,9 @@ export const ChartOfAccountsManager: React.FC = () => {
           <span className="text-base sm:text-lg font-black text-emerald-600">
             {profile.currencySymbol}{stats.totalRevenue.toLocaleString()}
           </span>
+          <span className="text-[10px] text-slate-400 font-semibold block mt-0.5 truncate" title={`Sales Revenue: ${profile.currencySymbol}${stats.salesRevenue.toLocaleString()} + Project Sales: ${profile.currencySymbol}${stats.projectRevenue.toLocaleString()}`}>
+            Sales: {profile.currencySymbol}{stats.salesRevenue.toLocaleString()} + Prj: {profile.currencySymbol}{stats.projectRevenue.toLocaleString()}
+          </span>
         </div>
 
         <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs col-span-2 sm:col-span-1">
@@ -440,13 +665,16 @@ export const ChartOfAccountsManager: React.FC = () => {
           <span className="text-base sm:text-lg font-black text-rose-600">
             {profile.currencySymbol}{stats.totalExpenses.toLocaleString()}
           </span>
+          <span className="text-[10px] text-slate-400 font-semibold block mt-0.5 truncate" title={`General Expenses: ${profile.currencySymbol}${stats.generalExpenses.toLocaleString()} + Project Expenses: ${profile.currencySymbol}${stats.projectExpenses.toLocaleString()}`}>
+            General: {profile.currencySymbol}{stats.generalExpenses.toLocaleString()} + Prj: {profile.currencySymbol}{stats.projectExpenses.toLocaleString()}
+          </span>
         </div>
       </div>
 
       {/* Projects Integration Status Bar */}
       {(() => {
-        const projectRevAcc = chartOfAccounts.find(a => a.classification === 'Revenue' && (a.name.toLowerCase().includes('project') || a.code === '4002' || a.code === '4051' || a.code === '4060')) || { code: '4002', name: 'Project Sales' };
-        const projectExpAcc = chartOfAccounts.find(a => a.classification === 'Expense' && (a.name.toLowerCase().includes('project') || a.code === '5206')) || { code: '5206', name: 'Project Expense' };
+        const projectRevAcc = chartOfAccounts.find(a => a.classification === 'Revenue' && (a.code === '4002' || a.code === '4051' || a.code === '4060' || a.id === 'coa-4002' || a.name.toLowerCase().includes('project'))) || { code: '4002', name: 'Project Sales' };
+        const projectExpAcc = chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5206' || a.code === '5300' || a.id === 'coa-5206' || a.name.toLowerCase().includes('project'))) || { code: '5206', name: 'Project Expense' };
         const totalSales = (projects || []).reduce((s, p) => s + (p.totalSales || 0), 0);
         const totalExpenses = (projects || []).reduce((s, p) => s + (p.totalExpenses || 0), 0);
 
@@ -455,9 +683,10 @@ export const ChartOfAccountsManager: React.FC = () => {
             <div className="flex items-center gap-2 text-emerald-900 font-bold">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
               <span>
-                Projects Dynamic Alignment Active: {(projects || []).length} Projects Synced • 
-                Revenue: {profile.currencySymbol}{totalSales.toLocaleString()} ([{projectRevAcc.code}] {projectRevAcc.name}) | 
-                Expenses: {profile.currencySymbol}{totalExpenses.toLocaleString()} ([{projectExpAcc.code}] {projectExpAcc.name})
+                Projects Dynamic Alignment: {(projects || []).length} Synced • 
+                Project Sales: {profile.currencySymbol}{totalSales.toLocaleString()} ([{projectRevAcc.code}] {projectRevAcc.name}) | 
+                Project Expenses: {profile.currencySymbol}{totalExpenses.toLocaleString()} ([{projectExpAcc.code}] {projectExpAcc.name}) • 
+                <span className="text-emerald-950 font-black ml-1">Total System Revenue: {profile.currencySymbol}{stats.totalRevenue.toLocaleString()}</span>
               </span>
             </div>
             <button
@@ -537,12 +766,12 @@ export const ChartOfAccountsManager: React.FC = () => {
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50 text-[11px] font-bold text-slate-500 uppercase border-b border-slate-200">
-                <th className="py-3 px-4"></th>
+                <th className="py-3 px-4">Code</th>
                 <th className="py-3 px-4">Description</th>
                 <th className="py-3 px-4">Class</th>
                 <th className="py-3 px-4">Account Group</th>
-                <th className="py-3 px-4 text-center"></th>
-                <th className="py-3 px-4 text-right"></th>
+                <th className="py-3 px-4 text-center">Normal Bal</th>
+                <th className="py-3 px-4 text-right">Current Balance</th>
                 <th className="py-3 px-4 text-center">Status</th>
                 <th className="py-3 px-4 text-right">Actions</th>
               </tr>
@@ -594,6 +823,23 @@ export const ChartOfAccountsManager: React.FC = () => {
                     </td>
                   </tr>)))}
             </tbody>
+            {filteredAccounts.length > 0 && (
+              <tfoot>
+                <tr className="bg-slate-50/90 border-t-2 border-slate-300 font-bold">
+                  <td colSpan={5} className="py-3.5 px-4 text-right text-xs uppercase tracking-wider text-slate-700">
+                    {filterClassification === 'ALL'
+                      ? 'Total Balance (Filtered Accounts):'
+                      : `Total ${filterClassification}:`}
+                  </td>
+                  <td className="py-3.5 px-4 text-right font-black font-mono text-emerald-700 text-sm">
+                    {profile.currencySymbol}{filteredAccountsTotal.toLocaleString()}
+                  </td>
+                  <td colSpan={2} className="py-3.5 px-4 text-center text-[11px] text-slate-500 font-medium">
+                    {filteredAccounts.length} {filteredAccounts.length === 1 ? 'Account' : 'Accounts'}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </div>
@@ -653,7 +899,7 @@ export const ChartOfAccountsManager: React.FC = () => {
                     <option value="Liability">Liability</option>
                     <option value="Equity">Equity</option>
                     <option value="Revenue">Revenue</option>
-                    <option value="Expense">Expense  Product</option>
+                    <option value="Expense">Expense</option>
                   </select>
                 </div>
               </div>
@@ -669,7 +915,7 @@ export const ChartOfAccountsManager: React.FC = () => {
                   <label className="font-bold text-slate-700 block mb-1">
                     {'Account Name (BN)'}
                   </label>
-                  <input type="text" value={formData.nameBn} onChange={(e) => setFormData({ ...formData, nameBn: e.target.value })} placeholder=":" className="w-full px-3 py-2 border border-slate-200 rounded-xl"/>
+                  <input type="text" value={formData.nameBn} onChange={(e) => setFormData({ ...formData, nameBn: e.target.value })} placeholder="e.g. প্রজেক্ট খরচ" className="w-full px-3 py-2 border border-slate-200 rounded-xl"/>
                 </div>
               </div>
 
@@ -701,7 +947,7 @@ export const ChartOfAccountsManager: React.FC = () => {
                         <option value="Non-Operating Revenue">Non-Operating Revenue</option>
                       </>)}
                     {formData.classification === 'Expense' && (<>
-                        <option value="Direct Expenses / COGS">Direct ExpensesCOGS</option>
+                        <option value="Direct Expenses / COGS">Direct Expenses / COGS</option>
                         <option value="Operating Expenses">Operating Expenses</option>
                         <option value="Administrative Expenses">Administrative Expenses</option>
                         <option value="Selling & Distribution">Selling & Distribution</option>
@@ -722,7 +968,7 @@ export const ChartOfAccountsManager: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="font-bold text-slate-700 block mb-1">
-                    {"Opening BalanceTk"}
+                    {'Opening Balance (Tk)'}
                   </label>
                   <input type="number" step="any" value={formData.openingBalance} onChange={(e) => setFormData({ ...formData, openingBalance: Number(e.target.value) })} className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono font-bold"/>
                 </div>

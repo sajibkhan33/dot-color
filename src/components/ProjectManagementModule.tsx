@@ -112,8 +112,8 @@ export const ProjectManagementModule: React.FC = () => {
             ];
         }
         return [...list].sort((a, b) => {
-            const isPrjA = a.code === '5206' || a.name.toLowerCase().includes('project');
-            const isPrjB = b.code === '5206' || b.name.toLowerCase().includes('project');
+            const isPrjA = a.code === '5206' || a.code === '5300' || a.name.toLowerCase().includes('project');
+            const isPrjB = b.code === '5206' || b.code === '5300' || b.name.toLowerCase().includes('project');
             if (isPrjA && !isPrjB) return -1;
             if (!isPrjA && isPrjB) return 1;
             return a.code.localeCompare(b.code);
@@ -138,11 +138,11 @@ export const ProjectManagementModule: React.FC = () => {
 
 
     const projectRevAcc = useMemo(() => {
-        return chartOfAccounts.find(a => a.classification === 'Revenue' && (a.code === '4051' || a.name.toLowerCase().includes('project') || a.code === '4060')) || { code: '4051', name: 'Project Sales Income', id: 'coa-4051' };
+        return chartOfAccounts.find(a => a.classification === 'Revenue' && (a.code === '4002' || a.code === '4051' || a.id === 'coa-4002' || a.id === 'coa-4051' || a.name.toLowerCase().includes('project') || a.code === '4060')) || { code: '4002', name: 'Project Sales', id: 'coa-4002' };
     }, [chartOfAccounts]);
 
     const projectExpAcc = useMemo(() => {
-        return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5206' || a.name.toLowerCase().includes('project'))) ||
+        return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5206' || a.code === '5300' || a.id === 'coa-5206' || a.name.toLowerCase().includes('project'))) ||
                chartOfAccounts.find(a => a.classification === 'Expense' && a.code === '5100' && a.name.toLowerCase().includes('project')) ||
                chartOfAccounts.find(a => a.classification === 'Expense') ||
                { code: '5206', name: 'Project Expense', id: 'coa-5206' };

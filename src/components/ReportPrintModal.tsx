@@ -3,6 +3,7 @@ import { SalesInvoice, AccountingTransaction, AuditLogEntry, CompanyProfile, Lan
 import { BrandLogo } from './BrandLogo';
 import { DocumentHeader } from './DocumentHeader';
 import { exportSalesToExcel, exportAccountingToExcel, exportAuditTrailToExcel } from '../utils/exportUtils';
+import { isAdvanceAdjustmentTransaction } from '../utils/accountUtils';
 import { Printer, X, FileSpreadsheet, FileText, Calendar, DollarSign, TrendingUp, Receipt, Phone, Mail, MapPin, ShieldCheck, UserCheck, } from 'lucide-react';
 interface ReportPrintModalProps {
     type: 'sales' | 'accounting' | 'audit';
@@ -24,7 +25,7 @@ export const ReportPrintModal: React.FC<ReportPrintModalProps> = ({ type, salesD
         }
         else if (type === 'accounting') {
             const income = accountingData
-                .filter((t) => t.type === 'INCOME')
+                .filter((t) => t.type === 'INCOME' && !isAdvanceAdjustmentTransaction(t))
                 .reduce((acc, t) => acc + t.amount, 0);
             const expense = accountingData
                 .filter((t) => t.type === 'EXPENSE')
@@ -46,7 +47,7 @@ export const ReportPrintModal: React.FC<ReportPrintModalProps> = ({ type, salesD
     const salesTotalInvoices = salesData.length;
     // Calculations for Accounting
     const totalIncome = accountingData
-        .filter((tx) => tx.type === 'INCOME')
+        .filter((tx) => tx.type === 'INCOME' && !isAdvanceAdjustmentTransaction(tx))
         .reduce((acc, tx) => acc + tx.amount, 0);
     const totalExpense = accountingData
         .filter((tx) => tx.type === 'EXPENSE')
