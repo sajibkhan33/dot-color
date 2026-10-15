@@ -1,4 +1,4 @@
-import { ChartOfAccount, AccountingTransaction, SalesInvoice, PaymentMethodConfig, AccountBalances, Supplier, PurchaseOrder, ProductItem, JournalEntry } from '../types';
+import { ChartOfAccount, AccountingTransaction, SalesInvoice, PaymentMethodConfig, AccountBalances, Supplier, PurchaseOrder, ProductItem, JournalEntry, Project } from '../types';
 
 /**
  * Normalizes account or channel string for fuzzy matching
@@ -778,22 +778,83 @@ export const getInvoicePayments = (
 };
 
 /**
- * Calculates dynamic real-time Accounts Receivable (Customer Dues) strictly from Sales Invoices and unlinked Customer records
+ * Calculates dynamic real-time Accounts Receivable (Customer Dues) from Sales Invoices, Projects and unlinked Customer records
  */
 export const calculateTotalCustomerReceivables = (
     invoices: SalesInvoice[] = [],
-    customers: any[] = []
+    customers: any[] = [],
+    projects: any[] = []
 ): number => {
-    // 1. Authoritative customer receivables are strictly the outstanding due amounts on active sales invoices
-    const totalInvoiceDue = (invoices || []).reduce((sum, inv) => sum + (Number(inv.dueAmount) || 0), 0);
+    // Build set of invoice numbers / IDs linked to projects to prevent double-counting
+    const projectLinkedInvoiceNos = new Set<string>();
+    const projectLinkedInvoiceIds = new Set<string>();
+    if (projects && Array.isArray(projects)) {
+        projects.forEach((p: any) => {
+            if (p.id) projectLinkedInvoiceIds.add(p.id);
+            if (p.invoiceId) projectLinkedInvoiceIds.add(p.invoiceId);
+            if (p.invoiceNo) projectLinkedInvoiceNos.add(p.invoiceNo.toLowerCase().trim());
+            (p.salesItems || []).forEach((s: any) => {
+                if (s.invoiceNo) projectLinkedInvoiceNos.add(s.invoiceNo.toLowerCase().trim());
+            });
+        });
+    }
 
-    // 2. Add unlinked customer opening dues (only for customers who have NO invoices in the system)
+    // 1. Authoritative customer receivables are strictly the outstanding due amounts on active sales invoices (excluding project-linked invoices)
+    const totalInvoiceDue = (invoices || []).filter(inv => {
+        const invNo = (inv.invoiceNo || '').toLowerCase().trim();
+        const isLinkedToProject = Boolean(
+            inv.projectId ||
+            inv.projectCode ||
+            projectLinkedInvoiceIds.has(inv.id) ||
+            (invNo && projectLinkedInvoiceNos.has(invNo))
+        );
+        return !isLinkedToProject;
+    }).reduce((sum, inv) => sum + (Number(inv.dueAmount) || 0), 0);
+
+    // 2. Authoritative customer receivables from Project Sales items
+    const totalProjectDue = (projects || []).reduce((sum, p: any) => {
+        let pDue = 0;
+        if (p.totalDue !== undefined && typeof p.totalDue === 'number' && p.totalDue > 0) {
+            pDue = Number(p.totalDue);
+        } else if (p.salesItems && p.salesItems.length > 0) {
+            p.salesItems.forEach((s: any) => {
+                if (s.dueAmount !== undefined) {
+                    pDue += Number(s.dueAmount) || 0;
+                } else {
+                    const breakdowns = s.paymentBreakdown || [];
+                    const dueRow = breakdowns.find((b: any) => {
+                        const m = (b.method || '').toLowerCase();
+                        return m.includes('due') || m.includes('receivable');
+                    });
+                    const dueInitial = dueRow ? Number(dueRow.amount) || 0 : 0;
+                    const pastCollections = (s.collections || []).reduce((csum: number, c: any) => csum + (Number(c.amount) || 0), 0);
+                    pDue += Math.max(0, dueInitial - pastCollections);
+                }
+            });
+        }
+        return sum + pDue;
+    }, 0);
+
+    // 3. Add unlinked customer opening dues (only for customers who have NO invoices and NO projects in the system)
     const seenCustomerKeys = new Set<string>();
     const unlinkedCustomerDue = (customers || []).reduce((sum, c) => {
         // Check if customer has any matching invoices in the system
         const hasMatchingInvoices = (invoices || []).some(inv => isInvoiceMatchingCustomer(inv, c));
         if (hasMatchingInvoices) {
             // Their due is already counted in totalInvoiceDue, so do NOT count again!
+            return sum;
+        }
+
+        // Check if customer has matching projects in the system
+        const hasMatchingProjects = (projects || []).some((p: any) => {
+            const cName = (c.name || '').toLowerCase().trim();
+            const cPhone = (c.phone || '').trim();
+            const pClient = (p.clientName || '').toLowerCase().trim();
+            const pPhone = (p.clientPhone || '').trim();
+            return (cName && pClient && (cName === pClient || pClient.includes(cName) || cName.includes(pClient))) ||
+                   (cPhone && pPhone && cPhone === pPhone);
+        });
+        if (hasMatchingProjects) {
             return sum;
         }
 
@@ -805,7 +866,7 @@ export const calculateTotalCustomerReceivables = (
         return sum + (Number(c.dueAmount) || 0);
     }, 0);
 
-    return totalInvoiceDue + unlinkedCustomerDue;
+    return totalInvoiceDue + totalProjectDue + unlinkedCustomerDue;
 };
 
 /**

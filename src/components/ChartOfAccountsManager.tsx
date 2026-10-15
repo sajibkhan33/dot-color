@@ -31,7 +31,7 @@ export const ChartOfAccountsManager: React.FC = () => {
     const liveAccounts = useMemo(() => {
         const totalTxIncome = (transactions || []).filter(t => t.type === 'INCOME').reduce((s, t) => s + t.amount, 0);
         const totalSupplierDue = calculateTotalSupplierPayables(suppliers, purchaseOrders);
-        const totalCustomerDue = calculateTotalCustomerReceivables(invoices, customers);
+        const totalCustomerDue = calculateTotalCustomerReceivables(invoices, customers, projects);
         const totalCustomerAdvance = (customers || []).reduce((s, c) => s + (Number(c.advanceBalance) || 0), 0);
         const totalProjectSales = (projects || []).reduce((s, p) => s + (p.totalSales || 0), 0);
         const totalProjectExpenses = (projects || []).reduce((s, p) => s + (p.totalExpenses || 0), 0);

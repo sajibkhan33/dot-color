@@ -924,7 +924,7 @@ export const AppProvider: React.FC<{
                 (acc.name.toLowerCase().includes('receivable') && !acc.name.toLowerCase().includes('aggregator') && !acc.name.toLowerCase().includes('staff'))
             );
             if (isCustomerReceivable) {
-                const totalCustomerDue = calculateTotalCustomerReceivables(invoices, customers);
+                const totalCustomerDue = calculateTotalCustomerReceivables(invoices, customers, projects);
                 const targetReceivableBal = totalCustomerDue > 0 ? totalCustomerDue : (acc.openingBalance || 0);
                 if (acc.currentBalance !== targetReceivableBal) {
                     coaNeedsUpdate = true;
@@ -2123,7 +2123,7 @@ export const AppProvider: React.FC<{
 
         // Update Chart of Accounts Customer Advance liability and Customer Receivable accounts immediately
         const newTotalCustomerAdvance = updatedCusts.reduce((s, c) => s + (Number(c.advanceBalance) || 0), 0);
-        const newTotalCustomerDue = calculateTotalCustomerReceivables(updatedInvoices, updatedCusts);
+        const newTotalCustomerDue = calculateTotalCustomerReceivables(updatedInvoices, updatedCusts, latestStateRef.current.projects || projects);
         const currentCoa = latestStateRef.current.chartOfAccounts || chartOfAccounts;
         const updatedCoa = currentCoa.map((acc) => {
             const isAdvanceLiability = acc.classification === 'Liability' && (
@@ -5495,28 +5495,52 @@ export const AppProvider: React.FC<{
         }
 
         // 3. Align and ensure proper Chart of Accounts balances
-        setChartOfAccounts(prev => prev.map(acc => {
-            // Dedicated Project Expense (5206 / Project Expense)
-            if (expAcc && acc.id === expAcc.id) {
-                return { ...acc, currentBalance: (acc.openingBalance || 0) + totalPrjExpenses };
-            }
-            // 5010 COGS: reclaim incorrectly attributed project expenses
-            if (cogsAcc && acc.id === cogsAcc.id) {
-                if (totalPrjExpenses > 0 && acc.currentBalance >= totalPrjExpenses && (expAcc ? expAcc.currentBalance < totalPrjExpenses : true)) {
-                    const corrected = Math.max(acc.openingBalance || 0, acc.currentBalance - totalPrjExpenses);
-                    return { ...acc, currentBalance: corrected };
+        const totalCustomerReceivables = calculateTotalCustomerReceivables(invoices, customers, projects);
+        const receivableAcc = chartOfAccounts.find(a => a.classification === 'Asset' && (
+            a.id === 'coa-1050' ||
+            a.code === '1003' ||
+            a.code === '1050' ||
+            (a.name.toLowerCase().includes('customer') && a.name.toLowerCase().includes('receivable')) ||
+            a.name.toLowerCase().includes('trade debtor') ||
+            a.nameBn?.includes('কাস্টমার বকেয়া') ||
+            a.nameBn?.includes('প্রাপ্য হিসাব') ||
+            (a.name.toLowerCase().includes('receivable') && !a.name.toLowerCase().includes('aggregator') && !a.name.toLowerCase().includes('staff'))
+        ));
+
+        setChartOfAccounts(prev => {
+            const next = prev.map(acc => {
+                // Dedicated Project Expense (5206 / Project Expense)
+                if (expAcc && acc.id === expAcc.id) {
+                    return { ...acc, currentBalance: (acc.openingBalance || 0) + totalPrjExpenses };
                 }
-            }
-            // Dedicated Project Revenue (4002 / 4051 Project Sales)
-            if (revAcc && acc.id === revAcc.id) {
-                return { ...acc, currentBalance: (acc.openingBalance || 0) + totalPrjSales };
-            }
-            // If there are no active project expenses, heal any asset accounts that became negative from orphaned project expenses
-            if (totalPrjExpenses === 0 && acc.classification === 'Asset' && acc.currentBalance < 0 && (acc.openingBalance === 0 || acc.openingBalance === undefined)) {
-                return { ...acc, currentBalance: acc.openingBalance || 0 };
-            }
-            return acc;
-        }));
+                // 5010 COGS: reclaim incorrectly attributed project expenses
+                if (cogsAcc && acc.id === cogsAcc.id) {
+                    if (totalPrjExpenses > 0 && acc.currentBalance >= totalPrjExpenses && (expAcc ? expAcc.currentBalance < totalPrjExpenses : true)) {
+                        const corrected = Math.max(acc.openingBalance || 0, acc.currentBalance - totalPrjExpenses);
+                        return { ...acc, currentBalance: corrected };
+                    }
+                }
+                // Dedicated Project Revenue (4002 / 4051 Project Sales)
+                if (revAcc && acc.id === revAcc.id) {
+                    return { ...acc, currentBalance: (acc.openingBalance || 0) + totalPrjSales };
+                }
+                // Dedicated Customer Accounts Receivable Account (1003 / Accounts Receivable - Customers)
+                if (receivableAcc && acc.id === receivableAcc.id) {
+                    return { ...acc, currentBalance: totalCustomerReceivables > 0 ? totalCustomerReceivables : (acc.openingBalance || 0) };
+                }
+                // If there are no active project expenses, heal any asset accounts that became negative from orphaned project expenses
+                if (totalPrjExpenses === 0 && acc.classification === 'Asset' && acc.currentBalance < 0 && (acc.openingBalance === 0 || acc.openingBalance === undefined)) {
+                    return { ...acc, currentBalance: acc.openingBalance || 0 };
+                }
+                return acc;
+            });
+            try {
+                localStorage.setItem(`${STORAGE_KEY}_COA`, JSON.stringify(next));
+                localStorage.setItem(`${STORAGE_KEY}_CHART_OF_ACCOUNTS`, JSON.stringify(next));
+            } catch {}
+            latestStateRef.current = { ...latestStateRef.current, chartOfAccounts: next };
+            return next;
+        });
 
         addAuditLog({
             staffId: activeStaff?.id || 'sys',
@@ -5525,7 +5549,7 @@ export const AppProvider: React.FC<{
             location: 'Office',
             actionType: 'COA_UPDATED',
             entityType: 'Accounting',
-            details: `Dynamic sync: Revenue [${revAcc.code}] ${revAcc.name} (Tk ${totalPrjSales.toLocaleString()}), Expense [${expAcc.code}] ${expAcc.name} (Tk ${totalPrjExpenses.toLocaleString()})`,
+            details: `Dynamic sync: Revenue [${revAcc.code}] ${revAcc.name} (Tk ${totalPrjSales.toLocaleString()}), Expense [${expAcc.code}] ${expAcc.name} (Tk ${totalPrjExpenses.toLocaleString()}), Receivable [${receivableAcc?.code || '1003'}] (Tk ${totalCustomerReceivables.toLocaleString()})`,
             detailsBn: undefined,
             amount: totalPrjSales + totalPrjExpenses,
             severity: 'info',
