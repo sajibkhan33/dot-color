@@ -25,7 +25,7 @@ export const JournalEntriesManager: React.FC = () => {
         amount: 0,
         narration: '',
     });
-    const canCreateJournal = checkPermission('accounting.add_income') || true;
+    const canCreateJournal = checkPermission('accounting.add_income');
     // Normalizer for varying JournalEntry structures (Standard vs Extended formats)
     const normalizeEntry = (entry: any) => {
         if (!entry)

@@ -9,7 +9,7 @@ import { ExpenseHeadManager } from './ExpenseHeadManager';
 import { JournalEntriesManager } from './JournalEntriesManager';
 import { getBankAccountsBreakdown, getMfsAccountsBreakdown, getPaymentMethodLiveBalance, calculateSingleAccountBalance, isAdvanceAdjustmentTransaction, isDueReceivableTransaction } from '../utils/accountUtils';
 export const AccountingModule: React.FC = () => {
-    const { accountBalances: rawBalances, transactions, chartOfAccounts, expenseHeads, journalEntries, profile, language, invoices = [], paymentMethods = [], customers = [], updateCustomer, addTransaction, updateTransaction, deleteTransaction, projects = [], addProjectExpense, addProject, addProjectSales, collectProjectDue } = useApp();
+    const { accountBalances: rawBalances, transactions, chartOfAccounts, expenseHeads, journalEntries, profile, language, invoices = [], paymentMethods = [], customers = [], updateCustomer, addTransaction, updateTransaction, deleteTransaction, projects = [], addProjectExpense, addProject, addProjectSales, collectProjectDue, generateInvoiceForProject } = useApp();
     const accountBalances = {
         cash: rawBalances?.cash ?? 0,
         bank: rawBalances?.bank ?? 0,
@@ -37,17 +37,38 @@ export const AccountingModule: React.FC = () => {
         return list.length > 0 ? list : [{ id: 'pm-cash', name: 'Cash', nameBn: 'নগদ ক্যাশ', type: 'cash' as const, isEnabled: true }];
     }, [paymentMethods]);
 
-    // Unified dynamic payment channels matching Payment Gateways & Methods and Chart of Accounts
+    // Unified dynamic payment channels strictly matching Payment Gateways & Methods
     const availablePaymentAccounts = useMemo(() => {
         const list: Array<{ id: string; name: string; nameBn?: string; balance: number }> = [];
         const seen = new Set<string>();
 
-        // 1. From active Payment Methods (Settings -> Payment Gateways & Methods)
+        // Track all payment methods configured in Settings -> Payment Gateways & Methods (both active and inactive)
+        const configuredPmIds = new Set<string>();
+        const configuredPmNames = new Set<string>();
+        const configuredPmCodes = new Set<string>();
+        const hasConfiguredCash = (paymentMethods || []).some(
+            (p) => p.type === 'cash' || p.name.toLowerCase().trim() === 'cash'
+        );
+
+        (paymentMethods || []).forEach((pm) => {
+            if (pm.id) configuredPmIds.add(pm.id.toLowerCase().trim());
+            if (pm.name) configuredPmNames.add(pm.name.toLowerCase().trim());
+            if (pm.linkedAccountId) configuredPmCodes.add(pm.linkedAccountId.toLowerCase().trim());
+        });
+
+        // 1. From active Payment Methods (Settings -> Payment Gateways & Methods) - Authoritative
         (activePaymentMethods || []).forEach((pm) => {
             const key = pm.name.trim().toLowerCase();
             if (!seen.has(key)) {
                 seen.add(key);
-                const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                if (pm.type === 'cash' || key === 'cash') {
+                    seen.add('cash');
+                    seen.add('cash in hand');
+                    seen.add('নগদ ক্যাশ');
+                    seen.add('ফ্যাক্টরি ক্যাশ');
+                    seen.add('factory cash in hand');
+                }
+                const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, projects);
                 list.push({
                     id: pm.id,
                     name: pm.name,
@@ -57,18 +78,66 @@ export const AccountingModule: React.FC = () => {
             }
         });
 
-        // 2. From Chart of Accounts (Asset liquid accounts: Cash, Bank, MFS)
+        // Helper to check if a COA account matches any configured payment method (active or inactive)
+        const matchesAnyConfiguredPm = (acc: any) => {
+            const accName = (acc.name || '').toLowerCase().trim();
+            const accCode = (acc.code || '').toLowerCase().trim();
+            const accId = (acc.id || '').toLowerCase().trim();
+
+            if (configuredPmIds.has(accId) || configuredPmCodes.has(accCode) || configuredPmCodes.has(accId)) {
+                return true;
+            }
+            if (configuredPmNames.has(accName)) {
+                return true;
+            }
+
+            // Cash aliases: If cash is configured in Settings, any COA cash account maps to it
+            if (hasConfiguredCash) {
+                if (
+                    accName === 'cash' ||
+                    accName === 'cash in hand' ||
+                    accName.includes('cash in hand') ||
+                    accName.includes('office cash') ||
+                    accName.includes('factory cash') ||
+                    accName.includes('cash counter') ||
+                    acc.code === '1001' ||
+                    acc.code === '1010' ||
+                    acc.code === '1020' ||
+                    (acc.nameBn && acc.nameBn.includes('ক্যাশ'))
+                ) {
+                    return true;
+                }
+            }
+
+            // Check against each configured PM
+            for (const pm of (paymentMethods || [])) {
+                const pmName = pm.name.toLowerCase().trim();
+                if (pm.type === 'mfs') {
+                    if (pmName.includes('nagad') && (accName.includes('nagad') || accCode === '1005' || acc.nameBn?.includes('নগদ'))) return true;
+                    if (pmName.includes('bkash') && (accName.includes('bkash') || accCode === '1004' || acc.nameBn?.includes('বিকাশ'))) return true;
+                    if (pmName.includes('rocket') && (accName.includes('rocket') || accCode === '1006')) return true;
+                }
+                if (pm.type === 'bank') {
+                    if (pmName.includes('city') && accName.includes('city')) return true;
+                    if (pmName.includes('southeast') && accName.includes('southeast')) return true;
+                    if (pmName.includes('brac') && accName.includes('brac')) return true;
+                }
+            }
+
+            return false;
+        };
+
+        // 2. Only include non-configured additional Asset accounts from Chart of Accounts
         (chartOfAccounts || [])
             .filter((acc) => {
                 if (acc.classification !== 'Asset' || !acc.isActive) return false;
+                // If it matches any configured payment method (whether active or inactive), SKIP IT!
+                if (matchesAnyConfiguredPm(acc)) return false;
+
                 const n = acc.name.toLowerCase();
                 return (
                     n.includes('cash') || n.includes('bank') || n.includes('plc') ||
-                    n.includes('bkash') || n.includes('nagad') || n.includes('rocket') ||
-                    n.includes('wallet') || n.includes('mfs') ||
-                    acc.code === '1001' || acc.code === '1004' || acc.code === '1005' ||
-                    acc.code === '1006' || acc.code === '1007' || acc.code === '1010' ||
-                    acc.code === '1020' || acc.code === '1030' || acc.code === '1040'
+                    n.includes('wallet') || n.includes('mfs')
                 );
             })
             .forEach((acc) => {
@@ -89,7 +158,7 @@ export const AccountingModule: React.FC = () => {
             list.push({ id: 'pm-cash', name: 'Cash', balance: accountBalances.cash });
         }
         return list;
-    }, [activePaymentMethods, chartOfAccounts, transactions, invoices, accountBalances]);
+    }, [activePaymentMethods, paymentMethods, chartOfAccounts, transactions, invoices, accountBalances, projects]);
 
     const [accountingTab, setAccountingTab] = useState<'ledger' | 'coa' | 'expense-heads' | 'journals'>('ledger');
     const [filterType, setFilterType] = useState<string>('ALL');
@@ -125,11 +194,44 @@ export const AccountingModule: React.FC = () => {
     const availableExpenseOptions = useMemo(() => {
         const list: { id: string; name: string; nameBn?: string; group: string }[] = [];
         const seen = new Set<string>();
+        const linkedCoaIds = new Set<string>();
+
+        const isProj = (name?: string, nameBn?: string, code?: string) => {
+            const n = (name || '').toLowerCase();
+            const bn = (nameBn || '').toLowerCase();
+            const c = (code || '').toUpperCase();
+            return (
+                n.includes('project') ||
+                bn.includes('প্রজেক্ট') ||
+                c === '5206' ||
+                c === '5100' ||
+                c === 'EH-PROJ'
+            );
+        };
 
         // 1. From active Expense Heads
         (expenseHeads || [])
             .filter((h) => h.isActive)
             .forEach((h) => {
+                if (h.linkedAccountId) {
+                    linkedCoaIds.add(h.linkedAccountId.toLowerCase().trim());
+                }
+
+                if (isProj(h.name, h.nameBn, h.code)) {
+                    if (!seen.has('__project_expense__')) {
+                        seen.add('__project_expense__');
+                        seen.add(h.name.trim().toLowerCase());
+                        seen.add('project expense');
+                        list.push({
+                            id: `eh-${h.id}`,
+                            name: 'Project Expense',
+                            nameBn: 'প্রজেক্ট খরচ',
+                            group: 'Project Expenses',
+                        });
+                    }
+                    return;
+                }
+
                 const key = h.name.trim().toLowerCase();
                 if (!seen.has(key)) {
                     seen.add(key);
@@ -146,6 +248,26 @@ export const AccountingModule: React.FC = () => {
         (chartOfAccounts || [])
             .filter((a) => a.classification === 'Expense' && a.isActive)
             .forEach((a) => {
+                // If already represented by a linked Expense Head, do not duplicate
+                if (linkedCoaIds.has(a.id.toLowerCase().trim()) || (a.code && linkedCoaIds.has(a.code.toLowerCase().trim()))) {
+                    return;
+                }
+
+                if (isProj(a.name, a.nameBn, a.code)) {
+                    if (!seen.has('__project_expense__')) {
+                        seen.add('__project_expense__');
+                        seen.add(a.name.trim().toLowerCase());
+                        seen.add('project expense');
+                        list.push({
+                            id: `coa-${a.id}`,
+                            name: 'Project Expense',
+                            nameBn: 'প্রজেক্ট খরচ',
+                            group: 'Project Expenses',
+                        });
+                    }
+                    return;
+                }
+
                 const key = a.name.trim().toLowerCase();
                 if (!seen.has(key)) {
                     seen.add(key);
@@ -446,10 +568,21 @@ export const AccountingModule: React.FC = () => {
         if (!expenseTitle || expenseAmount <= 0)
             return;
         const selectedAccount = expenseAccount || availablePaymentAccounts[0]?.name || 'Cash';
+        const targetAccObj = availablePaymentAccounts.find((a) => a.name === selectedAccount || a.id === selectedAccount);
+        if (targetAccObj && Number(expenseAmount) > Number(targetAccObj.balance || 0)) {
+            alert(`Insufficient funds in ${targetAccObj.name}! Available balance is ${profile.currencySymbol}${targetAccObj.balance.toLocaleString()}. You cannot record an expense exceeding available funds.`);
+            return;
+        }
 
         if (selectedProjectId) {
-            const matchedExpCoa = chartOfAccounts.find(a => a.name.toLowerCase() === expenseCategory.toLowerCase());
-            const matchedPayCoa = chartOfAccounts.find(a => a.name.toLowerCase() === selectedAccount.toLowerCase());
+            const matchedExpCoa = chartOfAccounts.find(a => 
+                a.name.toLowerCase() === expenseCategory.toLowerCase() ||
+                (isProjectExpense && (a.code === '5206' || a.code === '5100' || a.name.toLowerCase().includes('project')))
+            );
+            const matchedPayCoa = chartOfAccounts.find(a => 
+                a.name.toLowerCase() === selectedAccount.toLowerCase() ||
+                (selectedAccount.toLowerCase().includes('cash') && (a.code === '1001' || a.code === '1010' || a.name.toLowerCase().includes('cash')))
+            );
 
             addProjectExpense(selectedProjectId, {
                 category: expenseCategory,
@@ -546,7 +679,7 @@ export const AccountingModule: React.FC = () => {
             const paidVal = numAmount;
             const dueVal = Math.max(0, budgetVal - paidVal);
 
-            addProject({
+            const createdProj = addProject({
                 name: projTitle,
                 clientName: cName,
                 clientPhone: newProjClientPhone.trim() || undefined,
@@ -569,6 +702,15 @@ export const AccountingModule: React.FC = () => {
                 }],
                 expenseItems: [],
             });
+
+            // Auto-generate official Sales Invoice in Sales & Orders tab
+            if (createdProj && createdProj.id) {
+                generateInvoiceForProject(createdProj.id, {
+                    title: `${projTitle} - Sales Contract`,
+                    date: today,
+                    skipLedgerTransaction: true,
+                });
+            }
         } else {
             if (!incomeTitle) return;
             addTransaction({
@@ -945,9 +1087,9 @@ export const AccountingModule: React.FC = () => {
               {filteredTransactions.map((tx, idx) => (<tr key={`${tx.id || 'tx'}-${idx}`} className="hover:bg-slate-50/70 transition-colors">
                   <td className="py-3 px-4 text-slate-500 font-mono text-[11px]">{tx.date}</td>
                   <td className="py-3 px-4 font-mono text-slate-600 font-semibold">{tx.refNo}</td>
-                  <td className="py-3 px-4">
+                  <td className="py-3 px-4 max-w-md">
                     <div className="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
-                      <span>{tx.description}</span>
+                      <span className="line-clamp-2" title={tx.description}>{tx.description}</span>
                       {(tx.projectId || tx.projectCode) && (
                         <span className="inline-flex items-center gap-1 font-mono text-[9px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
                           <Briefcase className="w-2.5 h-2.5 text-amber-600" />
@@ -1196,16 +1338,42 @@ export const AccountingModule: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-              <button type="button" onClick={() => setShowExpenseModal(false)} className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50">
-                {'Cancel'}
-              </button>
-              <button type="submit" className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-2xs">
-                {selectedProjectId
-                  ? `Confirm & Link to Project (${profile.currencySymbol}${(Number(expenseAmount) || 0).toLocaleString()})`
-                  : 'Confirm Expense'}
-              </button>
-            </div>
+            {(() => {
+              const selectedAcc = availablePaymentAccounts.find((a) => a.name === expenseAccount || a.id === expenseAccount) || availablePaymentAccounts[0];
+              const isOverdraft = Boolean(selectedAcc && Number(expenseAmount) > Number(selectedAcc.balance || 0));
+              return (
+                <>
+                  {isOverdraft && selectedAcc && (
+                    <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-[11px] text-rose-800 font-semibold flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                      <span>
+                        {`Expense amount exceeds available balance in ${selectedAcc.name} (${profile.currencySymbol}${selectedAcc.balance.toLocaleString()}). Cannot proceed with negative balance.`}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                    <button type="button" onClick={() => setShowExpenseModal(false)} className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer">
+                      {'Cancel'}
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={expenseAmount <= 0 || isOverdraft}
+                      className={`px-5 py-2 text-white rounded-xl text-xs font-bold shadow-2xs transition-all ${
+                        isOverdraft
+                          ? 'bg-slate-400 cursor-not-allowed opacity-60'
+                          : 'bg-rose-600 hover:bg-rose-700 cursor-pointer'
+                      }`}
+                    >
+                      {isOverdraft
+                        ? 'Insufficient Account Balance'
+                        : selectedProjectId
+                        ? `Confirm & Link to Project (${profile.currencySymbol}${(Number(expenseAmount) || 0).toLocaleString()})`
+                        : 'Confirm Expense'}
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
           </form>
         </div>)}
 
@@ -1596,6 +1764,12 @@ export const AccountingModule: React.FC = () => {
                             প্রজেক্টের অবশিষ্ট বকেয়া: {profile.currencySymbol}{Math.max(0, (Number(newProjBudget) || 0) - (Number(incomeAmount) || 0)).toLocaleString()}
                           </span>
                         </div>
+                      </div>
+
+                      {/* Auto-generate Sales Invoice Notice */}
+                      <div className="flex items-center gap-2 p-2 bg-indigo-50/80 rounded-lg border border-indigo-200 text-[11px] text-indigo-900 font-medium">
+                        <Receipt className="w-4 h-4 text-indigo-600 shrink-0" />
+                        <span>সেভ করার সাথে সাথে <strong>Sales & Orders</strong> ট্যাবে এই প্রজেক্টের নামে স্বয়ংক্রিয়ভাবে অফিসিয়াল বিক্রয় চালান (Sales Invoice) তৈরি হবে।</span>
                       </div>
                     </div>
                   )}

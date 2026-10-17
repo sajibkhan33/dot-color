@@ -320,36 +320,160 @@ export const getPaymentMethodLiveBalance = (
     accountBalances?: AccountBalances,
     projects: any[] = []
 ): number => {
-    // 1. Try to find the exact linked or matching account head in Chart of Accounts
-    const matchingAcc = matchChannelToAccount(pm.name, chartOfAccounts, [pm]);
+    if (!pm) return 0;
+    const pmName = (pm.name || '').toLowerCase().trim();
+    const pmId = (pm.id || '').toLowerCase().trim();
+    const pmBank = (pm.bankName || '').toLowerCase().trim();
+    const pmAccountNo = (pm.accountNumber || '').trim();
+
+    // 1. If it's a specific cash method, calculate cash
+    if (pm.type === 'cash') {
+        if (pmName.includes('factory')) {
+            return accountBalances?.factoryCash || 0;
+        }
+        let cashAmt = 0;
+        let hasDirectTx = false;
+        (transactions || []).forEach((tx) => {
+            const pAcc = (tx.paymentAccount || tx.account || tx.accountHead || tx.paymentMethod || '').toLowerCase().trim();
+            if (pAcc === 'cash' || pAcc === pmName || pAcc.includes('cash counter') || pAcc.includes('in hand')) {
+                hasDirectTx = true;
+                if (tx.type === 'INCOME') cashAmt += tx.amount;
+                else if (tx.type === 'EXPENSE') cashAmt -= tx.amount;
+            }
+        });
+        if (hasDirectTx) return Math.max(0, cashAmt);
+        return Math.max(0, (accountBalances?.cash || 0) + (accountBalances?.factoryCash || 0));
+    }
+
+    // 2. Dedicated Chart of Accounts matching (ONLY if the COA account specifically matches this payment method, NOT generic shared 1030/1040/1010)
+    const matchingAcc = (chartOfAccounts || []).find((acc) => {
+        if (acc.classification !== 'Asset') return false;
+        const accName = acc.name.toLowerCase().trim();
+        const accId = acc.id.toLowerCase().trim();
+        const accCode = (acc.code || '').trim();
+
+        // Exact ID match (if user explicitly linked a distinct custom COA account, not generic shared 1030/1040)
+        if (pm.linkedAccountId && (accId === pm.linkedAccountId || acc.id === pm.linkedAccountId) && accCode !== '1030' && accCode !== '1040' && accCode !== '1010') {
+            return true;
+        }
+
+        // Distinct name match
+        if (accName === pmName || (acc.nameBn && pm.nameBn && acc.nameBn === pm.nameBn)) {
+            return true;
+        }
+
+        // Bank-specific name match (e.g. "City Bank PLC" matches "City Bank PLC" in COA)
+        if (pm.type === 'bank') {
+            if (pmName.includes('city') && accName.includes('city')) return true;
+            if (pmName.includes('southeast') && accName.includes('southeast')) return true;
+            if (pmName.includes('brac') && accName.includes('brac')) return true;
+            if (pmBank && accName.includes(pmBank)) return true;
+            if (pmName.includes('ucb') && accName.includes('ucb')) return true;
+            if (pmName.includes('aibl') && accName.includes('aibl')) return true;
+            if (pmName.includes('islami') && accName.includes('islami')) return true;
+            if (pmName.includes('dutch') && accName.includes('dutch')) return true;
+            if (pmName.includes('eastern') && accName.includes('eastern')) return true;
+        }
+
+        // MFS-specific name match
+        if (pm.type === 'mfs') {
+            if (pmName.includes('bkash') && accName.includes('bkash') && !accName.includes('nagad')) return true;
+            if (pmName.includes('nagad') && accName.includes('nagad') && !accName.includes('bkash')) return true;
+            if (pmName.includes('rocket') && accName.includes('rocket')) return true;
+            if (pmName.includes('upay') && accName.includes('upay')) return true;
+        }
+
+        return false;
+    });
+
     if (matchingAcc) {
         return calculateSingleAccountBalance(matchingAcc, transactions, invoices, projects);
     }
 
-    // 2. If no COA head matched, compute directly from transactions & invoices matching this payment method
+    // 3. Compute directly from transactions specifically matching this payment method
     let liveAmt = 0;
-    const pmLower = pm.name.toLowerCase();
+    let hasTxMatch = false;
+
+    // Helper to test if a string matches this PM
+    const matchesPmString = (str: string) => {
+        if (!str) return false;
+        const s = str.toLowerCase().trim();
+        if (s === pmName || s === pmId) return true;
+        if (pmBank && (s === pmBank || s.includes(pmBank))) return true;
+        if (pmAccountNo && s.includes(pmAccountNo)) return true;
+
+        // Specific channel keyword matching
+        if (pmName.includes('ucb') && s.includes('ucb')) return true;
+        if (pmName.includes('aibl') && s.includes('aibl')) return true;
+        if (pmName.includes('city') && s.includes('city')) return true;
+        if (pmName.includes('southeast') && s.includes('southeast')) return true;
+        if (pmName.includes('brac') && s.includes('brac')) return true;
+        if (pmName.includes('bkash') && s.includes('bkash')) return true;
+        if (pmName.includes('nagad') && s.includes('nagad')) return true;
+        if (pmName.includes('rocket') && s.includes('rocket')) return true;
+        if (pmName.includes('upay') && s.includes('upay')) return true;
+
+        return false;
+    };
 
     (transactions || []).forEach((tx) => {
-        const pAcc = (tx.paymentAccount || '').toLowerCase();
-        const head = (tx.accountHead || '').toLowerCase();
-        if (pAcc === pmLower || head === pmLower || pAcc.includes(pmLower)) {
+        const pAcc = (tx.paymentAccount || tx.account || tx.accountHead || tx.paymentMethod || '').toLowerCase().trim();
+        const head = (tx.accountHead || '').toLowerCase().trim();
+        const desc = (tx.description || '').toLowerCase();
+
+        if (matchesPmString(pAcc) || matchesPmString(head) || (pAcc === '' && matchesPmString(desc))) {
+            hasTxMatch = true;
             if (tx.type === 'INCOME') liveAmt += tx.amount;
             else if (tx.type === 'EXPENSE') liveAmt -= tx.amount;
         }
     });
 
-    // 3. Fallback based on payment type
-    if (liveAmt === 0 && accountBalances) {
-        if (pm.type === 'cash') return (accountBalances.cash || 0) + (accountBalances.factoryCash || 0);
-        if (pm.type === 'mfs') {
-            if (pmLower.includes('bkash')) return accountBalances.bkash ?? accountBalances.mobile ?? 0;
-            if (pmLower.includes('nagad')) return accountBalances.nagad ?? 0;
-            return accountBalances.mobile || 0;
+    // 4. Reconcile invoices with splitPayments or direct paymentMethod for this PM
+    const recordedInvoiceRefs = new Set(
+        (transactions || [])
+            .filter((t) => t.type === 'INCOME' && t.refNo)
+            .map((t) => (t.refNo || '').toLowerCase().trim())
+    );
+
+    (invoices || []).forEach((inv) => {
+        const invRef = (inv.invoiceNo || '').toLowerCase().trim();
+        if (invRef && recordedInvoiceRefs.has(invRef)) return;
+
+        if (inv.splitPayments) {
+            Object.entries(inv.splitPayments).forEach(([key, val]) => {
+                const amt = Number(val) || 0;
+                if (amt <= 0) return;
+                if (key === pm.id || matchesPmString(key)) {
+                    hasTxMatch = true;
+                    liveAmt += amt;
+                }
+            });
+        } else if ((inv.paidAmount || 0) > 0) {
+            const m = (inv.paymentMethod || '').toLowerCase().trim();
+            if (matchesPmString(m)) {
+                hasTxMatch = true;
+                liveAmt += Number(inv.paidAmount) || 0;
+            }
         }
-        if (pm.type === 'bank') return accountBalances.bank || 0;
+    });
+
+    // If transactions or invoices matched this method, return the calculated live balance
+    if (hasTxMatch) {
+        return Math.max(0, liveAmt);
     }
 
+    // 5. Special fallback ONLY for standard predefined bKash and Nagad if they were seeded in accountBalances
+    if (accountBalances) {
+        if (pmName.includes('bkash') && accountBalances.bkash !== undefined) {
+            return accountBalances.bkash || 0;
+        }
+        if (pmName.includes('nagad') && accountBalances.nagad !== undefined) {
+            return accountBalances.nagad || 0;
+        }
+    }
+
+    // For any newly created or custom bank/MFS/gateway with 0 transactions, its balance is 0!
+    // NEVER fall back to the total bank balance (accountBalances.bank) or total mobile balance!
     return Math.max(0, liveAmt);
 };
 

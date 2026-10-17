@@ -12,7 +12,7 @@ export const ProductCategoryManager: React.FC = () => {
     const [viewingCategoryForItems, setViewingCategoryForItems] = useState<ProductCategory | null>(null);
     const [itemToDelete, setItemToDelete] = useState<ProductItem | null>(null);
     const [itemSearchQuery, setItemSearchQuery] = useState('');
-    const canManageCategories = checkPermission('inventory.manage_categories') || true;
+    const canManageCategories = checkPermission('inventory.manage_categories');
     // Form state
     const [formData, setFormData] = useState({
         code: '',

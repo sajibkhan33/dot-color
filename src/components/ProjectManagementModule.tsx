@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Project, ProjectExpenseItem, ProjectSalesItem } from '../types';
-import { FolderKanban, Plus, Search, Filter, TrendingUp, TrendingDown, DollarSign, Receipt, CheckCircle2, Clock, Briefcase, Layers, Edit2, Trash2, ChevronDown, ChevronUp, FileSpreadsheet, Printer, Calendar, User, Phone, BookOpen, PieChart, Tag, CreditCard, Wallet, Landmark, Banknote, Smartphone, History, } from 'lucide-react';
+import { FolderKanban, Plus, Search, Filter, TrendingUp, TrendingDown, DollarSign, Receipt, CheckCircle2, Clock, Briefcase, Layers, Edit2, Trash2, ChevronDown, ChevronUp, FileSpreadsheet, Printer, Calendar, User, Phone, BookOpen, PieChart, Tag, CreditCard, Wallet, Landmark, Banknote, Smartphone, History, FileText, X, RotateCw } from 'lucide-react';
 import { getPaymentMethodLiveBalance, isInvoiceMatchingCustomer } from '../utils/accountUtils';
 export interface SalesPaymentRow {
     id: string;
@@ -19,8 +19,11 @@ export interface ExpenseBreakdownRow {
     linkedAccountId?: string;
     paymentMethod?: string;
 }
-export const ProjectManagementModule: React.FC = () => {
-    const { projects, addProject, updateProject, deleteProject, addProjectSales, collectProjectDue, addProjectExpense, addProjectExpenses, deleteProjectSales, deleteProjectExpense, syncProjectsWithAccounting, journalEntries = [], chartOfAccounts = [], expenseHeads = [], language, profile, paymentMethods = [], invoices = [], linkInvoiceToProject, unlinkInvoiceFromProject, createProjectFromInvoice, customers = [], transactions = [], accountBalances, } = useApp();
+export interface ProjectManagementModuleProps {
+    onOpenInvoiceModal?: (id: string, mode?: 'invoice' | 'challan' | 'pos', options?: { autoPrint?: boolean; isPadMode?: boolean }) => void;
+}
+export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = ({ onOpenInvoiceModal }) => {
+    const { projects, addProject, updateProject, deleteProject, addProjectSales, collectProjectDue, addProjectExpense, addProjectExpenses, deleteProjectSales, deleteProjectExpense, syncProjectsWithAccounting, journalEntries = [], chartOfAccounts = [], expenseHeads = [], language, profile, paymentMethods = [], invoices = [], linkInvoiceToProject, unlinkInvoiceFromProject, createProjectFromInvoice, generateInvoiceForProject, syncProjectInvoice, customers = [], transactions = [], accountBalances, } = useApp();
     const isBn = language === 'bn';
     const [searchTerm, setSearchType] = useState(() => {
         try {
@@ -84,6 +87,7 @@ export const ProjectManagementModule: React.FC = () => {
         invoiceId: '',
         chartOfAccountId: 'coa-4051',
         includeSalesItem: true,
+        autoGenerateInvoice: true,
     });
     // Dynamic Payment method options for sales breakdown
     const activePaymentMethods = useMemo(() => {
@@ -343,9 +347,10 @@ export const ProjectManagementModule: React.FC = () => {
                 includeAsSalesItem: newProject.includeSalesItem,
             });
             setSyncNotice(`Project created against invoice with unified Chart of Accounts.`);
+            setTimeout(() => setSyncNotice(null), 1500);
         }
         else {
-            addProject({
+            const created = addProject({
                 name: newProject.name,
                 nameBn: newProject.nameBn,
                 clientName: newProject.clientName,
@@ -359,6 +364,14 @@ export const ProjectManagementModule: React.FC = () => {
                 salesItems: [],
                 expenseItems: [],
             });
+
+            if (newProject.autoGenerateInvoice && created && created.id) {
+                const inv = generateInvoiceForProject(created.id);
+                if (inv) {
+                    setSyncNotice(`Project created & Sales Invoice #${inv.invoiceNo} generated.`);
+                    setTimeout(() => setSyncNotice(null), 2500);
+                }
+            }
         }
         setShowCreateModal(false);
         setNewProject({
@@ -374,6 +387,7 @@ export const ProjectManagementModule: React.FC = () => {
             invoiceId: '',
             chartOfAccountId: 'coa-4051',
             includeSalesItem: true,
+            autoGenerateInvoice: true,
         });
     };
 
@@ -382,6 +396,7 @@ export const ProjectManagementModule: React.FC = () => {
         if (!linkingProject || !linkInvoiceForm.invoiceId) return;
         linkInvoiceToProject(linkingProject.id, linkInvoiceForm.invoiceId, linkInvoiceForm.chartOfAccountId, linkInvoiceForm.syncSalesItem);
         setSyncNotice(`Linked sales invoice to project [${linkingProject.code}] with unified COA.`);
+        setTimeout(() => setSyncNotice(null), 1500);
         setLinkingProject(null);
     };
     const handleAddPaymentRow = () => {
@@ -555,29 +570,30 @@ export const ProjectManagementModule: React.FC = () => {
           <div className="w-12 h-12 bg-amber-50 rounded-xl flex items-center justify-center text-amber-600 border border-amber-200">
             <FolderKanban className="w-6 h-6"/>
           </div>
-            <div className="flex items-center gap-2 flex-wrap">
+            <div>
               <h1 className="text-xl font-bold text-slate-900">
                 {'Projects'}
               </h1>
-              <button
-                type="button"
-                onClick={() => {
-                  if (syncProjectsWithAccounting) {
-                    const res = syncProjectsWithAccounting();
-                    setSyncNotice(`Synced ${res.salesSynced} sales & ${res.expensesSynced} expenses to Chart of Accounts (Tk ${res.totalAmount.toLocaleString()})!`);
-                    setTimeout(() => setSyncNotice(null), 5000);
-                  }
-                }}
-                className="bg-emerald-100 hover:bg-emerald-200 text-emerald-800 text-[11px] font-extrabold px-3 py-1 rounded-full border border-emerald-300 flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer"
-                title="Click to dynamically synchronize all project vouchers with Chart of Accounts"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Chart of Accounts Synced {activeProjectJournalsCount > 0 ? `(${activeProjectJournalsCount} Vouchers Live)` : ''}</span>
-              </button>
             </div>
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (syncProjectsWithAccounting) {
+                const res = syncProjectsWithAccounting();
+                setSyncNotice(`Projects Aligned: ${res.salesSynced} sales & ${res.expensesSynced} expenses synced (Tk ${res.totalAmount.toLocaleString()})`);
+                setTimeout(() => setSyncNotice(null), 1500);
+              }
+            }}
+            className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 rounded-xl font-bold text-xs transition-all cursor-pointer shadow-2xs"
+            title="Click to dynamically synchronize all project vouchers with Chart of Accounts"
+          >
+            <Layers className="w-3.5 h-3.5 text-emerald-600" />
+            <span>{'Sync COA'}</span>
+          </button>
+
           <button type="button" onClick={() => {
             setEditingProject(null);
             setNewProject({
@@ -602,13 +618,12 @@ export const ProjectManagementModule: React.FC = () => {
         </div>
       </div>
 
+      {/* Floating Sync Toaster (Auto-dismisses in 1.5s) */}
       {syncNotice && (
-        <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl text-xs font-bold text-emerald-900 flex items-center justify-between animate-fade-in shadow-2xs">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>{syncNotice}</span>
-          </div>
-          <button type="button" onClick={() => setSyncNotice(null)} className="text-emerald-500 hover:text-emerald-800 font-bold">✕</button>
+        <div className="fixed top-20 right-6 z-50 bg-emerald-900/95 backdrop-blur-md text-white px-4 py-3 rounded-2xl shadow-2xl border border-emerald-500/40 flex items-center gap-2.5 text-xs font-bold animate-in fade-in slide-in-from-top-4 transition-all duration-300">
+          <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+          <span>{syncNotice}</span>
+          <button type="button" onClick={() => setSyncNotice(null)} className="ml-2 text-emerald-300 hover:text-white font-bold text-sm cursor-pointer">✕</button>
         </div>
       )}
 
@@ -908,42 +923,88 @@ export const ProjectManagementModule: React.FC = () => {
                     {/* Action buttons */}
                     <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
                       {!project.invoiceId ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setLinkingProject(project);
-                            setLinkInvoiceForm({
-                              invoiceId: '',
-                              chartOfAccountId: project.chartOfAccountId || 'coa-4051',
-                              syncSalesItem: project.totalSales === 0,
-                            });
-                          }}
-                          className="px-2 py-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors cursor-pointer flex items-center gap-1"
-                          title="Link this project to a Sales Invoice & unify COA"
-                        >
-                          <Receipt className="w-3 h-3 text-indigo-600" />
-                          <span>+ Link Invoice</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const inv = generateInvoiceForProject(project.id);
+                              if (inv) {
+                                setSyncNotice(`Generated Sales Invoice #${inv.invoiceNo} for project [${project.code}]`);
+                                setTimeout(() => setSyncNotice(null), 2500);
+                              }
+                            }}
+                            className="px-2 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-300 transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                            title="Generate an official Sales Invoice (DCC-INV) in Sales & Orders"
+                          >
+                            <FileText className="w-3 h-3 text-emerald-600" />
+                            <span>+ Generate Invoice</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLinkingProject(project);
+                              setLinkInvoiceForm({
+                                invoiceId: '',
+                                chartOfAccountId: project.chartOfAccountId || 'coa-4051',
+                                syncSalesItem: project.totalSales === 0,
+                              });
+                            }}
+                            className="px-2 py-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors cursor-pointer flex items-center gap-1"
+                            title="Link this project to an existing Sales Invoice & unify COA"
+                          >
+                            <Receipt className="w-3 h-3 text-indigo-600" />
+                            <span>+ Link Invoice</span>
+                          </button>
+                        </>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (window.confirm(`Unlink Sales Invoice #${project.invoiceNo} from this project?`)) {
-                              unlinkInvoiceFromProject(project.id);
-                            }
-                          }}
-                          className="px-2 py-1 text-[10px] font-bold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors cursor-pointer flex items-center gap-1"
-                          title={`Linked to Sales Invoice #${project.invoiceNo} (Click to unlink)`}
-                        >
-                          <Receipt className="w-3 h-3 text-indigo-600" />
-                          <span>#{project.invoiceNo}</span>
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onOpenInvoiceModal && project.invoiceId) {
+                                onOpenInvoiceModal(project.invoiceId, 'invoice', { autoPrint: false });
+                              } else {
+                                window.dispatchEvent(new CustomEvent('switch-tab', { detail: 'sales' }));
+                              }
+                            }}
+                            className="px-2 py-1 text-[10px] font-bold text-indigo-800 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors cursor-pointer flex items-center gap-1"
+                            title={`Linked to Sales Invoice #${project.invoiceNo} (Click to View / Print Invoice)`}
+                          >
+                            <Printer className="w-3 h-3 text-indigo-600" />
+                            <span>#{project.invoiceNo}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              syncProjectInvoice(project.id);
+                              setSyncNotice(`Invoice #${project.invoiceNo} synced with current project sales.`);
+                              setTimeout(() => setSyncNotice(null), 1500);
+                            }}
+                            className="p-1 text-slate-400 hover:text-indigo-600 rounded hover:bg-indigo-50 transition-colors cursor-pointer"
+                            title="Sync / Update Linked Invoice with Project Sales"
+                          >
+                            <RotateCw className="w-3 h-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm(`Unlink Sales Invoice #${project.invoiceNo} from this project?`)) {
+                                unlinkInvoiceFromProject(project.id);
+                              }
+                            }}
+                            className="p-1 text-slate-400 hover:text-rose-600 rounded hover:bg-rose-50 transition-colors cursor-pointer"
+                            title="Unlink Sales Invoice"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
                       )}
 
                       <button type="button" onClick={() => {
                     setShowSalesModal(project.id);
                     setSalesForm({
-                        invoiceNo: '',
+                        invoiceNo: project.invoiceNo || '',
                         description: '',
                         date: new Date().toISOString().split('T')[0],
                         clientName: project.clientName,
@@ -1116,9 +1177,9 @@ export const ProjectManagementModule: React.FC = () => {
                                         })();
 
                                     return (<tr key={sales.id} className="hover:bg-slate-50">
-                                      <td className="py-2">
+                                      <td className="py-2 max-w-sm">
                                         <div className="font-semibold text-slate-800 flex items-center gap-1.5 flex-wrap">
-                                          <span>{sales.description}</span>
+                                          <span className="line-clamp-2" title={sales.description}>{sales.description}</span>
                                           {itemDue > 0 ? (
                                             <span className="inline-flex items-center text-[9px] font-bold bg-amber-50 text-amber-800 px-1.5 py-0.5 rounded border border-amber-200">
                                               Due Remaining: {profile.currencySymbol}{itemDue.toLocaleString()}
@@ -1350,6 +1411,26 @@ export const ProjectManagementModule: React.FC = () => {
                       </div>
                     );
                   })()}
+                  {!newProject.invoiceId && (
+                    <div className="pt-2 border-t border-indigo-200/60">
+                      <label className="flex items-start gap-2.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={newProject.autoGenerateInvoice}
+                          onChange={(e) => setNewProject(prev => ({ ...prev, autoGenerateInvoice: e.target.checked }))}
+                          className="mt-0.5 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                        />
+                        <div className="text-xs">
+                          <span className="font-bold text-indigo-950 block">
+                            Auto-generate Official Sales Invoice in Sales & Orders / বিক্রয় চালানের তালিকাভুক্ত করুন
+                          </span>
+                          <span className="text-[11px] text-indigo-700">
+                            প্রজেক্ট সেভ করার সাথে সাথে Sales & Orders ট্যাবে অফিসিয়াল চালান (DCC-INV) তৈরি হয়ে লিঙ্ক হয়ে যাবে।
+                          </span>
+                        </div>
+                      </label>
+                    </div>
+                  )}
                 </div>
               )}
 

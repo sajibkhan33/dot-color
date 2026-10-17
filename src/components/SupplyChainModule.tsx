@@ -392,6 +392,11 @@ export const SupplyChainModule: React.FC = () => {
         e.preventDefault();
         if (!paySupplierModal || supplierPayAmount <= 0)
             return;
+        const currentBal = getAccountLiveBalance(supplierPayAccount);
+        if (supplierPayAmount > currentBal) {
+            alert(`Insufficient funds in ${supplierPayAccount}! Available balance is ${profile.currencySymbol}${currentBal.toLocaleString()}. You cannot pay more than the available account balance.`);
+            return;
+        }
         const payFn = paySupplier || paySupplierDue;
         if (typeof payFn === 'function') {
             payFn(paySupplierModal.id, supplierPayAmount, supplierPayAccount, paySupplierTargetPoId === 'all' ? undefined : paySupplierTargetPoId);
@@ -404,6 +409,11 @@ export const SupplyChainModule: React.FC = () => {
         e.preventDefault();
         if (!poToPay || poPayAmount <= 0)
             return;
+        const currentBal = getAccountLiveBalance(poPayAccount);
+        if (poPayAmount > currentBal) {
+            alert(`Insufficient funds in ${poPayAccount}! Available balance is ${profile.currencySymbol}${currentBal.toLocaleString()}. You cannot pay more than the available account balance.`);
+            return;
+        }
         payPurchaseOrder(poToPay.id, poPayAmount, poPayAccount, poPayMethod);
         setPoToPay(null);
         setPoPayAmount(0);
@@ -1704,21 +1714,34 @@ export const SupplyChainModule: React.FC = () => {
                       {profile.currencySymbol}{selectedBal.toLocaleString()}
                     </span>
                   </div>
-                  {supplierPayAmount > selectedBal ? (<span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded border border-amber-200">
-                      {`⚠️ Shortfall: ${profile.currencySymbol}${(supplierPayAmount - selectedBal).toLocaleString()}`}
+                  {supplierPayAmount > selectedBal ? (<span className="text-[10px] font-bold text-rose-800 bg-rose-100 px-2 py-0.5 rounded border border-rose-200">
+                      {`⚠️ Insufficient Fund (Shortfall: ${profile.currencySymbol}${(supplierPayAmount - selectedBal).toLocaleString()})`}
                     </span>) : (<span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-200">
                       {'✓ Sufficient Fund'}
                     </span>)}
                 </div>
+
+                {supplierPayAmount > selectedBal && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-[11px] text-rose-800 font-semibold flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>
+                      {`Payment amount exceeds available balance in ${supplierPayAccount} (${profile.currencySymbol}${selectedBal.toLocaleString()}). Cannot proceed with negative cash balance.`}
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
                 <button type="button" onClick={() => setPaySupplierModal(null)} className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer">
                   {'Cancel'}
                 </button>
-                <button type="submit" disabled={supplierPayAmount <= 0} className="px-5 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-2xs cursor-pointer flex items-center gap-1.5">
+                <button type="submit" disabled={supplierPayAmount <= 0 || supplierPayAmount > selectedBal} className={`px-5 py-2 text-white rounded-xl text-xs font-bold shadow-2xs flex items-center gap-1.5 transition-all ${
+                  supplierPayAmount > selectedBal
+                    ? 'bg-slate-400 cursor-not-allowed opacity-60'
+                    : 'bg-slate-900 hover:bg-slate-800 cursor-pointer'
+                }`}>
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400"/>
-                  <span>{'Confirm Payment'}</span>
+                  <span>{supplierPayAmount > selectedBal ? 'Insufficient Account Balance' : 'Confirm Payment'}</span>
                 </button>
               </div>
             </form>
@@ -1923,12 +1946,21 @@ export const SupplyChainModule: React.FC = () => {
                       {profile.currencySymbol}{selectedPoBal.toLocaleString()}
                     </span>
                   </div>
-                  {poPayAmount > selectedPoBal ? (<span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded border border-amber-200">
-                      {`⚠️ Shortfall: ${profile.currencySymbol}${(poPayAmount - selectedPoBal).toLocaleString()}`}
+                  {poPayAmount > selectedPoBal ? (<span className="text-[10px] font-bold text-rose-800 bg-rose-100 px-2 py-0.5 rounded border border-rose-200">
+                      {`⚠️ Insufficient Fund (Shortfall: ${profile.currencySymbol}${(poPayAmount - selectedPoBal).toLocaleString()})`}
                     </span>) : (<span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded border border-emerald-200">
                       {'✓ Sufficient Fund'}
                     </span>)}
                 </div>
+
+                {poPayAmount > selectedPoBal && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-[11px] text-rose-800 font-semibold flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                    <span>
+                      {`Payment exceeds available balance in ${poPayAccount} (${profile.currencySymbol}${selectedPoBal.toLocaleString()}). Cannot proceed with negative balance.`}
+                    </span>
+                  </div>
+                )}
 
                 {/* Real-time feedback badge */}
                 <div className="bg-emerald-50/70 p-2.5 rounded-xl border border-emerald-200/80 text-[11px] text-slate-700 space-y-1">
@@ -1958,9 +1990,13 @@ export const SupplyChainModule: React.FC = () => {
                 <button type="button" onClick={() => setPoToPay(null)} className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer">
                   {'Cancel'}
                 </button>
-                <button type="submit" disabled={poPayAmount <= 0} className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 cursor-pointer">
+                <button type="submit" disabled={poPayAmount <= 0 || poPayAmount > selectedPoBal} className={`px-5 py-2 text-white rounded-xl text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 ${
+                  poPayAmount > selectedPoBal
+                    ? 'bg-slate-400 cursor-not-allowed opacity-60'
+                    : 'bg-emerald-600 hover:bg-emerald-700 cursor-pointer'
+                }`}>
                   <CheckCircle2 className="w-3.5 h-3.5"/>
-                  <span>{'Confirm Bill Payment'}</span>
+                  <span>{poPayAmount > selectedPoBal ? 'Insufficient Account Balance' : 'Confirm Bill Payment'}</span>
                 </button>
               </div>
             </form>

@@ -2,12 +2,77 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { StaffMember, UserRole, StaffRole, PaymentMethodConfig, PaymentMethodType } from '../types';
 import { ALL_SYSTEM_PERMISSIONS, ALL_SYSTEM_PERMISSIONS as SYSTEM_PERMISSIONS } from '../data/accountingAndConfigData';
-import { Users, Shield, KeyRound, Trash2, Plus, Edit2, CheckCircle2, AlertTriangle, AlertCircle, RotateCcw, Building2, Factory, Mail, Phone, Search, Lock, Eye, EyeOff, SlidersHorizontal, FolderSync, FileSpreadsheet, AlertOctagon, CheckSquare, Square, Sparkles, Server, Globe, ExternalLink, Cpu, HardDrive, ShieldCheck, Zap, CreditCard, Landmark, Smartphone, Save, Copy, Check, Star, Banknote, X, Wallet, } from 'lucide-react';
+import { Users, Shield, KeyRound, Trash2, Plus, Edit2, CheckCircle2, AlertTriangle, AlertCircle, RotateCcw, Building2, Factory, Mail, Phone, Search, Lock, Eye, EyeOff, SlidersHorizontal, FolderSync, FileSpreadsheet, AlertOctagon, CheckSquare, Square, Sparkles, Server, Globe, ExternalLink, Cpu, HardDrive, ShieldCheck, Zap, CreditCard, Landmark, Smartphone, Save, Copy, Check, Star, Banknote, X, Wallet, Database, Printer, Cloud, RefreshCw, Upload, Download, ArrowRight, MapPin, } from 'lucide-react';
 import { getPaymentMethodLiveBalance, getBankAccountsBreakdown } from '../utils/accountUtils';
-export const SettingsModule: React.FC = () => {
-    const { staffMembers = [], userRoles = [], activeStaff, setActiveStaff, language, profile, updateProfile, paymentMethods = [], accountBalances, chartOfAccounts = [], transactions = [], invoices = [], addPaymentMethod, updatePaymentMethod, deletePaymentMethod, togglePaymentMethod, setDefaultPaymentMethod, addAuditLog, addStaffMember, updateStaffMember, deleteStaffMember, addUserRole, updateUserRole, deleteUserRole, cleanModuleData, resetToDefaultData, checkPermission, } = useApp();
-    const [activeTab, setActiveTab] = useState<'users' | 'roles' | 'payment-gateways' | 'data-clean' | 'system'>('users');
+import { BrandLogo } from './BrandLogo';
+import { PrinterBridgeModal } from './PrinterBridgeModal';
+import { checkHardwareAgentStatus, HardwareAgentStatus } from '../utils/hardwarePrint';
+interface SettingsModuleProps {
+    onNavigateTab?: (tab: string) => void;
+}
+export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab }) => {
+    const { staffMembers = [], userRoles = [], activeStaff, setActiveStaff, language, profile, updateProfile, paymentMethods = [], accountBalances, chartOfAccounts = [], transactions = [], invoices = [], products = [], addPaymentMethod, updatePaymentMethod, deletePaymentMethod, togglePaymentMethod, setDefaultPaymentMethod, addAuditLog, addStaffMember, updateStaffMember, deleteStaffMember, addUserRole, updateUserRole, deleteUserRole, cleanModuleData, resetToDefaultData, checkPermission, exportDatabase, importDatabase, syncWithCloud, cloudSyncStatus, isCloudConnected, lastSyncedAt, } = useApp();
+    const [activeTab, setActiveTab] = useState<'users' | 'roles' | 'payment-gateways' | 'system-tools' | 'data-clean' | 'system'>('users');
     const [searchQuery, setSearchQuery] = useState('');
+    const [printerStatus, setPrinterStatus] = useState<HardwareAgentStatus>({ isOnline: false });
+    const [showPrinterBridgeModal, setShowPrinterBridgeModal] = useState(false);
+    const [showInfoModal, setShowInfoModal] = useState(false);
+    const [importStatus, setImportStatus] = useState<string | null>(null);
+
+    useEffect(() => {
+        let isMounted = true;
+        const fetchPrinterStatus = async () => {
+            try {
+                const s = await checkHardwareAgentStatus();
+                if (isMounted)
+                    setPrinterStatus(s);
+            }
+            catch {
+                if (isMounted)
+                    setPrinterStatus({ isOnline: false });
+            }
+        };
+        fetchPrinterStatus();
+        const interval = setInterval(fetchPrinterStatus, 6000);
+        return () => {
+            isMounted = false;
+            clearInterval(interval);
+        };
+    }, []);
+
+    const lowStockCount = (products || []).filter((p) => (p.stockFactory || 0) + (p.stockOffice || 0) <= (p.minStockAlert || 5)).length;
+
+    const handleExport = () => {
+        const dataStr = exportDatabase();
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `dot-color-erp-backup-${new Date().toISOString().slice(0, 10)}.json`;
+        link.click();
+        URL.revokeObjectURL(url);
+    };
+
+    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file)
+            return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const content = event.target?.result as string;
+            const ok = importDatabase(content);
+            if (ok) {
+                setImportStatus('success');
+                syncWithCloud?.({ forcePush: true });
+                setTimeout(() => setImportStatus(null), 4000);
+            }
+            else {
+                setImportStatus('error');
+                setTimeout(() => setImportStatus(null), 4000);
+            }
+        };
+        reader.readAsText(file);
+    };
     // User modal states
     const [showUserModal, setShowUserModal] = useState(false);
     const [editingStaff, setEditingStaff] = useState<StaffMember | null>(null);
@@ -37,21 +102,15 @@ export const SettingsModule: React.FC = () => {
     // Data cleanup modal state
     const [cleanConfirmModule, setCleanConfirmModule] = useState<string | null>(null);
     const [cleanFeedback, setCleanFeedback] = useState<string | null>(null);
-    const isSuperUser = (activeStaff?.role || '').toLowerCase().includes('admin') ||
-        (activeStaff?.role || '').toLowerCase().includes('director') ||
+    const isSuperUser = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
         (activeStaff?.name || '').toLowerCase().includes('super admin');
-    const canManageUsers = checkPermission('settings.manage_users') ||
-        checkPermission('SETTINGS_MANAGE_USERS') ||
-        isSuperUser;
-    const canManageRoles = checkPermission('settings.manage_roles') ||
-        checkPermission('SETTINGS_MANAGE_ROLES') ||
-        isSuperUser;
-    const canCleanData = checkPermission('settings.clean_data') ||
-        checkPermission('SETTINGS_CLEAN_DATA') ||
-        isSuperUser;
-    const canManagePayments = checkPermission('settings.manage_payments') ||
-        checkPermission('settings.view') ||
-        isSuperUser;
+    const canManageUsers = isSuperUser || checkPermission('settings.manage_users') ||
+        checkPermission('SETTINGS_MANAGE_USERS');
+    const canManageRoles = isSuperUser || checkPermission('settings.manage_roles') ||
+        checkPermission('SETTINGS_MANAGE_ROLES');
+    const canCleanData = isSuperUser || checkPermission('settings.clean_data') ||
+        checkPermission('SETTINGS_CLEAN_DATA');
+    const canManagePayments = isSuperUser || checkPermission('settings.manage_payments');
     const [paymentFormData, setPaymentFormData] = useState({
         bankName: profile.bankName || '',
         bankAccount: profile.bankAccount || '',
@@ -390,7 +449,7 @@ export const SettingsModule: React.FC = () => {
             name: '',
             nameBn: '',
             description: '',
-            permissions: ['POS_CREATE_INVOICE', 'SALES_VIEW_LIST', 'INVENTORY_VIEW_LIST'],
+            permissions: ['pos.view', 'pos.create_sale', 'sales.view', 'inventory.view'],
         });
         setEditingRole(null);
         setShowRoleModal(true);
@@ -580,12 +639,22 @@ export const SettingsModule: React.FC = () => {
             </span>
           </button>)}
 
-        <button type="button" id="tab-settings-dataclean" onClick={() => setActiveTab('data-clean')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all ${activeTab === 'data-clean'
+        <button type="button" id="tab-settings-tools" onClick={() => setActiveTab('system-tools')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer ${activeTab === 'system-tools'
+            ? 'bg-amber-600 text-white shadow-xs'
+            : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-amber-700 border border-slate-200'}`}>
+          <Database className="w-4 h-4 text-amber-500"/>
+          <span>{'Backup, Hardware & Tools'}</span>
+          {lowStockCount > 0 && (<span className="px-1.5 py-0.5 rounded-full text-[9px] font-black bg-rose-100 text-rose-700 border border-rose-200">
+              {lowStockCount} Low
+            </span>)}
+        </button>
+
+        {canCleanData && (<button type="button" id="tab-settings-dataclean" onClick={() => setActiveTab('data-clean')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all ${activeTab === 'data-clean'
             ? 'bg-rose-700 text-white shadow-xs'
             : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-rose-700 border border-slate-200'}`}>
           <Trash2 className="w-4 h-4"/>
           <span>{'Module Data Clean'}</span>
-        </button>
+        </button>)}
 
         <button type="button" id="tab-settings-system" onClick={() => setActiveTab('system')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all ${activeTab === 'system'
             ? 'bg-gradient-to-r from-blue-700 to-indigo-700 text-white shadow-xs'
@@ -960,7 +1029,7 @@ export const SettingsModule: React.FC = () => {
                 { id: 'cash', label: 'Cash in Hand', count: paymentMethods.filter((p) => p.type === 'cash').length },
                 { id: 'mfs', label: 'Mobile Banking (MFS)', count: paymentMethods.filter((p) => p.type === 'mfs').length },
                 { id: 'bank', label: 'Bank Wire Transfer', count: paymentMethods.filter((p) => p.type === 'bank').length },
-                { id: 'credit', label: 'Customer Due / Credit', count: paymentMethods.filter((p) => p.name.toLowerCase().includes('due') || p.name.toLowerCase().includes('credit') || p.type === 'cheque').length || 1 },
+                { id: 'credit', label: 'Customer Due / Credit', count: paymentMethods.filter((p) => p.name.toLowerCase().includes('due') || p.name.toLowerCase().includes('credit') || p.type === 'cheque').length },
                 { id: 'gateway', label: 'Bangla QR (Universal QR)', count: paymentMethods.filter((p) => p.type === 'gateway' || p.name.toLowerCase().includes('qr') || p.name.toLowerCase().includes('ssl')).length },
             ].map((tab) => {
                 const isActive = paymentFilterType === tab.id;
@@ -1658,7 +1727,7 @@ export const SettingsModule: React.FC = () => {
         </div>)}
 
       {/* TAB 3: MODULE DATA CLEAN & PURGE */}
-      {activeTab === 'data-clean' && (<div className="space-y-4">
+      {activeTab === 'data-clean' && canCleanData && (<div className="space-y-4">
           <div className="bg-rose-50 border border-rose-200 p-4 rounded-2xl flex items-start gap-3">
             <AlertOctagon className="w-5 h-5 text-rose-600 shrink-0 mt-0.5"/>
             <div>
@@ -1958,6 +2027,303 @@ export const SettingsModule: React.FC = () => {
           </div>
         </div>)}
 
+      {/* TAB: BACKUP, HARDWARE & TOOLS */}
+      {activeTab === 'system-tools' && (
+        <div className="space-y-6">
+          {/* Top Banner / Summary */}
+          <div className="bg-gradient-to-r from-amber-900 via-slate-900 to-amber-950 p-6 rounded-3xl text-white shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border border-amber-900/40">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-amber-400 font-bold text-xs uppercase tracking-wider">
+                <Database className="w-4 h-4" />
+                <span>{'System Utilities & Hardware Integration'}</span>
+              </div>
+              <h3 className="text-xl sm:text-2xl font-black">{'Backup, Hardware Agent & Warehouse Tools'}</h3>
+              <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
+                {'Manage local ERP data backups, cloud synchronization, POS 80mm thermal receipt bridge, central warehouse locations, and company contact credentials.'}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleExport}
+                className="flex items-center gap-2 px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-bold text-xs shadow-xs transition-all cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                <span>{'Download Backup (.JSON)'}</span>
+              </button>
+              <label className="flex items-center gap-2 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl font-bold text-xs border border-white/20 transition-all cursor-pointer">
+                <Upload className="w-4 h-4" />
+                <span>{'Upload & Restore'}</span>
+                <input type="file" accept=".json" onChange={handleFileUpload} className="hidden" />
+              </label>
+            </div>
+          </div>
+
+          {/* Quick Metrics & Hardware Status Grid (4 Cards) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Card 1: Central Warehouse & Locations */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+                  <Building2 className="w-5 h-5" />
+                </div>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  {'Active'}
+                </span>
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-slate-900">{'Central Warehouse'}</h4>
+                <p className="text-xs text-slate-500 mt-0.5">{'Head Office & Central Storage'}</p>
+              </div>
+              <div className="pt-2 border-t border-slate-100 space-y-1 text-[11px] text-slate-600">
+                <div className="flex items-center gap-1.5">
+                  <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <span className="truncate">{profile.officeAddress || 'Shyamoli Ring Road, Dhaka'}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Factory className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  <span className="truncate">{profile.factoryAddress || 'Baitul Aman, Adabor, Dhaka'}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Card 2: Low Stock Monitor */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${lowStockCount > 0 ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${lowStockCount > 0 ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                  {lowStockCount > 0 ? `${lowStockCount} Low Items` : 'Stock Healthy'}
+                </span>
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-slate-900">{'Low Stock Health Alert'}</h4>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {lowStockCount > 0 ? `${lowStockCount} items below threshold` : 'All materials at safe levels'}
+                </p>
+              </div>
+              <div className="pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => onNavigateTab ? onNavigateTab('inventory') : undefined}
+                  className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                >
+                  <span>{'View in Inventory'}</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Card 3: POS Thermal Printer Hardware Bridge */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${printerStatus.isOnline ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                  <Printer className="w-5 h-5" />
+                </div>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black border flex items-center gap-1 ${printerStatus.isOnline ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${printerStatus.isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`}></span>
+                  {printerStatus.isOnline ? 'Bridge OK' : 'Offline'}
+                </span>
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-slate-900">{'POS Thermal Printer'}</h4>
+                <p className="text-xs text-slate-500 mt-0.5 truncate">
+                  {printerStatus.isOnline ? (printerStatus.activePrinter || '80mm Hardware Agent') : '127.0.0.1:8089 bridge'}
+                </p>
+              </div>
+              <div className="pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowPrinterBridgeModal(true)}
+                  className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>{'Configure / Test Print'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Card 4: MongoDB Atlas Cloud Sync */}
+            <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+              <div className="flex items-center justify-between">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${isCloudConnected ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-600'}`}>
+                  <Cloud className="w-5 h-5" />
+                </div>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${isCloudConnected ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                  {cloudSyncStatus === 'syncing' ? 'Syncing...' : isCloudConnected ? 'Cloud Active' : 'Offline'}
+                </span>
+              </div>
+              <div>
+                <h4 className="font-bold text-sm text-slate-900">{'Cloud Sync Status'}</h4>
+                <p className="text-xs text-slate-500 mt-0.5 truncate">
+                  {lastSyncedAt ? `Last: ${new Date(lastSyncedAt).toLocaleTimeString()}` : 'MongoDB Atlas Sync'}
+                </p>
+              </div>
+              <div className="pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => syncWithCloud?.({ forcePush: true })}
+                  disabled={cloudSyncStatus === 'syncing'}
+                  className="w-full flex items-center justify-center gap-1.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-bold transition-colors cursor-pointer disabled:opacity-60"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${cloudSyncStatus === 'syncing' ? 'animate-spin' : ''}`} />
+                  <span>{cloudSyncStatus === 'syncing' ? 'Syncing...' : 'Sync Now'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Database Backup & Restore Detailed Box */}
+          <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-2xs space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-amber-500/10 text-amber-600 flex items-center justify-center">
+                  <Database className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-slate-900 text-base">{'ERP Database Backup & JSON Restore'}</h3>
+                  <p className="text-xs text-slate-500">
+                    {'Export offline snapshots or restore complete database states with zero data loss.'}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleExport}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold text-xs shadow-xs transition-all cursor-pointer"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>{'Download Backup (.JSON)'}</span>
+                </button>
+                <label className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl font-bold text-xs shadow-xs transition-all cursor-pointer">
+                  <Upload className="w-4 h-4" />
+                  <span>{'Upload & Restore'}</span>
+                  <input type="file" accept=".json" onChange={handleFileUpload} className="hidden" />
+                </label>
+              </div>
+            </div>
+
+            {importStatus === 'success' && (
+              <div className="flex items-center gap-2 text-xs font-bold text-emerald-700 bg-emerald-50 p-3 rounded-xl border border-emerald-200 animate-in fade-in">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{'Data restored & saved successfully into database! Cloud sync triggered.'}</span>
+              </div>
+            )}
+
+            {importStatus === 'error' && (
+              <div className="flex items-center gap-2 text-xs font-bold text-rose-700 bg-rose-50 p-3 rounded-xl border border-rose-200 animate-in fade-in">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{'Invalid backup JSON format! Please supply a valid DotColor ERP backup file.'}</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-slate-600">
+              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-1.5">
+                <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <Download className="w-3.5 h-3.5 text-amber-600" />
+                  {'Instant Offline Backup'}
+                </span>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  {'Downloads all invoices, inventory products, journal entries, accounting ledgers, customers, and user configurations as a JSON file.'}
+                </p>
+              </div>
+              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-1.5">
+                <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <Upload className="w-3.5 h-3.5 text-blue-600" />
+                  {'Safe Restoration'}
+                </span>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  {'Select any previous JSON file to restore the entire ERP database instantly without restarting the application.'}
+                </p>
+              </div>
+              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-1.5">
+                <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <RotateCcw className="w-3.5 h-3.5 text-rose-600" />
+                  {'Factory Baseline'}
+                </span>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  {'Reset the database back to clean baseline defaults if you wish to start afresh or test cleanly.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleFactoryReset}
+                  className="mt-2 inline-flex items-center gap-1 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg font-bold text-[11px] border border-rose-200 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>{'Reset to Demo Data'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* POS Hardware & Company Info Section (2 Columns) */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            {/* POS 80mm Thermal Hardware Bridge */}
+            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-2xs space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2.5">
+                  <Printer className="w-5 h-5 text-amber-600" />
+                  <h4 className="font-extrabold text-slate-900 text-sm">{'POS 80mm Thermal Printer Bridge'}</h4>
+                </div>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black border ${printerStatus.isOnline ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+                  {printerStatus.isOnline ? 'Active on port 8089' : 'Service Offline'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                {'Connects directly to local thermal receipt printers via the lightweight background hardware bridge agent at'} <code className="font-mono bg-slate-100 px-1 py-0.5 rounded text-amber-800">http://127.0.0.1:8089</code> {'for one-click silent printing and paper auto-cut.'}
+              </p>
+              <div className="flex items-center gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowPrinterBridgeModal(true)}
+                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>{'Open Hardware Bridge Manager'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Company & Contact Profile Quick View */}
+            <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-2xs space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2.5">
+                  <Building2 className="w-5 h-5 text-slate-800" />
+                  <h4 className="font-extrabold text-slate-900 text-sm">{'Company Contact & Details'}</h4>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowInfoModal(true)}
+                  className="text-xs font-bold text-amber-700 hover:underline cursor-pointer"
+                >
+                  {'View Details Modal ↗'}
+                </button>
+              </div>
+              <div className="space-y-2 text-xs text-slate-700">
+                <div className="flex items-center gap-2">
+                  <Phone className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{'Hotline:'} <strong className="text-slate-900">{profile.phone || '01846100900'}</strong></span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Mail className="w-4 h-4 text-blue-600 shrink-0" />
+                  <span>{'Email:'} <span className="text-slate-600">{profile.emails?.join(', ') || 'info@dotcolorcommunication.com'}</span></span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Building2 className="w-4 h-4 text-slate-500 shrink-0" />
+                  <span>{'Office:'} <span className="text-slate-600">{profile.officeAddress || 'Shyamoli Ring Road, Dhaka'}</span></span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Factory className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>{'Factory:'} <span className="text-slate-600">{profile.factoryAddress || 'Baitul Aman Housing, Adabor, Dhaka'}</span></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Clean Confirmation Modal */}
       {cleanConfirmModule && (<div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-in fade-in zoom-in duration-150">
@@ -2216,5 +2582,128 @@ export const SettingsModule: React.FC = () => {
             </div>
           </form>
         </div>)}
+
+      {/* Thermal Printer Hardware Bridge Modal */}
+      <PrinterBridgeModal
+        isOpen={showPrinterBridgeModal}
+        onClose={() => {
+          setShowPrinterBridgeModal(false);
+          checkHardwareAgentStatus().then(setPrinterStatus).catch(() => {});
+        }}
+      />
+
+      {/* Info & Contact Modal */}
+      {showInfoModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-start justify-between pb-3 border-b border-slate-100">
+              <BrandLogo size="md" showTagline={true} />
+              <button
+                type="button"
+                onClick={() => setShowInfoModal(false)}
+                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="py-4 space-y-4 text-xs text-slate-700">
+              <div className="bg-amber-50/60 p-3 rounded-xl border border-amber-200/80">
+                <span className="font-bold text-amber-900 text-sm block">
+                  {profile?.name || 'DotColorCommunication Sales, POS & ERP'}
+                </span>
+                <p className="text-slate-600 mt-1 leading-relaxed">
+                  {profile?.tagline || 'YOUR VISION, OUR CREATION!'} —{' '}
+                  {profile?.category ||
+                    'Premier digital printing, 3D signage, corporate promotional merchandise, and custom ERP solution provider.'}
+                </p>
+              </div>
+
+              <div className="space-y-2.5">
+                <div className="flex items-start gap-2.5">
+                  <Factory className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="text-slate-900 block font-semibold">{'FACTORY:'}</strong>
+                    <span className="text-slate-600">{profile.factoryAddress}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-2.5">
+                  <Building2 className="w-4 h-4 text-slate-800 shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="text-slate-900 block font-semibold">{'OFFICE:'}</strong>
+                    <span className="text-slate-600">{profile.officeAddress}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2.5">
+                  <Phone className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <div>
+                    <strong className="text-slate-900 inline font-semibold">{'Hotline:'} </strong>
+                    <a href={`tel:${profile.phone}`} className="text-amber-700 font-bold hover:underline">
+                      {profile.phone}
+                    </a>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2.5">
+                  <Mail className="w-4 h-4 text-blue-600 shrink-0" />
+                  <div>
+                    <strong className="text-slate-900 inline font-semibold">{'Emails:'} </strong>
+                    <span className="text-slate-600">{profile.emails?.join(' • ') || ''}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Dedicated BD HOSTT Technology Partner Advertising Card */}
+              <div className="bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 p-4 rounded-2xl text-white shadow-xs border border-blue-900/50 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-bold tracking-widest uppercase bg-blue-500/20 text-blue-300 border border-blue-400/30 px-2.5 py-0.5 rounded-full">
+                    TECHNOLOGY &amp; IT PARTNER
+                  </span>
+                  <span className="text-[10px] font-semibold text-amber-400">
+                    ★ Certified IT Solutions
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-sm font-black text-white">BD HOSTT</h4>
+                  <a
+                    href="https://www.bdhost.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs font-bold text-blue-400 hover:text-blue-300 underline"
+                  >
+                    www.bdhost.com ↗
+                  </a>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-relaxed">
+                  Web Hosting, Domain Registration, High-Performance VPS, Enterprise POS &amp; ERP Solutions.
+                </p>
+                <div className="pt-2 border-t border-white/10 flex items-center justify-between text-[11px] text-slate-300">
+                  <span>
+                    Hotline: <strong className="text-white">01846100900</strong>
+                  </span>
+                  <a
+                    href="tel:01846100900"
+                    className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-[10px] transition-colors"
+                  >
+                    Call BD HOSTT
+                  </a>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowInfoModal(false)}
+                className="text-xs font-semibold px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 cursor-pointer"
+              >
+                {'OK'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>);
 };

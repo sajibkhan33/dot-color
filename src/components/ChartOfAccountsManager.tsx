@@ -25,7 +25,7 @@ export const ChartOfAccountsManager: React.FC = () => {
         openingBalance: 0,
         description: '',
     });
-    const canManageCOA = checkPermission('accounting.chart_of_accounts') || checkPermission('ACCOUNTING_MANAGE_COA') || true;
+    const canManageCOA = checkPermission('accounting.chart_of_accounts') || checkPermission('ACCOUNTING_MANAGE_COA');
 
     // Real-time dynamic Chart of Accounts synced with Ledger Transactions, Projects & Balances
     const liveAccounts = useMemo(() => {
@@ -723,49 +723,12 @@ export const ChartOfAccountsManager: React.FC = () => {
         </div>
       </div>
 
-      {/* Projects Integration Status Bar */}
-      {(() => {
-        const projectRevAcc = chartOfAccounts.find(a => a.classification === 'Revenue' && (a.code === '4002' || a.code === '4051' || a.code === '4060' || a.id === 'coa-4002' || a.name.toLowerCase().includes('project'))) || { code: '4002', name: 'Project Sales' };
-        const projectExpAcc = chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5206' || a.code === '5300' || a.id === 'coa-5206' || a.name.toLowerCase().includes('project'))) || { code: '5206', name: 'Project Expense' };
-        const totalSales = (projects || []).reduce((s, p) => s + (p.totalSales || 0), 0);
-        const totalExpenses = (projects || []).reduce((s, p) => s + (p.totalExpenses || 0), 0);
-
-        return (
-          <div className="bg-emerald-50/80 border border-emerald-200 p-3 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2 text-emerald-900 font-bold">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              <span>
-                Projects Dynamic Alignment: {(projects || []).length} Synced • 
-                Project Sales: {profile.currencySymbol}{totalSales.toLocaleString()} ([{projectRevAcc.code}] {projectRevAcc.name}) | 
-                Project Expenses: {profile.currencySymbol}{totalExpenses.toLocaleString()} ([{projectExpAcc.code}] {projectExpAcc.name}) • 
-                <span className="text-emerald-950 font-black ml-1">Total System Revenue: {profile.currencySymbol}{stats.totalRevenue.toLocaleString()}</span>
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                if (syncProjectsWithAccounting) {
-                  const res = syncProjectsWithAccounting();
-                  setSyncSuccessMsg(`Synced ${res.salesSynced} project sales & ${res.expensesSynced} expenses to Chart of Accounts (Tk ${res.totalAmount.toLocaleString()})`);
-                  setTimeout(() => setSyncSuccessMsg(null), 4000);
-                }
-              }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg font-bold text-xs shadow-2xs transition-all cursor-pointer shrink-0"
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span>Sync All Projects to COA</span>
-            </button>
-          </div>
-        );
-      })()}
-
+      {/* Floating Sync Toaster (Auto-dismisses in 1.5s) */}
       {syncSuccessMsg && (
-        <div className="p-3 bg-emerald-100 border border-emerald-300 rounded-xl text-xs font-bold text-emerald-900 flex items-center justify-between animate-fade-in">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-700" />
-            <span>{syncSuccessMsg}</span>
-          </div>
-          <button type="button" onClick={() => setSyncSuccessMsg(null)} className="text-emerald-700 hover:text-emerald-900">✕</button>
+        <div className="fixed top-20 right-6 z-50 bg-emerald-900/95 backdrop-blur-md text-white px-4 py-3 rounded-2xl shadow-2xl border border-emerald-500/40 flex items-center gap-2.5 text-xs font-bold animate-in fade-in slide-in-from-top-4 transition-all duration-300">
+          <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
+          <span>{syncSuccessMsg}</span>
+          <button type="button" onClick={() => setSyncSuccessMsg(null)} className="ml-2 text-emerald-300 hover:text-white font-bold text-sm cursor-pointer">✕</button>
         </div>
       )}
 
@@ -789,6 +752,22 @@ export const ChartOfAccountsManager: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
+          <button
+            type="button"
+            onClick={() => {
+              if (syncProjectsWithAccounting) {
+                const res = syncProjectsWithAccounting();
+                setSyncSuccessMsg(`Projects Aligned: ${res.salesSynced} sales & ${res.expensesSynced} expenses synced (Tk ${res.totalAmount.toLocaleString()})`);
+                setTimeout(() => setSyncSuccessMsg(null), 1500);
+              }
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-emerald-300 bg-emerald-50 text-emerald-800 rounded-xl hover:bg-emerald-100 transition-all cursor-pointer shadow-2xs"
+            title="Click to dynamically synchronize all projects with Chart of Accounts"
+          >
+            <Layers className="w-3.5 h-3.5 text-emerald-600"/>
+            <span>{'Sync Projects'}</span>
+          </button>
+
           <input type="file" accept=".xlsx, .xls, .csv" id="coa-upload" className="hidden" onChange={handleImportExcel}/>
           <label htmlFor="coa-upload" className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 cursor-pointer">
             <Upload className="w-3.5 h-3.5"/>

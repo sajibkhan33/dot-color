@@ -73,20 +73,61 @@ const MainLayout: React.FC = () => {
         isPadMode: false,
     });
     const { profile, activeStaff, language, checkPermission } = useApp();
-    const canAccessSettings = (activeStaff?.role || '').toLowerCase().includes('admin') ||
-        (activeStaff?.role || '').toLowerCase().includes('director') ||
-        Boolean(checkPermission &&
+    const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.name || '').toLowerCase().includes('super admin');
+
+    const canAccessSettings = isSuperAdmin || Boolean(
+        checkPermission &&
             (checkPermission('settings.view') ||
                 checkPermission('settings.manage_users') ||
-                checkPermission('SETTINGS_MANAGE_USERS') ||
-                checkPermission('settings.manage_payments') ||
-                checkPermission('settings.manage_roles')));
-    // Guard: If non-admin user lands on 'settings', redirect them to 'pos'
+                checkPermission('settings.manage_roles') ||
+                checkPermission('settings.clean_data') ||
+                checkPermission('settings.backup_restore') ||
+                checkPermission('settings.manage_payments'))
+    );
+
+    const canAccessPOS = isSuperAdmin || Boolean(checkPermission && checkPermission('pos.view'));
+    const canAccessSales = isSuperAdmin || Boolean(checkPermission && checkPermission('sales.view'));
+    const canAccessInventory = isSuperAdmin || Boolean(checkPermission && checkPermission('inventory.view'));
+    const canAccessSupply = isSuperAdmin || Boolean(checkPermission && checkPermission('supply.view'));
+    const canAccessProjects = isSuperAdmin || Boolean(checkPermission && (checkPermission('sales.view') || checkPermission('pos.view')));
+    const canAccessAccounting = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.view'));
+    const canAccessReports = isSuperAdmin || Boolean(checkPermission && (checkPermission('accounting.export_reports') || checkPermission('accounting.view') || checkPermission('sales.view')));
+
+    // Determine first permitted tab for redirection if current tab is not allowed
+    const isTabPermitted = (tab: string): boolean => {
+        if (isSuperAdmin) return true;
+        if (tab === 'pos') return canAccessPOS;
+        if (tab === 'sales') return canAccessSales;
+        if (tab === 'inventory') return canAccessInventory;
+        if (tab === 'supply') return canAccessSupply;
+        if (tab === 'projects') return canAccessProjects;
+        if (tab === 'accounting') return canAccessAccounting;
+        if (tab === 'reports') return canAccessReports;
+        if (tab === 'settings') return canAccessSettings;
+        if (tab === 'profile') return true;
+        return true;
+    };
+
+    const getFirstPermittedTab = (): string => {
+        if (canAccessPOS) return 'pos';
+        if (canAccessSales) return 'sales';
+        if (canAccessInventory) return 'inventory';
+        if (canAccessSupply) return 'supply';
+        if (canAccessAccounting) return 'accounting';
+        if (canAccessProjects) return 'projects';
+        if (canAccessReports) return 'reports';
+        if (canAccessSettings) return 'settings';
+        return 'profile';
+    };
+
+    // Guard: If user lands on an unauthorized tab, redirect them to first permitted tab
     useEffect(() => {
-        if (activeTab === 'settings' && !canAccessSettings) {
-            setActiveTab('pos');
+        if (!isTabPermitted(activeTab)) {
+            const nextTab = getFirstPermittedTab();
+            setActiveTab(nextTab);
         }
-    }, [activeTab, canAccessSettings]);
+    }, [activeTab, canAccessPOS, canAccessSales, canAccessInventory, canAccessSupply, canAccessProjects, canAccessAccounting, canAccessReports, canAccessSettings]);
     // Sync document title with company profile name
     useEffect(() => {
         if (profile?.name) {
@@ -170,14 +211,14 @@ const MainLayout: React.FC = () => {
 
       {/* Main View Area */}
       <main className="flex-1 pb-12">
-        {activeTab === 'pos' && (<POSModule onOpenInvoiceModal={handleOpenInvoice}/>)}
-        {activeTab === 'sales' && (<SalesModule onOpenInvoiceModal={handleOpenInvoice} onOpenChallanModal={handleOpenChallan}/>)}
-        {activeTab === 'inventory' && <InventoryModule />}
-        {activeTab === 'supply' && <SupplyChainModule />}
-        {activeTab === 'projects' && <ProjectManagementModule />}
-        {activeTab === 'accounting' && <AccountingModule />}
-        {activeTab === 'reports' && <ReportModule />}
-        {activeTab === 'settings' && canAccessSettings && <SettingsModule />}
+        {activeTab === 'pos' && canAccessPOS && (<POSModule onOpenInvoiceModal={handleOpenInvoice}/>)}
+        {activeTab === 'sales' && canAccessSales && (<SalesModule onOpenInvoiceModal={handleOpenInvoice} onOpenChallanModal={handleOpenChallan}/>)}
+        {activeTab === 'inventory' && canAccessInventory && <InventoryModule />}
+        {activeTab === 'supply' && canAccessSupply && <SupplyChainModule />}
+        {activeTab === 'projects' && canAccessProjects && <ProjectManagementModule onOpenInvoiceModal={handleOpenInvoice} />}
+        {activeTab === 'accounting' && canAccessAccounting && <AccountingModule />}
+        {activeTab === 'reports' && canAccessReports && <ReportModule />}
+        {activeTab === 'settings' && canAccessSettings && <SettingsModule onNavigateTab={setActiveTab} />}
         {activeTab === 'profile' && <CompanyProfileModule />}
       </main>
 

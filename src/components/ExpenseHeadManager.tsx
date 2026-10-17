@@ -10,7 +10,7 @@ export const ExpenseHeadManager: React.FC = () => {
     const [editingHead, setEditingHead] = useState<ExpenseHead | null>(null);
     const [viewingHead, setViewingHead] = useState<ExpenseHead | null>(null);
     const [deleteError, setDeleteError] = useState<string | null>(null);
-    const canManageExpenses = checkPermission('accounting.manage_expense_heads') || checkPermission('ACCOUNTING_EXPENSE_HEADS') || true;
+    const canManageExpenses = checkPermission('accounting.manage_expense_heads') || checkPermission('ACCOUNTING_EXPENSE_HEADS');
     // Form state
     const [formData, setFormData] = useState({
         code: '',

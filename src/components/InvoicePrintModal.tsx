@@ -26,47 +26,67 @@ interface InvoicePageData {
     isLastPage: boolean;
 }
 
-const estimateInvoiceItemHeight = (item: any): number => {
-    let h = 27;
-    if (item.name && item.name.length > 45) {
-        h += Math.min(28, Math.floor((item.name.length - 45) / 35 + 1) * 14);
+const estimateInvoiceItemHeight = (item: any, hasExtraCols: boolean = false): number => {
+    // Base row height with py-2 (16px vertical padding) + text-xs line-height (16px) + 1px border = 33-37px
+    let h = 36;
+    const nameLen = (item.name || '').length;
+    // When Type/Region columns are visible, description column width is ~275px instead of ~370px
+    const charThreshold = hasExtraCols ? 26 : 35;
+    if (nameLen > charThreshold) {
+        h += Math.min(48, Math.ceil((nameLen - charThreshold) / (charThreshold - 2)) * 16);
     }
     if (Boolean(item.totalSqft && item.width && item.height)) {
-        h += 16;
+        h += 18;
     }
     if (item.notes && item.notes.trim()) {
-        h += item.notes.trim().length > 45 ? 28 : 16;
+        const noteLen = item.notes.trim().length;
+        h += noteLen > charThreshold ? 30 : 16;
     }
     return h;
 };
 
 const getPageCapacities = (invoice?: any, isPadMode?: boolean, padTopMarginMm?: number) => {
-    const totalUsableHeight = 1060;
+    // Total usable height of an A4 sheet (1123px height - 64px padding p-8) = 1059px
+    const totalUsableHeight = 1059;
+
+    // Page 1 Header: Logo + Title Badge (~92px) + Gap (10px) + Customer Box (~135px) + Gap (18px)
     const p1HeaderHeight = isPadMode 
         ? Math.round((padTopMarginMm || 42) * 3.78) + 26 
-        : 118;
-    const customerBoxHeight = 115;
+        : 92;
+    const p1CustomerBoxHeight = 135;
+    const p1TopOverhead = p1HeaderHeight + 10 + p1CustomerBoxHeight + 18;
+
+    // Subsequent Pages Header: Logo + Title Badge (~92px) + Gap (16px) (Customer strip removed per user request)
     const subPageHeaderHeight = isPadMode
         ? Math.round((padTopMarginMm || 42) * 3.78) + 26
-        : 105;
-    const tableHeaderHeight = 28;
-    const contFooterHeight = 32;
+        : 92;
+    const subPageTopOverhead = subPageHeaderHeight + 16;
 
+    // Table Header row (thead tr py-2 + borders)
+    const tableHeaderHeight = 40;
+
+    // Footer on EVERY page:
+    // Signatures (45px) + System generated notice (16px) + Address/Phone/Email (42px) + padding/border (15px)
+    // (Continued on Page X... bar removed, saving vertical height)
+    const pageFooterHeight = isPadMode ? 65 : 115;
+
+    // Financial Totals and Remarks (on last page)
     let totalsBoxHeight = 90;
     if (invoice?.discount > 0) totalsBoxHeight += 14;
     if (invoice?.vatAmount > 0) totalsBoxHeight += 14;
-    if (invoice?.splitPayments) totalsBoxHeight += 20;
+    if (invoice?.splitPayments) totalsBoxHeight += 24;
     let remarksHeight = 0;
     if (invoice?.notes && invoice.notes.trim()) remarksHeight += 50;
     if (invoice?.jobSpecs && invoice.jobSpecs.trim()) remarksHeight += 35;
-    totalsBoxHeight = Math.max(totalsBoxHeight, remarksHeight) + 8;
+    totalsBoxHeight = Math.max(totalsBoxHeight, remarksHeight) + 12;
 
-    const lastPageFooterHeight = isPadMode ? 65 : 100;
+    // Safety buffer to ensure 100% no element or text clipping
+    const safetyBuffer = 30;
 
-    const maxSinglePageTableHeight = Math.max(200, totalUsableHeight - (p1HeaderHeight + 10 + customerBoxHeight + 16 + tableHeaderHeight + totalsBoxHeight + lastPageFooterHeight + 15));
-    const maxMultiP1TableHeight = Math.max(300, totalUsableHeight - (p1HeaderHeight + 10 + customerBoxHeight + 16 + tableHeaderHeight + contFooterHeight + 15));
-    const maxMiddleTableHeight = Math.max(400, totalUsableHeight - (subPageHeaderHeight + 16 + tableHeaderHeight + contFooterHeight + 15));
-    const maxLastPageTableHeight = Math.max(200, totalUsableHeight - (subPageHeaderHeight + 16 + tableHeaderHeight + totalsBoxHeight + lastPageFooterHeight + 15));
+    const maxSinglePageTableHeight = Math.max(180, totalUsableHeight - (p1TopOverhead + tableHeaderHeight + totalsBoxHeight + pageFooterHeight + safetyBuffer));
+    const maxMultiP1TableHeight = Math.max(280, totalUsableHeight - (p1TopOverhead + tableHeaderHeight + pageFooterHeight + safetyBuffer));
+    const maxMiddleTableHeight = Math.max(380, totalUsableHeight - (subPageTopOverhead + tableHeaderHeight + pageFooterHeight + safetyBuffer));
+    const maxLastPageTableHeight = Math.max(180, totalUsableHeight - (subPageTopOverhead + tableHeaderHeight + totalsBoxHeight + pageFooterHeight + safetyBuffer));
 
     return { maxSinglePageTableHeight, maxMultiP1TableHeight, maxMiddleTableHeight, maxLastPageTableHeight };
 };
@@ -75,7 +95,8 @@ const getInvoicePages = (
     items: any[],
     invoice?: any,
     isPadMode?: boolean,
-    padTopMarginMm?: number
+    padTopMarginMm?: number,
+    hasExtraCols: boolean = false
 ): InvoicePageData[] => {
     const safeItems = items || [];
     if (safeItems.length === 0) {
@@ -92,7 +113,7 @@ const getInvoicePages = (
     const { maxSinglePageTableHeight, maxMultiP1TableHeight, maxMiddleTableHeight, maxLastPageTableHeight } =
         getPageCapacities(invoice, isPadMode, padTopMarginMm);
 
-    const totalAllHeight = safeItems.reduce((acc, it) => acc + estimateInvoiceItemHeight(it), 0);
+    const totalAllHeight = safeItems.reduce((acc, it) => acc + estimateInvoiceItemHeight(it, hasExtraCols), 0);
     if (totalAllHeight <= maxSinglePageTableHeight) {
         return [{
             pageNumber: 1,
@@ -111,7 +132,7 @@ const getInvoicePages = (
     while (currentIndex < safeItems.length) {
         const isP1 = pages.length === 0;
         const remainingItems = safeItems.slice(currentIndex);
-        const remainingTotalHeight = remainingItems.reduce((acc, it) => acc + estimateInvoiceItemHeight(it), 0);
+        const remainingTotalHeight = remainingItems.reduce((acc, it) => acc + estimateInvoiceItemHeight(it, hasExtraCols), 0);
 
         if (!isP1 && remainingTotalHeight <= maxLastPageTableHeight) {
             pages.push({ items: remainingItems, startIndex: currentIndex });
@@ -123,7 +144,7 @@ const getInvoicePages = (
         let accumulatedHeight = 0;
 
         for (let i = 0; i < remainingItems.length; i++) {
-            const itemH = estimateInvoiceItemHeight(remainingItems[i]);
+            const itemH = estimateInvoiceItemHeight(remainingItems[i], hasExtraCols);
             if (accumulatedHeight + itemH <= pageMaxHeight) {
                 accumulatedHeight += itemH;
                 takeCount++;
@@ -303,8 +324,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
             isCancelled = true;
         };
     }, [invoiceId, realInvoice, quote, fetchedInvoice]);
-    // Adapt quotation into an invoice-like schema for rendering
-    const invoice: SalesInvoice | null = realInvoice || (quote ? {
+    // Adapt quotation or raw invoice into a robust normalized invoice schema for rendering
+    const rawResolvedInvoice: SalesInvoice | null = realInvoice || (quote ? {
         id: quote.id,
         invoiceNo: quote.quoteNo,
         referenceNo: quote.referenceNo,
@@ -340,6 +361,63 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
         showRegionColumn: quote.showRegionColumn,
         showTypeColumn: quote.showTypeColumn,
     } : null) || fetchedInvoice;
+
+    const invoice: SalesInvoice | null = React.useMemo(() => {
+        if (!rawResolvedInvoice) return null;
+        const grand = Number(rawResolvedInvoice.grandTotal ?? rawResolvedInvoice.subtotal ?? (rawResolvedInvoice as any).subTotal ?? 0) || 0;
+        const sub = Number(rawResolvedInvoice.subtotal ?? (rawResolvedInvoice as any).subTotal ?? grand) || 0;
+        const paid = Number(rawResolvedInvoice.paidAmount ?? 0) || 0;
+        const due = Number(rawResolvedInvoice.dueAmount ?? Math.max(0, grand - paid)) || 0;
+        const disc = Number(rawResolvedInvoice.discount ?? (rawResolvedInvoice as any).discountValue ?? 0) || 0;
+        const vatAmt = Number(rawResolvedInvoice.vatAmount ?? (rawResolvedInvoice as any).vatValue ?? 0) || 0;
+        const vatR = Number(rawResolvedInvoice.vatRate ?? 0) || 0;
+
+        let split = rawResolvedInvoice.splitPayments;
+        if (split && typeof split === 'object') {
+            const normalizedSplit: Record<string, number> = { ...split };
+            Object.entries(split).forEach(([k, v]) => {
+                const num = Number(v) || 0;
+                const lk = k.toLowerCase().replace(/[\s_-]/g, '');
+                if (lk === 'cash' || lk === 'cashinhand') {
+                    normalizedSplit.cash = (normalizedSplit.cash || 0) || num;
+                } else if (lk === 'card' || lk === 'bank' || lk.includes('bank')) {
+                    normalizedSplit.card = (normalizedSplit.card || 0) || num;
+                } else if (lk === 'bkash') {
+                    normalizedSplit.bkash = (normalizedSplit.bkash || 0) || num;
+                } else if (lk === 'nagad') {
+                    normalizedSplit.nagad = (normalizedSplit.nagad || 0) || num;
+                }
+            });
+            split = normalizedSplit;
+        }
+
+        const safeItems = Array.isArray(rawResolvedInvoice.items) ? rawResolvedInvoice.items.map((it: any) => {
+            const uPrice = Number(it.unitPrice ?? it.price ?? it.rate ?? 0) || 0;
+            const q = Number(it.qty ?? it.quantity ?? 1) || 1;
+            const tPrice = Number(it.totalPrice ?? it.total ?? (uPrice * q)) || 0;
+            return {
+                ...it,
+                name: it.name || 'Service / Item',
+                unit: it.unit || 'job',
+                unitPrice: uPrice,
+                qty: q,
+                totalPrice: tPrice,
+            };
+        }) : [];
+
+        return {
+            ...rawResolvedInvoice,
+            subtotal: sub,
+            grandTotal: grand,
+            paidAmount: paid,
+            dueAmount: due,
+            discount: disc,
+            vatAmount: vatAmt,
+            vatRate: vatR,
+            items: safeItems,
+            splitPayments: split,
+        };
+    }, [rawResolvedInvoice]);
 
     useEffect(() => {
         if (invoice) {
@@ -526,7 +604,9 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                       min-width: 0 !important;
                       transform: none !important;
                       min-height: calc(297mm - 16mm) !important;
-                      height: auto !important;
+                      height: calc(297mm - 16mm) !important;
+                      max-height: calc(297mm - 16mm) !important;
+                      overflow: hidden !important;
                       page-break-after: always !important;
                       break-after: page !important;
                       page-break-inside: avoid !important;
@@ -792,7 +872,9 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 min-width: 0 !important;
                 transform: none !important;
                 min-height: calc(297mm - 16mm) !important;
-                height: auto !important;
+                height: calc(297mm - 16mm) !important;
+                max-height: calc(297mm - 16mm) !important;
+                overflow: hidden !important;
                 page-break-after: always !important;
                 break-after: page !important;
                 page-break-inside: avoid !important;
@@ -1063,7 +1145,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
         </div>
       </div>);
     }
-    const invoicePages = getInvoicePages(invoice.items, invoice, isPadMode, padTopMarginMm);
+    const hasExtraCols = Boolean(showType || showRegion);
+    const invoicePages = getInvoicePages(invoice.items, invoice, isPadMode, padTopMarginMm, hasExtraCols);
 
     return (<>
       {autoPrint && (<div className="fixed bottom-6 right-6 z-50 bg-slate-900/95 backdrop-blur-md text-white px-4 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border border-slate-700 animate-in fade-in slide-in-from-bottom-3 pointer-events-none">
@@ -1129,7 +1212,9 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
               min-width: 0 !important;
               transform: none !important;
               min-height: calc(297mm - 16mm) !important;
-              height: auto !important;
+              height: calc(297mm - 16mm) !important;
+              max-height: calc(297mm - 16mm) !important;
+              overflow: hidden !important;
               page-break-after: always !important;
               break-after: page !important;
               page-break-inside: avoid !important;
@@ -1433,9 +1518,9 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                         transformOrigin: 'top center',
                       }
                     : undefined}
-                  className="a4-page-sheet bg-white w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 mx-auto print:mx-0 p-8 print:p-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0"
+                  className="a4-page-sheet bg-white w-[794px] min-w-[794px] max-w-[794px] h-[1123px] min-h-[1123px] max-h-[1123px] overflow-hidden print:w-full print:min-w-0 print:max-w-full print:h-[calc(297mm-16mm)] print:min-h-0 print:max-h-[calc(297mm-16mm)] mx-auto print:mx-0 p-8 print:p-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border"
                 >
-                  <div className="a4-page-content space-y-5 flex-1">
+                  <div className="a4-page-content space-y-4 flex-1">
                     {page.isFirstPage ? (
                       /* Page 1: Full Document Header & BILL TO box */
                       <div className="space-y-2.5">
@@ -1524,16 +1609,18 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                       </div>
                     ) : (
                       /* Subsequent Pages: Top-Right Company Logo with BILL/Invoice Pill Badge (matching Page 1 exactly) */
-                      <DocumentHeader
-                        badgeStyle={true}
-                        documentTitle={(invoice as any).isQuote ? 'PRICE/Quotation' : 'BILL/Invoice'}
-                        documentNo={invoice.invoiceNo}
-                        documentDate={invoice.date}
-                        referenceNo={invoice.referenceNo}
-                        invoiceId={invoice.id}
-                        isPadMode={isPadMode}
-                        padTopMarginMm={padTopMarginMm}
-                      />
+                      <div>
+                        <DocumentHeader
+                          badgeStyle={true}
+                          documentTitle={(invoice as any).isQuote ? 'PRICE/Quotation' : 'BILL/Invoice'}
+                          documentNo={invoice.invoiceNo}
+                          documentDate={invoice.date}
+                          referenceNo={invoice.referenceNo}
+                          invoiceId={invoice.id}
+                          isPadMode={isPadMode}
+                          padTopMarginMm={padTopMarginMm}
+                        />
+                      </div>
                     )}
 
                     {/* Line Items Table Container */}
@@ -1541,18 +1628,18 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                       <table className="w-full text-left border-collapse">
                         <thead>
                           <tr className="bg-black text-white text-[11px] font-black uppercase tracking-wider border-b-2 border-black">
-                            <th className="py-2.5 px-3 text-center border-r border-black font-black w-12 text-white">SL</th>
-                            <th className="py-2.5 px-3 text-left border-r border-black font-black text-white">SERVICE / ITEM DESCRIPTION</th>
+                            <th className={`py-2 text-center border-r border-black font-black text-white ${hasExtraCols ? 'w-10 px-1' : 'w-12 px-3'}`}>SL</th>
+                            <th className="py-2 px-3 text-left border-r border-black font-black text-white">SERVICE / ITEM DESCRIPTION</th>
                             {showType && (
-                              <th className="py-2.5 px-3 text-center border-r border-black font-black text-white w-28">TYPE</th>
+                              <th className="py-2 px-2 text-center border-r border-black font-black text-white w-20 text-[10.5px]">TYPE</th>
                             )}
                             {showRegion && (
-                              <th className="py-2.5 px-3 text-center border-r border-black font-black text-white w-28">REGION</th>
+                              <th className="py-2 px-2 text-center border-r border-black font-black text-white w-20 text-[10.5px]">REGION</th>
                             )}
-                            <th className="py-2.5 px-3 text-center border-r border-black font-black w-16 text-white">UNIT</th>
-                            <th className="py-2.5 px-3 text-center border-r border-black font-black w-24 text-white">QTY / SQFT</th>
-                            <th className="py-2.5 px-3 text-right border-r border-black font-black w-24 text-white">RATETk</th>
-                            <th className="py-2.5 px-3 text-right font-black w-28 text-white">TOTALTk</th>
+                            <th className={`py-2 text-center border-r border-black font-black text-white ${hasExtraCols ? 'w-12 px-1 text-[10.5px]' : 'w-16 px-3'}`}>UNIT</th>
+                            <th className={`py-2 text-center border-r border-black font-black text-white ${hasExtraCols ? 'w-16 px-1 text-[10.5px]' : 'w-24 px-3'}`}>QTY / SQFT</th>
+                            <th className={`py-2 text-right border-r border-black font-black text-white ${hasExtraCols ? 'w-16 px-2 text-[10.5px]' : 'w-24 px-3'}`}>RATETk</th>
+                            <th className={`py-2 text-right font-black text-white ${hasExtraCols ? 'w-20 px-2 text-[10.5px]' : 'w-28 px-3'}`}>TOTALTk</th>
                           </tr>
                         </thead>
                         <tbody className="text-xs bg-white text-black">
@@ -1560,11 +1647,11 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                             const globalIdx = page.startIndex + itemIdx;
                             return (
                               <tr key={itemIdx} className={`border-b border-black last:border-b-0 hover:bg-slate-50/60 ${itemIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'}`}>
-                                <td className="py-2.5 px-3 font-bold text-black border-r border-black text-center">
+                                <td className={`py-2 font-bold text-black border-r border-black text-center ${hasExtraCols ? 'px-1' : 'px-3'}`}>
                                   {globalIdx + 1}
                                 </td>
-                                <td className="py-2.5 px-3 border-r border-black">
-                                  <div className="font-black text-black text-xs">{item.name}</div>
+                                <td className="py-2 px-3 border-r border-black">
+                                  <div className="font-black text-black text-xs leading-snug">{item.name}</div>
                                   {Boolean(item.totalSqft && item.width && item.height) && (
                                     <div className="text-[11px] text-black font-bold mt-0.5">
                                       Dimensions: {item.width}' × {item.height}' = {item.totalSqft} SqFt
@@ -1573,26 +1660,26 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                                   {item.notes && (<div className="text-[10px] text-black italic font-medium mt-0.5">{item.notes}</div>)}
                                 </td>
                                 {showType && (
-                                  <td className="py-2.5 px-3 text-center font-bold text-black border-r border-black">
+                                  <td className="py-2 px-2 text-center font-bold text-black border-r border-black text-[11px] leading-tight">
                                     {item.type || item.itemType || '-'}
                                   </td>
                                 )}
                                 {showRegion && (
-                                  <td className="py-2.5 px-3 text-center font-bold text-black border-r border-black">
+                                  <td className="py-2 px-2 text-center font-bold text-black border-r border-black text-[11px] leading-tight">
                                     {item.region || '-'}
                                   </td>
                                 )}
-                                <td className="py-2.5 px-3 text-center font-bold text-black border-r border-black">
-                                  {item.unit}
+                                <td className={`py-2 text-center font-bold text-black border-r border-black ${hasExtraCols ? 'px-1 text-[11px]' : 'px-3'}`}>
+                                  {item.unit || 'job'}
                                 </td>
-                                <td className="py-2.5 px-3 text-center font-black text-black border-r border-black">
-                                  {item.totalSqft ? item.totalSqft : item.qty}
+                                <td className={`py-2 text-center font-black text-black border-r border-black ${hasExtraCols ? 'px-1' : 'px-3'}`}>
+                                  {item.totalSqft ? item.totalSqft : (item.qty || 1)}
                                 </td>
-                                <td className="py-2.5 px-3 text-right font-black text-black border-r border-black">
-                                  {Number(item.unitPrice).toLocaleString()}
+                                <td className={`py-2 text-right font-black text-black border-r border-black ${hasExtraCols ? 'px-2' : 'px-3'}`}>
+                                  {(Number(item.unitPrice) || 0).toLocaleString()}
                                 </td>
-                                <td className="py-2.5 px-3 text-right font-black text-black">
-                                  {Number(item.totalPrice).toLocaleString()}
+                                <td className={`py-2 text-right font-black text-black ${hasExtraCols ? 'px-2' : 'px-3'}`}>
+                                  {(Number(item.totalPrice ?? (item as any).total ?? ((Number(item.unitPrice) || 0) * (Number(item.qty) || 1))) || 0).toLocaleString()}
                                 </td>
                               </tr>
                             );
@@ -1628,26 +1715,26 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                             <span>Subtotal:</span>
                             <span className="font-bold text-black">
                               {profile.currencySymbol}
-                              {invoice.subtotal.toLocaleString()}
+                              {(Number(invoice.subtotal ?? (invoice as any).subTotal) || 0).toLocaleString()}
                             </span>
                           </div>
 
-                          {invoice.discount > 0 && (
+                          {(Number(invoice.discount) || 0) > 0 && (
                             <div className="flex justify-between text-black font-bold pb-1">
                               <span>Discount:</span>
                               <span className="font-bold text-black">
                                 -{profile.currencySymbol}
-                                {invoice.discount.toLocaleString()}
+                                {(Number(invoice.discount) || 0).toLocaleString()}
                               </span>
                             </div>
                           )}
 
-                          {invoice.vatAmount > 0 && (
+                          {(Number(invoice.vatAmount) || 0) > 0 && (
                             <div className="flex justify-between text-black font-bold pb-1">
-                              <span>VAT ({invoice.vatRate}%):</span>
+                              <span>VAT ({Number(invoice.vatRate) || 0}%):</span>
                               <span className="font-bold text-black">
                                 +{profile.currencySymbol}
-                                {invoice.vatAmount.toLocaleString()}
+                                {(Number(invoice.vatAmount) || 0).toLocaleString()}
                               </span>
                             </div>
                           )}
@@ -1656,60 +1743,46 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                             <span>Grand Total:</span>
                             <span className="text-black font-black text-base">
                               {profile.currencySymbol}
-                              {invoice.grandTotal.toLocaleString()}
+                              {(Number(invoice.grandTotal) || 0).toLocaleString()}
                             </span>
                           </div>
 
                           {!(invoice as any).isQuote && (
                             <>
-                              {invoice.splitPayments ? (
+                              {invoice.splitPayments && Object.keys(invoice.splitPayments).length > 0 ? (
                                 <div className="space-y-1 text-[11px] pt-1 border-t-2 border-double border-black text-black">
-                                  {(invoice.splitPayments.cash ?? 0) > 0 && (
-                                    <div className="flex justify-between text-black">
-                                      <span>Paid Cash:</span>
-                                      <span className="font-bold text-black">
-                                        {profile.currencySymbol}{(invoice.splitPayments.cash ?? 0).toLocaleString()}
-                                      </span>
-                                    </div>
-                                  )}
-                                  {(invoice.splitPayments.card ?? 0) > 0 && (
-                                    <div className="flex justify-between text-black">
-                                      <span>Paid Card / Bank:</span>
-                                      <span className="font-bold text-black">
-                                        {profile.currencySymbol}{(invoice.splitPayments.card ?? 0).toLocaleString()}
-                                      </span>
-                                    </div>
-                                  )}
-                                  {(invoice.splitPayments.bkash ?? 0) > 0 && (
-                                    <div className="flex justify-between text-black">
-                                      <span>Paid bKash:</span>
-                                      <span className="font-bold text-black">
-                                        {profile.currencySymbol}{(invoice.splitPayments.bkash ?? 0).toLocaleString()}
-                                      </span>
-                                    </div>
-                                  )}
-                                  {(invoice.splitPayments.nagad ?? 0) > 0 && (
-                                    <div className="flex justify-between text-black">
-                                      <span>Paid Nagad:</span>
-                                      <span className="font-bold text-black">
-                                        {profile.currencySymbol}{(invoice.splitPayments.nagad ?? 0).toLocaleString()}
-                                      </span>
-                                    </div>
-                                  )}
+                                  {Object.entries(invoice.splitPayments)
+                                    .filter(([channel, amt]) => channel.toLowerCase() !== 'due' && (Number(amt) || 0) > 0)
+                                    .map(([channel, amt]) => {
+                                      const cl = channel.toLowerCase().replace(/[\s_-]/g, '');
+                                      const label = cl === 'cash' || cl === 'cashinhand' ? 'Paid Cash:'
+                                        : cl === 'card' || cl === 'bank' || cl.includes('bank') ? 'Paid Card / Bank:'
+                                        : cl === 'bkash' ? 'Paid bKash:'
+                                        : cl === 'nagad' ? 'Paid Nagad:'
+                                        : `Paid (${channel}):`;
+                                      return (
+                                        <div key={channel} className="flex justify-between text-black">
+                                          <span>{label}</span>
+                                          <span className="font-bold text-black">
+                                            {profile.currencySymbol}{(Number(amt) || 0).toLocaleString()}
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
                                   <div className="flex justify-between text-xs py-1 border-t border-black text-black">
                                     <span className="font-bold text-black">Total Paid:</span>
                                     <span className="font-bold text-black">
                                       {profile.currencySymbol}
-                                      {invoice.paidAmount.toLocaleString()}
+                                      {(Number(invoice.paidAmount) || 0).toLocaleString()}
                                     </span>
                                   </div>
                                 </div>
                               ) : (
                                 <div className="flex justify-between text-xs py-1 border-t-2 border-double border-black text-black">
-                                  <span className="font-bold text-black">Total Paid:</span>
+                                  <span className="font-bold text-black">Total Paid ({invoice.paymentMethod || 'Cash'}):</span>
                                   <span className="font-bold text-black">
                                     {profile.currencySymbol}
-                                    {invoice.paidAmount.toLocaleString()}
+                                    {(Number(invoice.paidAmount) || 0).toLocaleString()}
                                   </span>
                                 </div>
                               )}
@@ -1718,7 +1791,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                                 <span>Balance Due:</span>
                                 <span className="font-black text-black">
                                   {profile.currencySymbol}
-                                  {invoice.dueAmount.toLocaleString()}
+                                  {(Number(invoice.dueAmount) || 0).toLocaleString()}
                                 </span>
                               </div>
                             </>
@@ -1728,55 +1801,44 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     )}
                   </div>
 
-                  {/* Footer */}
-                  {page.isLastPage ? (
-                    /* Signatures & Footer pinned to bottom of last page (Mark 1 & Mark 2) */
-                    <div className="a4-page-footer mt-auto pt-6 sm:pt-8 space-y-3 print:break-inside-avoid">
-                      {/* Signatures (Mark 2) */}
-                      <div className="flex justify-between items-end text-center text-xs text-black px-2">
-                        <div>
-                          <div className="w-40 border-t border-black mx-auto mb-1.5"/>
-                          <span className="font-bold text-black text-xs">Customer's Signature</span>
-                        </div>
-                        <div>
-                          <div className="w-48 border-t border-black mx-auto mb-1.5"/>
-                          <span className="font-black text-black text-xs">For Dot Color Communication</span>
-                        </div>
+                  {/* Footer on EVERY page (Both 1st page, intermediate pages, and last page) */}
+                  <div className="a4-page-footer mt-auto pt-3 space-y-2 print:break-inside-avoid shrink-0">
+                    {/* Signatures */}
+                    <div className="flex justify-between items-end text-center text-xs text-black px-2 pt-0.5">
+                      <div>
+                        <div className="w-40 border-t border-black mx-auto mb-1.5"/>
+                        <span className="font-bold text-black text-xs">Customer's Signature</span>
                       </div>
-
-                      {/* System generated document notice (Image 2 marked sys) */}
-                      <div className="text-center text-[10px] sm:text-[11px] font-semibold text-slate-700 tracking-wide pt-1">
-                        {'This is system generated document no signature required'}
+                      <div>
+                        <div className="w-48 border-t border-black mx-auto mb-1.5"/>
+                        <span className="font-black text-black text-xs">For Dot Color Communication</span>
                       </div>
+                    </div>
 
-                      {/* Company Address & Contact Details Footer (Mark 1) */}
-                      <div className={`text-center text-[10.5px] sm:text-[11px] text-black font-medium leading-relaxed pt-1 border-t border-slate-300 ${isPadMode ? 'hidden print:hidden' : ''}`}>
-                        <div>
-                          {profile.officeAddress && !profile.officeAddress.includes('South Noya Para')
-                            ? profile.officeAddress
-                            : 'Nazir Ahmed Chowdhury Road Raja Pukur By lane, G A Bhaban Mat, Chattogram, Bangladesh.'}
-                        </div>
-                        <div className="flex items-center justify-between pt-0.5">
-                          <span className="flex-1 text-center">
-                            Call-{profile.phone && !profile.phone.includes('01846100900') ? profile.phone : '01730581687'}, E-mail : {(profile.emails && profile.emails[0] && !profile.emails[0].includes('info@dotcolorcommunication.com')) ? profile.emails[0] : 'info.dotcolor@gmail.com'}
+                    {/* System generated document notice */}
+                    <div className="text-center text-[10px] sm:text-[11px] font-semibold text-slate-700 tracking-wide">
+                      {'This is system generated document no signature required'}
+                    </div>
+
+                    {/* Company Address & Contact Details Footer */}
+                    <div className={`text-center text-[10.5px] sm:text-[11px] text-black font-medium leading-relaxed pt-1 border-t border-slate-300 ${isPadMode ? 'hidden print:hidden' : ''}`}>
+                      <div>
+                        {profile.officeAddress && !profile.officeAddress.includes('South Noya Para')
+                          ? profile.officeAddress
+                          : 'Nazir Ahmed Chowdhury Road Raja Pukur By lane, G A Bhaban Mat, Chattogram, Bangladesh.'}
+                      </div>
+                      <div className="flex items-center justify-between pt-0.5">
+                        <span className="flex-1 text-center">
+                          Call-{profile.phone && !profile.phone.includes('01846100900') ? profile.phone : '01730581687'}, E-mail : {(profile.emails && profile.emails[0] && !profile.emails[0].includes('info@dotcolorcommunication.com')) ? profile.emails[0] : 'info.dotcolor@gmail.com'}
+                        </span>
+                        {page.totalPages > 1 && (
+                          <span className="text-[10px] font-mono font-bold text-slate-600 shrink-0 pl-2">
+                            Page {page.pageNumber} of {page.totalPages}
                           </span>
-                          {page.totalPages > 1 && (
-                            <span className="text-[10px] font-mono font-bold text-slate-600 shrink-0 pl-2">
-                              Page {page.pageNumber} of {page.totalPages}
-                            </span>
-                          )}
-                        </div>
+                        )}
                       </div>
                     </div>
-                  ) : (
-                    /* Non-last page continuation footer */
-                    <div className="a4-page-footer mt-auto pt-4 border-t border-slate-300 flex items-center justify-between text-xs text-black font-semibold print:break-inside-avoid">
-                      <span className="italic">Continued on Page {page.pageNumber + 1}...</span>
-                      <span className="font-mono bg-black text-white px-2 py-0.5 rounded text-[10px]">
-                        Page {page.pageNumber} of {page.totalPages}
-                      </span>
-                    </div>
-                  )}
+                  </div>
                 </div>
               ))}
             </div>)}

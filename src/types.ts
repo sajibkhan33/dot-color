@@ -275,6 +275,7 @@ export interface SalesInvoice {
   projectId?: string;
   projectCode?: string;
   chartOfAccountId?: string;
+  skipLedgerTransaction?: boolean;
 }
 
 export const PRESET_INVOICE_ITEM_TYPES = [
