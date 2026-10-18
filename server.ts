@@ -20,8 +20,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = parseInt(process.env.PORT || '5000', 10);
-const HOST = '0.0.0.0';
+const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
 
 app.use(cors());
@@ -390,8 +389,8 @@ app.get('*', (req, res, next) => {
   });
 });
 
-const server = app.listen(PORT, HOST, () => {
-  console.log(`🚀 ERP Server running at http://${HOST}:${PORT} (process.env.PORT=${process.env.PORT || 'undefined'})`);
+const server = app.listen(PORT, () => {
+  console.log(`🚀 ERP Server running (process.env.PORT=${process.env.PORT || 'undefined'}, listening on ${PORT})`);
 });
 
 server.on('error', (err: any) => {

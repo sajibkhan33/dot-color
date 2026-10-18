@@ -8,8 +8,10 @@
     "dev:client": "node ./node_modules/vite/bin/vite.js --port=3000 --host=0.0.0.0",
     "dev:server": "node ./node_modules/tsx/dist/cli.mjs server.ts",
     "server": "node ./node_modules/tsx/dist/cli.mjs server.ts",
-    "build": "node ./node_modules/vite/bin/vite.js build",
-    "start": "node ./node_modules/tsx/dist/cli.mjs server.ts",
+    "build:client": "node ./node_modules/vite/bin/vite.js build",
+    "build:server": "node ./node_modules/esbuild/bin/esbuild server.ts --platform=node --target=node18 --format=esm --outfile=server.js",
+    "build": "npm run build:client && npm run build:server",
+    "start": "node server.js",
     "preview": "node ./node_modules/vite/bin/vite.js preview",
     "clean": "rm -rf dist",
     "lint": "node ./node_modules/typescript/bin/tsc --noEmit"

@@ -36,9 +36,10 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
     }, [customers, customerSearchQuery]);
     // Invoice Meta
     const [invoiceType, setInvoiceType] = useState<'Sales' | 'Custom'>('Sales');
+    const [purchaseRequisition, setPurchaseRequisition] = useState('');
     const [referenceNo, setReferenceNo] = useState('');
     const [invoiceDate, setInvoiceDate] = useState<string>(new Date().toISOString().slice(0, 10));
-    const [deliveryDate, setDeliveryDate] = useState<string>(new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10));
+    const [deliveryDate, setDeliveryDate] = useState<string>('');
     const [warehouseLocation, setWarehouseLocation] = useState<'Factory' | 'Office'>('Factory');
     // Items in Invoice
     const [items, setItems] = useState<InvoiceItem[]>([]);
@@ -239,6 +240,8 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
         const created = addInvoice({
             date: invoiceDate,
             referenceNo: referenceNo.trim() || undefined,
+            purchaseRequisition: purchaseRequisition.trim() || undefined,
+            prNo: purchaseRequisition.trim() || undefined,
             deliveryDate: deliveryDate || undefined,
             customerId: finalCustId,
             customerName: finalCustName,
@@ -471,35 +474,61 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
                 </div>
               </div>)}
 
-            {/* Reference Number, Dates & Location Row */}
+            {/* Reference Number, PR, Dates & Location Row */}
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-2 border-t border-slate-200/60">
+              {/* 1. Purchase Requisition (PR) */}
+              <div>
+                <label className="font-bold text-slate-700 block mb-1 flex items-center justify-between">
+                  <span>{'Reference / PR No.'}</span>
+                  {/* <span className="text-[10px] text-indigo-700 font-extrabold bg-indigo-100/70 px-1.5 rounded">PR</span> */}
+                </label>
+                <input
+                  type="text"
+                  value={purchaseRequisition}
+                  onChange={(e) => setPurchaseRequisition(e.target.value)}
+                  placeholder={'e.g. PR-8901, REQ-102'}
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold text-xs focus:ring-1 focus:ring-indigo-500/30"
+                />
+              </div>
+
+              {/* 2. Reference / PO No. */}
               <div>
                 <label className="font-bold text-slate-700 block mb-1 flex items-center justify-between">
                   <span>{'Reference / PO No.'}</span>
-                  <span className="text-[10px] text-amber-700 font-extrabold bg-amber-100/70 px-1.5 rounded">Ref</span>
+                  {/* <span className="text-[10px] text-amber-700 font-extrabold bg-amber-100/70 px-1.5 rounded">Ref</span> */}
                 </label>
-                <input type="text" value={referenceNo} onChange={(e) => setReferenceNo(e.target.value)} placeholder={'e.g. PO-8901, REF-102'} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold text-xs focus:ring-1 focus:ring-amber-500/30"/>
+                <input
+                  type="text"
+                  value={referenceNo}
+                  onChange={(e) => setReferenceNo(e.target.value)}
+                  placeholder={'e.g. PO-8901, REF-102'}
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold text-xs focus:ring-1 focus:ring-amber-500/30"
+                />
               </div>
 
+              {/* 3. Invoice Date */}
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
                   {'Invoice Date'}
                 </label>
-                <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-semibold text-xs"/>
+                <input
+                  type="date"
+                  value={invoiceDate}
+                  onChange={(e) => setInvoiceDate(e.target.value)}
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-semibold text-xs"
+                />
               </div>
 
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">
-                  {'Delivery Target'}
-                </label>
-                <input type="date" value={deliveryDate} onChange={(e) => setDeliveryDate(e.target.value)} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-semibold text-xs"/>
-              </div>
-
+              {/* 4. Branch Location */}
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
                   {'Branch Location'}
                 </label>
-                <select value={warehouseLocation} onChange={(e) => setWarehouseLocation(e.target.value as any)} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-semibold text-xs">
+                <select
+                  value={warehouseLocation}
+                  onChange={(e) => setWarehouseLocation(e.target.value as any)}
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-semibold text-xs"
+                >
                   <option value="Office">
                     {'Central Warehouse & Outlet'}
                   </option>

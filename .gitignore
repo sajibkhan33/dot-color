@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+cpanel-deploy/
+deploy.zip
+package.prod.json

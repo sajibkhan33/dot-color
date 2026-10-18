@@ -1570,17 +1570,27 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                             <div className="flex items-center justify-between gap-3">
                               <div className="space-y-1 text-black flex-1">
                                 <div className="flex items-baseline">
-                                  <span className="w-24 sm:w-28 shrink-0 text-black font-bold">Invoice Date :</span>
+                                  <span className="w-24 sm:w-28 shrink-0 text-black font-bold">
+                                    {(invoice as any).isQuote ? 'Quotation Date :' : 'Invoice Date :'}
+                                  </span>
                                   <span className="font-black text-black">{invoice.date}</span>
                                 </div>
                                 <div className="flex items-baseline">
-                                  <span className="w-24 sm:w-28 shrink-0 text-black font-bold">Invoice # :</span>
+                                  <span className="w-24 sm:w-28 shrink-0 text-black font-bold">
+                                    {(invoice as any).isQuote ? 'Quotation # :' : 'Invoice # :'}
+                                  </span>
                                   <span className="font-black text-black font-mono">#{invoice.invoiceNo}</span>
                                 </div>
                                 {invoice.referenceNo && !['nill', 'nil', 'none', 'null', '-'].includes(invoice.referenceNo.trim().toLowerCase()) && (
                                   <div className="flex items-baseline">
                                     <span className="w-24 sm:w-28 shrink-0 text-black font-bold">Ref/PO # :</span>
                                     <span className="font-black text-black font-mono">{invoice.referenceNo}</span>
+                                  </div>
+                                )}
+                                {(invoice.purchaseRequisition || (invoice as any).prNo) && !['nill', 'nil', 'none', 'null', '-'].includes(((invoice.purchaseRequisition || (invoice as any).prNo) as string).trim().toLowerCase()) && (
+                                  <div className="flex items-baseline">
+                                    <span className="w-24 sm:w-28 shrink-0 text-black font-bold">PR # :</span>
+                                    <span className="font-black text-black font-mono">{invoice.purchaseRequisition || (invoice as any).prNo}</span>
                                   </div>
                                 )}
                                 {invoice.deliveryDate && (
@@ -2132,7 +2142,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
               {/* 3. Invoice & Customer Meta */}
               <div className="text-[11px] space-y-1 pb-2 border-b-2 border-dashed border-black">
                 <div className="flex justify-between font-bold">
-                  <span>Invoice No:</span>
+                  <span>{(invoice as any).isQuote ? 'Quotation No:' : 'Invoice No:'}</span>
                   <span className="font-black">#{invoice.invoiceNo}</span>
                 </div>
                 <div className="flex justify-between">
