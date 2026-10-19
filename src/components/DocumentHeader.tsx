@@ -70,15 +70,6 @@ export const DocumentHeader: React.FC<DocumentHeaderProps> = ({ documentTitle, d
     }
     // Standard Full Layout (A4 Invoice, Challan, Work Order, Quotation, Reports)
     return (<div className={`w-full text-black ${className}`}>
-      {/* Pad Header Spacer (Reserved blank space for pre-printed letterhead pad) */}
-      <div className={`pad-header-spacer ${isPadMode ? 'block' : 'hidden'}`} style={{ height: `${padTopMarginMm}mm` }}>
-        {isPadMode && (<div className="print:hidden h-full flex flex-col items-center justify-center border-2 border-dashed border-indigo-300 bg-indigo-50/50 rounded-xl p-2.5 text-center my-1">
-            <span className="font-black text-xs text-indigo-900 tracking-wider uppercase">({padTopMarginMm}mm)
-            </span>
-            <span className="text-[10px] text-indigo-600 mt-0.5">Your pre-printed letterhead header will appear in this space during printing</span>
-          </div>)}
-      </div>
-
       {badgeStyle ? (
         /* Image 2 style: Top-Right Company Logo with BILL/Invoice pill badge directly below, matching width */
         <div className="flex items-center justify-end pb-0">

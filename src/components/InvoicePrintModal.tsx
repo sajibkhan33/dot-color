@@ -1644,31 +1644,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                       : 'w-[794px] min-w-[794px] max-w-[794px] h-[1123px] min-h-[1123px] max-h-[1123px] p-8'
                   }`}
                 >
-                  {/* Subtle Screen Guides for Pre-printed Letterhead Pad */}
-                  {isPadMode && (
-                    <div
-                      className="print:hidden absolute top-0 left-0 right-0 border-b-2 border-dashed border-amber-400 bg-amber-50/70 flex items-center justify-between px-4 text-amber-900 font-bold select-none z-10 pointer-events-none"
-                      style={{ height: `${padTopMarginMm}mm` }}
-                    >
-                      <span className="text-xs flex items-center gap-1.5">
-                        <span>📄</span>
-                        <span>Pre-printed Pad Header Area ({padTopMarginMm}mm / 1.75")</span>
-                      </span>
-                      <span className="text-[10px] text-amber-700 font-semibold">Company Logo &amp; Header Reserved</span>
-                    </div>
-                  )}
-
-                  {isPadMode && (
-                    <div
-                      className="print:hidden absolute bottom-0 left-0 right-0 h-[25.4mm] border-t-2 border-dashed border-amber-400 bg-amber-50/70 flex items-center justify-between px-4 text-amber-900 font-bold select-none z-10 pointer-events-none"
-                    >
-                      <span className="text-xs flex items-center gap-1.5">
-                        <span>📄</span>
-                        <span>Pre-printed Pad Footer Area (25.4mm / 1.0")</span>
-                      </span>
-                      <span className="text-[10px] text-amber-700 font-semibold">QR Code &amp; Address Reserved</span>
-                    </div>
-                  )}
                   <div className="a4-page-content space-y-4 flex-1">
                     {page.isFirstPage ? (
                       /* Page 1: Full Document Header & BILL TO box */
