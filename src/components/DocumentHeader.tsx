@@ -15,7 +15,7 @@ export interface DocumentHeaderProps {
     invoiceId?: string;
     badgeStyle?: boolean; // For Image 2 style: pill badge directly under top-right logo
 }
-export const DocumentHeader: React.FC<DocumentHeaderProps> = ({ documentTitle, documentSubtitle, compact = false, className = '', isPadMode = false, padTopMarginMm = 42, invoiceId, documentNo, badgeStyle = false, }) => {
+export const DocumentHeader: React.FC<DocumentHeaderProps> = ({ documentTitle, documentSubtitle, compact = false, className = '', isPadMode = false, padTopMarginMm = 44.45, invoiceId, documentNo, badgeStyle = false, }) => {
     const { profile } = useApp();
     const [posQrDataUrl, setPosQrDataUrl] = useState<string>('');
     // Generate QR code for compact POS thermal slips if needed

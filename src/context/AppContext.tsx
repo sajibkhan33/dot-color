@@ -2397,6 +2397,8 @@ export const AppProvider: React.FC<{
         const created = addInvoice({
             date: new Date().toISOString().slice(0, 10),
             referenceNo: q.referenceNo,
+            purchaseRequisition: q.purchaseRequisition || q.prNo,
+            prNo: q.prNo || q.purchaseRequisition,
             customerId: custId,
             customerName: q.customerName,
             customerPhone: q.customerPhone,

@@ -315,6 +315,9 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
     const [quoteCustomerCompany, setQuoteCustomerCompany] = useState('');
     const [quoteCustomerAddress, setQuoteCustomerAddress] = useState('');
     const [quoteReferenceNo, setQuoteReferenceNo] = useState('');
+    const [quotePurchaseRequisition, setQuotePurchaseRequisition] = useState('');
+    const [quoteDate, setQuoteDate] = useState(() => new Date().toISOString().slice(0, 10));
+    const [quoteValidUntil, setQuoteValidUntil] = useState(() => new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10));
     const [quoteItemName, setQuoteItemName] = useState('');
     const [quoteItemRegion, setQuoteItemRegion] = useState('');
     const [quoteItemType, setQuoteItemType] = useState('');
@@ -427,11 +430,15 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
         const grand = taxable + effectiveQuoteVat;
         if (editingQuotation) {
             updateQuotation(editingQuotation.id, {
+                date: quoteDate,
+                validUntil: quoteValidUntil,
                 customerName: quoteCustomerName,
                 customerPhone: quoteCustomerPhone,
                 customerCompany: quoteCustomerCompany,
                 customerAddress: quoteCustomerAddress.trim() || undefined,
                 referenceNo: quoteReferenceNo.trim() || undefined,
+                purchaseRequisition: quotePurchaseRequisition.trim() || undefined,
+                prNo: quotePurchaseRequisition.trim() || undefined,
                 items: finalItems,
                 subtotal: sub,
                 discount: effectiveQuoteDiscount,
@@ -451,9 +458,11 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
         }
         else {
             addQuotation({
-                date: new Date().toISOString().slice(0, 10),
+                date: quoteDate,
+                validUntil: quoteValidUntil,
                 referenceNo: quoteReferenceNo.trim() || undefined,
-                validUntil: new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10),
+                purchaseRequisition: quotePurchaseRequisition.trim() || undefined,
+                prNo: quotePurchaseRequisition.trim() || undefined,
                 customerName: quoteCustomerName,
                 customerPhone: quoteCustomerPhone,
                 customerCompany: quoteCustomerCompany,
@@ -484,6 +493,9 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
         setQuoteCustomerCompany('');
         setQuoteCustomerAddress('');
         setQuoteReferenceNo('');
+        setQuotePurchaseRequisition('');
+        setQuoteDate(new Date().toISOString().slice(0, 10));
+        setQuoteValidUntil(new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10));
         setQuoteItemName('');
         setQuoteItemRegion('');
         setQuoteItemType('');
@@ -570,7 +582,19 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
             </button>
           </div>)}
 
-        {activeSubTab === 'quotations' && (<button type="button" onClick={() => setShowNewQuoteModal(true)} className="w-full md:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer transition-all">
+        {activeSubTab === 'quotations' && (<button type="button" onClick={() => {
+            setEditingQuotation(null);
+            setQuoteCustomerName('');
+            setQuoteCustomerPhone('');
+            setQuoteCustomerCompany('');
+            setQuoteCustomerAddress('');
+            setQuoteReferenceNo('');
+            setQuotePurchaseRequisition('');
+            setQuoteDate(new Date().toISOString().slice(0, 10));
+            setQuoteValidUntil(new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10));
+            setAddedQuoteItems([]);
+            setShowNewQuoteModal(true);
+        }} className="w-full md:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer transition-all">
             <Plus className="w-4 h-4"/>
             <span>{'+ Create New Quote'}</span>
           </button>)}
@@ -1095,6 +1119,9 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                         setQuoteCustomerCompany(q.customerCompany || '');
                         setQuoteCustomerAddress(q.customerAddress || '');
                         setQuoteReferenceNo(q.referenceNo || '');
+                        setQuotePurchaseRequisition(q.purchaseRequisition || q.prNo || '');
+                        setQuoteDate(q.date || new Date().toISOString().slice(0, 10));
+                        setQuoteValidUntil(q.validUntil || new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10));
                         setQuoteType(q.quoteType || 'Sales');
                         setQuoteItemName('');
                         setQuoteItemQty(1);
@@ -2081,6 +2108,11 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 setQuoteCustomerName('');
                 setQuoteCustomerPhone('');
                 setQuoteCustomerCompany('');
+                setQuoteCustomerAddress('');
+                setQuoteReferenceNo('');
+                setQuotePurchaseRequisition('');
+                setQuoteDate(new Date().toISOString().slice(0, 10));
+                setQuoteValidUntil(new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10));
                 setQuoteItemName('');
                 setQuoteItemRegion('');
                 setQuoteItemType('');
@@ -2173,20 +2205,70 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                   <input type="text" value={quoteCustomerCompany} onChange={(e) => setQuoteCustomerCompany(e.target.value)} placeholder="e.g. Apex Apparel / Karnaphuli Group" className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium"/>
                 </div>
                 <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    {'Delivery / Customer Address'}
+                  </label>
+                  <input type="text" value={quoteCustomerAddress} onChange={(e) => setQuoteCustomerAddress(e.target.value)} placeholder="e.g. Baizid Bostami I/A, Chattogram, Bangladesh" className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium"/>
+                </div>
+              </div>
+
+              {/* Reference Number, PR, Dates Row (Matching Direct Sales Invoice layout) */}
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-2 border-t border-slate-200/60">
+                {/* 1. Purchase Requisition (PR) */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1 flex items-center justify-between">
+                    <span>{'Reference / PR No.'}</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={quotePurchaseRequisition}
+                    onChange={(e) => setQuotePurchaseRequisition(e.target.value)}
+                    placeholder={'e.g. PR-8901, REQ-102'}
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold text-xs focus:ring-1 focus:ring-indigo-500/30"
+                  />
+                </div>
+
+                {/* 2. Reference / PO No. */}
+                <div>
                   <label className="font-bold text-slate-700 block mb-1 flex items-center justify-between">
                     <span>{'Reference / PO No.'}</span>
                     <span className="text-[10px] text-amber-700 font-extrabold bg-amber-100/70 px-1.5 rounded">Ref</span>
                   </label>
-                  <input type="text" value={quoteReferenceNo} onChange={(e) => setQuoteReferenceNo(e.target.value)} placeholder={'e.g. QT-REF-2024, PO-77'} className="w-full px-3 py-2 border border-slate-200 rounded-xl font-bold"/>
+                  <input
+                    type="text"
+                    value={quoteReferenceNo}
+                    onChange={(e) => setQuoteReferenceNo(e.target.value)}
+                    placeholder={'e.g. PO-8901, REF-102'}
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold text-xs focus:ring-1 focus:ring-amber-500/30"
+                  />
                 </div>
-              </div>
 
-              {/* Customer Address Field */}
-              <div>
-                <label className="font-bold text-slate-700 block mb-1">
-                  {'Delivery / Customer Address'}
-                </label>
-                <input type="text" value={quoteCustomerAddress} onChange={(e) => setQuoteCustomerAddress(e.target.value)} placeholder="e.g. Baizid Bostami I/A, Chattogram, Bangladesh" className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium"/>
+                {/* 3. Quotation Date */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    {'Quotation Date'}
+                  </label>
+                  <input
+                    type="date"
+                    value={quoteDate}
+                    onChange={(e) => setQuoteDate(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-semibold text-xs"
+                  />
+                </div>
+
+                {/* 4. Valid Until */}
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1 flex items-center justify-between">
+                    <span>{'Valid Until'}</span>
+                    <span className="text-[10px] text-indigo-700 font-bold bg-indigo-50 px-1.5 rounded">Expiry</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={quoteValidUntil}
+                    onChange={(e) => setQuoteValidUntil(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-semibold text-xs"
+                  />
+                </div>
               </div>
 
               {/* Quotation Type Selection */}
@@ -2570,7 +2652,11 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 setQuoteCustomerName('');
                 setQuoteCustomerPhone('');
                 setQuoteCustomerCompany('');
+                setQuoteCustomerAddress('');
                 setQuoteReferenceNo('');
+                setQuotePurchaseRequisition('');
+                setQuoteDate(new Date().toISOString().slice(0, 10));
+                setQuoteValidUntil(new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10));
                 setQuoteItemName('');
                 setQuoteItemRegion('');
                 setQuoteItemType('');

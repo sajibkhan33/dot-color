@@ -46,29 +46,40 @@ const estimateInvoiceItemHeight = (item: any, hasExtraCols: boolean = false): nu
 };
 
 const getPageCapacities = (invoice?: any, isPadMode?: boolean, padTopMarginMm?: number) => {
-    // Total usable height of an A4 sheet (1123px height - 64px padding p-8) = 1059px
-    const totalUsableHeight = 1059;
+    // Total usable height:
+    // For standard A4: 1123px height - 64px padding (p-8) = 1059px
+    // For Pad Mode (Official Pad: 8.15in x 11.15in):
+    // Total height = 11.15in * 96 = 1070.4px (~1070px)
+    // Top margin = 1.75in (44.45mm / ~168px)
+    // Bottom margin = 1.0in (25.4mm / 96px)
+    // Total usable content area height = 1070.4 - 168 - 96 = 806.4px (~806px)
+    const activeTopMm = padTopMarginMm || 44.45;
+    const padTopPx = Math.round((activeTopMm / 25.4) * 96);
+    const padBottomPx = 96; // 1.0in
+    const totalUsableHeight = isPadMode 
+        ? Math.max(650, 1070 - padTopPx - padBottomPx)
+        : 1059;
 
-    // Page 1 Header: Logo + Title Badge (~92px) + Gap (10px) + Customer Box (~135px) + Gap (18px)
-    const p1HeaderHeight = isPadMode 
-        ? Math.round((padTopMarginMm || 42) * 3.78) + 26 
-        : 92;
+    // Page 1 Header:
+    // In Pad Mode, padTopPx is already excluded in totalUsableHeight.
+    // Inside content box: Document Title Badge (~36px) + Gap (10px) + Customer Box (~135px) + Gap (18px)
+    const p1HeaderHeight = isPadMode ? 36 : 92;
     const p1CustomerBoxHeight = 135;
     const p1TopOverhead = p1HeaderHeight + 10 + p1CustomerBoxHeight + 18;
 
-    // Subsequent Pages Header: Logo + Title Badge (~92px) + Gap (16px) (Customer strip removed per user request)
-    const subPageHeaderHeight = isPadMode
-        ? Math.round((padTopMarginMm || 42) * 3.78) + 26
-        : 92;
+    // Subsequent Pages Header:
+    // In Pad Mode: Document Title Badge (~36px) + Gap (16px) = 52px
+    const subPageHeaderHeight = isPadMode ? 36 : 92;
     const subPageTopOverhead = subPageHeaderHeight + 16;
 
     // Table Header row (thead tr py-2 + borders)
     const tableHeaderHeight = 40;
 
     // Footer on EVERY page:
-    // Signatures (45px) + System generated notice (16px) + Address/Phone/Email (42px) + padding/border (15px)
-    // (Continued on Page X... bar removed, saving vertical height)
-    const pageFooterHeight = isPadMode ? 65 : 115;
+    // In Pad Mode: Signatures (~45px) + System notice (~16px) + Gap (~12px) = 73px
+    // (Company Address & QR code are pre-printed in the bottom 1.0" area and hidden in software print)
+    // In Normal Mode: Signatures (45px) + Notice (16px) + Address/Phone/Email (42px) + padding/border (15px) = 118px
+    const pageFooterHeight = isPadMode ? 73 : 115;
 
     // Financial Totals and Remarks (on last page)
     let totalsBoxHeight = 90;
@@ -81,7 +92,7 @@ const getPageCapacities = (invoice?: any, isPadMode?: boolean, padTopMarginMm?: 
     totalsBoxHeight = Math.max(totalsBoxHeight, remarksHeight) + 12;
 
     // Safety buffer to ensure 100% no element or text clipping
-    const safetyBuffer = 30;
+    const safetyBuffer = 20;
 
     const maxSinglePageTableHeight = Math.max(180, totalUsableHeight - (p1TopOverhead + tableHeaderHeight + totalsBoxHeight + pageFooterHeight + safetyBuffer));
     const maxMultiP1TableHeight = Math.max(280, totalUsableHeight - (p1TopOverhead + tableHeaderHeight + pageFooterHeight + safetyBuffer));
@@ -183,7 +194,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
     const { invoices, quotations, profile, language, cloudSyncStatus, syncWithCloud } = useApp();
     const [template, setTemplate] = useState<'A4' | 'POS' | 'WORK_ORDER' | 'CHALLAN'>(mode === 'challan' ? 'CHALLAN' : mode === 'pos' ? 'POS' : 'A4');
     const [isPadMode, setIsPadMode] = useState(initialPadMode);
-    const [padTopMarginMm, setPadTopMarginMm] = useState<number>(profile.padTopMarginMm || 42);
+    const [padTopMarginMm, setPadTopMarginMm] = useState<number>(profile.padTopMarginMm || 44.45);
     const [printError, setPrintError] = useState<string | null>(null);
     const [isPrinting, setIsPrinting] = useState(false);
     const [isPrinterBridgeOpen, setIsPrinterBridgeOpen] = useState(false);
@@ -329,6 +340,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
         id: quote.id,
         invoiceNo: quote.quoteNo,
         referenceNo: quote.referenceNo,
+        purchaseRequisition: quote.purchaseRequisition || quote.prNo,
+        prNo: quote.prNo || quote.purchaseRequisition,
         date: quote.date,
         customerId: 'quote',
         customerName: quote.customerName,
@@ -560,8 +573,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     box-sizing: border-box !important;
                   }
                   @page {
-                    size: ${template === 'POS' ? '80mm auto !important' : 'A4 portrait !important'};
-                    margin: ${template === 'POS' ? '0mm !important' : '8mm 10mm !important'};
+                    size: ${template === 'POS' ? '80mm auto !important' : activePadMode ? '8.15in 11.15in !important' : 'A4 portrait !important'};
+                    margin: ${template === 'POS' ? '0mm !important' : activePadMode ? '0mm !important' : '8mm 10mm !important'};
                   }
                   html, body {
                     background: #ffffff !important;
@@ -645,8 +658,36 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     }
                   `}
                   ${activePadMode ? `
+                    .a4-page-sheet {
+                      width: 8.15in !important;
+                      max-width: 8.15in !important;
+                      min-width: 8.15in !important;
+                      height: 11.15in !important;
+                      min-height: 11.15in !important;
+                      max-height: 11.15in !important;
+                      padding-top: ${padTopMarginMm}mm !important;
+                      padding-bottom: 25.4mm !important;
+                      padding-left: 12.7mm !important;
+                      padding-right: 12.7mm !important;
+                      box-sizing: border-box !important;
+                      overflow: hidden !important;
+                      display: flex !important;
+                      flex-direction: column !important;
+                      justify-content: space-between !important;
+                      page-break-after: always !important;
+                      break-after: page !important;
+                      page-break-inside: avoid !important;
+                      break-inside: avoid !important;
+                      margin: 0 auto !important;
+                      border: none !important;
+                      box-shadow: none !important;
+                    }
+                    .a4-page-sheet:last-child {
+                      page-break-after: auto !important;
+                      break-after: auto !important;
+                    }
                     .pad-header-branding { display: none !important; }
-                    .pad-header-spacer { display: block !important; height: ${padTopMarginMm}mm !important; }
+                    .pad-header-spacer { display: none !important; }
                     .pad-footer-credit { display: none !important; }
                   ` : ''}
                 </style>
@@ -796,8 +837,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
               box-sizing: border-box !important;
             }
             @page {
-              size: ${template === 'POS' ? '80mm auto !important' : 'A4 portrait !important'};
-              margin: ${template === 'POS' ? '0mm !important' : '8mm 10mm !important'};
+              size: ${template === 'POS' ? '80mm auto !important' : isPadMode ? '8.15in 11.15in !important' : 'A4 portrait !important'};
+              margin: ${template === 'POS' ? '0mm !important' : isPadMode ? '0mm !important' : '8mm 10mm !important'};
             }
             html, body {
               background: white !important;
@@ -928,8 +969,36 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 }
               ` : ''}
               ${isPadMode ? `
+                .a4-page-sheet {
+                  width: 8.15in !important;
+                  max-width: 8.15in !important;
+                  min-width: 8.15in !important;
+                  height: 11.15in !important;
+                  min-height: 11.15in !important;
+                  max-height: 11.15in !important;
+                  padding-top: ${padTopMarginMm}mm !important;
+                  padding-bottom: 25.4mm !important;
+                  padding-left: 12.7mm !important;
+                  padding-right: 12.7mm !important;
+                  box-sizing: border-box !important;
+                  overflow: hidden !important;
+                  display: flex !important;
+                  flex-direction: column !important;
+                  justify-content: space-between !important;
+                  page-break-after: always !important;
+                  break-after: page !important;
+                  page-break-inside: avoid !important;
+                  break-inside: avoid !important;
+                  margin: 0 auto !important;
+                  border: none !important;
+                  box-shadow: none !important;
+                }
+                .a4-page-sheet:last-child {
+                  page-break-after: auto !important;
+                  break-after: auto !important;
+                }
                 .pad-header-branding { display: none !important; }
-                .pad-header-spacer { display: block !important; height: ${padTopMarginMm}mm !important; }
+                .pad-header-spacer { display: none !important; }
                 .pad-footer-credit { display: none !important; }
               ` : ''}
             }
@@ -991,7 +1060,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
             const pdf = new jsPDF({
                 orientation: 'portrait',
                 unit: 'mm',
-                format: isPos ? [80, 200] : 'a4',
+                format: isPos ? [80, 200] : isPadMode ? [207.01, 283.21] : 'a4',
                 compress: true,
             });
 
@@ -1027,8 +1096,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                         pixelRatio: 2,
                         skipFonts: true,
                         cacheBust: false,
-                        width: isPos ? (sheet.offsetWidth || 300) : 794,
-                        height: isPos ? (sheet.offsetHeight || 600) : 1123,
+                        width: isPos ? (sheet.offsetWidth || 300) : isPadMode ? 782 : 794,
+                        height: isPos ? (sheet.offsetHeight || 600) : isPadMode ? 1070 : 1123,
                         style: {
                             transform: 'none',
                             boxShadow: 'none',
@@ -1046,8 +1115,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                         pixelRatio: 2,
                         skipFonts: true,
                         cacheBust: false,
-                        width: isPos ? (sheet.offsetWidth || 300) : 794,
-                        height: isPos ? (sheet.offsetHeight || 600) : 1123,
+                        width: isPos ? (sheet.offsetWidth || 300) : isPadMode ? 782 : 794,
+                        height: isPos ? (sheet.offsetHeight || 600) : isPadMode ? 1070 : 1123,
                         style: {
                             transform: 'none',
                             boxShadow: 'none',
@@ -1079,6 +1148,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     const elemHeight = sheet.offsetHeight || 600;
                     const pdfHeight = (elemHeight * 80) / elemWidth;
                     pdf.addImage(imgData, 'PNG', 0, 0, 80, pdfHeight, undefined, 'FAST');
+                } else if (isPadMode) {
+                    pdf.addImage(imgData, 'PNG', 0, 0, 207.01, 283.21, undefined, 'FAST');
                 } else {
                     pdf.addImage(imgData, 'PNG', 0, 0, 210, 297, undefined, 'FAST');
                 }
@@ -1179,8 +1250,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
             box-sizing: border-box !important;
           }
           @page {
-            size: ${template === 'POS' ? '80mm auto !important' : 'A4 portrait !important'};
-            margin: ${template === 'POS' ? '0mm !important' : '8mm 10mm !important'};
+            size: ${template === 'POS' ? '80mm auto !important' : isPadMode ? '8.15in 11.15in !important' : 'A4 portrait !important'};
+            margin: ${template === 'POS' ? '0mm !important' : isPadMode ? '0mm !important' : '8mm 10mm !important'};
           }
           html, body {
             background: #ffffff !important;
@@ -1258,8 +1329,36 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
             }
           `}
           ${isPadMode ? `
+            .a4-page-sheet {
+              width: 8.15in !important;
+              max-width: 8.15in !important;
+              min-width: 8.15in !important;
+              height: 11.15in !important;
+              min-height: 11.15in !important;
+              max-height: 11.15in !important;
+              padding-top: ${padTopMarginMm}mm !important;
+              padding-bottom: 25.4mm !important;
+              padding-left: 12.7mm !important;
+              padding-right: 12.7mm !important;
+              box-sizing: border-box !important;
+              overflow: hidden !important;
+              display: flex !important;
+              flex-direction: column !important;
+              justify-content: space-between !important;
+              page-break-after: always !important;
+              break-after: page !important;
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
+              margin: 0 auto !important;
+              border: none !important;
+              box-shadow: none !important;
+            }
+            .a4-page-sheet:last-child {
+              page-break-after: auto !important;
+              break-after: auto !important;
+            }
             .pad-header-branding { display: none !important; }
-            .pad-header-spacer { display: block !important; height: ${padTopMarginMm}mm !important; }
+            .pad-header-spacer { display: none !important; }
             .pad-footer-credit { display: none !important; }
           ` : ''}
         }
@@ -1467,18 +1566,18 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
             <div className="flex items-center gap-2">
               <FileSpreadsheet className="w-4 h-4 text-indigo-600 shrink-0"/>
               <span className="font-bold">
-                {'Letterhead Pad Mode Active:'}
+                {'Pad Mode (8.15" × 11.15"):'}
               </span>
               <span className="text-indigo-800 text-[11px]">
-                {'Header branding and software footer are hidden.'}
+                {'Top: 1.75", Bottom: 1.0", Left/Right: 0.5". Header branding and footer hidden.'}
               </span>
             </div>
             <div className="flex items-center gap-1.5 text-xs font-semibold">
-              <span className="text-slate-600">{'Pad Top Space:'}</span>
-              {[30, 38, 42, 50].map((mm) => (<button key={mm} type="button" onClick={() => setPadTopMarginMm(mm)} className={`px-2 py-0.5 rounded-md text-xs font-bold transition-all cursor-pointer ${padTopMarginMm === mm
+              <span className="text-slate-600">{'Top Margin:'}</span>
+              {[40, 44.45, 48].map((mm) => (<button key={mm} type="button" onClick={() => setPadTopMarginMm(mm)} className={`px-2 py-0.5 rounded-md text-xs font-bold transition-all cursor-pointer ${padTopMarginMm === mm
                     ? 'bg-indigo-600 text-white shadow-2xs'
                     : 'bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-100'}`}>
-                  {mm}mm
+                  {mm === 44.45 ? '1.75" (44.5mm)' : `${mm}mm`}
                 </button>))}
             </div>
           </div>)}
@@ -1503,7 +1602,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
           {/* ============================================================== */}
           {template === 'A4' && (<div className="w-full flex flex-col items-center gap-6 print:gap-0 print:block print:w-full print:max-w-full print:m-0 print:p-0" style={isMobile && isMobileFit
                 ? {
-                    height: `${Math.ceil((sheetHeight || 1123) * scale * invoicePages.length)}px`,
+                    height: `${Math.ceil((sheetHeight || (isPadMode ? 1070 : 1123)) * scale * invoicePages.length)}px`,
                     overflow: 'hidden',
                 }
                 : undefined}>
@@ -1512,14 +1611,64 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                   key={page.pageNumber}
                   ref={pIdx === 0 ? sheetRef : undefined}
                   id={pIdx === 0 ? "a4-document-sheet" : undefined}
-                  style={isMobile && isMobileFit
-                    ? {
-                        transform: `scale(${scale})`,
-                        transformOrigin: 'top center',
-                      }
-                    : undefined}
-                  className="a4-page-sheet bg-white w-[794px] min-w-[794px] max-w-[794px] h-[1123px] min-h-[1123px] max-h-[1123px] overflow-hidden print:w-full print:min-w-0 print:max-w-full print:h-[calc(297mm-16mm)] print:min-h-0 print:max-h-[calc(297mm-16mm)] mx-auto print:mx-0 p-8 print:p-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border"
+                  style={
+                    isPadMode
+                      ? {
+                          width: '782px',
+                          minWidth: '782px',
+                          maxWidth: '782px',
+                          height: '1070px',
+                          minHeight: '1070px',
+                          maxHeight: '1070px',
+                          paddingTop: `${padTopMarginMm}mm`,
+                          paddingBottom: '25.4mm',
+                          paddingLeft: '12.7mm',
+                          paddingRight: '12.7mm',
+                          ...(isMobile && isMobileFit
+                            ? {
+                                transform: `scale(${scale})`,
+                                transformOrigin: 'top center',
+                              }
+                            : {}),
+                        }
+                      : isMobile && isMobileFit
+                      ? {
+                          transform: `scale(${scale})`,
+                          transformOrigin: 'top center',
+                        }
+                      : undefined
+                  }
+                  className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border ${
+                    isPadMode
+                      ? 'w-[782px] min-w-[782px] max-w-[782px] h-[1070px] min-h-[1070px] max-h-[1070px]'
+                      : 'w-[794px] min-w-[794px] max-w-[794px] h-[1123px] min-h-[1123px] max-h-[1123px] p-8'
+                  }`}
                 >
+                  {/* Subtle Screen Guides for Pre-printed Letterhead Pad */}
+                  {isPadMode && (
+                    <div
+                      className="print:hidden absolute top-0 left-0 right-0 border-b-2 border-dashed border-amber-400 bg-amber-50/70 flex items-center justify-between px-4 text-amber-900 font-bold select-none z-10 pointer-events-none"
+                      style={{ height: `${padTopMarginMm}mm` }}
+                    >
+                      <span className="text-xs flex items-center gap-1.5">
+                        <span>📄</span>
+                        <span>Pre-printed Pad Header Area ({padTopMarginMm}mm / 1.75")</span>
+                      </span>
+                      <span className="text-[10px] text-amber-700 font-semibold">Company Logo &amp; Header Reserved</span>
+                    </div>
+                  )}
+
+                  {isPadMode && (
+                    <div
+                      className="print:hidden absolute bottom-0 left-0 right-0 h-[25.4mm] border-t-2 border-dashed border-amber-400 bg-amber-50/70 flex items-center justify-between px-4 text-amber-900 font-bold select-none z-10 pointer-events-none"
+                    >
+                      <span className="text-xs flex items-center gap-1.5">
+                        <span>📄</span>
+                        <span>Pre-printed Pad Footer Area (25.4mm / 1.0")</span>
+                      </span>
+                      <span className="text-[10px] text-amber-700 font-semibold">QR Code &amp; Address Reserved</span>
+                    </div>
+                  )}
                   <div className="a4-page-content space-y-4 flex-1">
                     {page.isFirstPage ? (
                       /* Page 1: Full Document Header & BILL TO box */
@@ -1862,12 +2011,36 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     overflow: 'hidden',
                 }
                 : undefined}>
-            <div ref={sheetRef} id="a4-document-sheet" style={isMobile && isMobileFit
+            <div ref={sheetRef} id="a4-document-sheet" style={
+              isPadMode
+                ? {
+                    width: '782px',
+                    minWidth: '782px',
+                    maxWidth: '782px',
+                    height: '1070px',
+                    minHeight: '1070px',
+                    maxHeight: '1070px',
+                    paddingTop: `${padTopMarginMm}mm`,
+                    paddingBottom: '25.4mm',
+                    paddingLeft: '12.7mm',
+                    paddingRight: '12.7mm',
+                    ...(isMobile && isMobileFit
+                      ? {
+                          transform: `scale(${scale})`,
+                          transformOrigin: 'top center',
+                        }
+                      : {}),
+                  }
+                : isMobile && isMobileFit
                 ? {
                     transform: `scale(${scale})`,
                     transformOrigin: 'top center',
                 }
-                : undefined} className="a4-page-sheet bg-white w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 mx-auto print:mx-0 p-8 print:p-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-xs text-slate-900 shrink-0">
+                : undefined} className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-xs text-slate-900 shrink-0 box-border ${
+                  isPadMode
+                    ? 'w-[782px] min-w-[782px] max-w-[782px] h-[1070px] min-h-[1070px] max-h-[1070px]'
+                    : 'w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 p-8'
+                }`}>
               <div className="a4-page-content space-y-6 flex-1">
               {/* Header with Brand Logo on Left, QR Banner on Right */}
               <DocumentHeader documentTitle="PRODUCTION WORK ORDER" documentSubtitle={`${profile.name || 'DotColorCommunication'} • Technical Work Order & Service Unit`} documentNo={`WO-${invoice.invoiceNo}`} documentDate={invoice.date} referenceNo={invoice.referenceNo} isPadMode={isPadMode} padTopMarginMm={padTopMarginMm}/>
@@ -1988,12 +2161,36 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     overflow: 'hidden',
                 }
                 : undefined}>
-              <div ref={sheetRef} id="a4-document-sheet" style={isMobile && isMobileFit
+              <div ref={sheetRef} id="a4-document-sheet" style={
+                isPadMode
+                  ? {
+                      width: '782px',
+                      minWidth: '782px',
+                      maxWidth: '782px',
+                      height: '1070px',
+                      minHeight: '1070px',
+                      maxHeight: '1070px',
+                      paddingTop: `${padTopMarginMm}mm`,
+                      paddingBottom: '25.4mm',
+                      paddingLeft: '12.7mm',
+                      paddingRight: '12.7mm',
+                      ...(isMobile && isMobileFit
+                        ? {
+                            transform: `scale(${scale})`,
+                            transformOrigin: 'top center',
+                          }
+                        : {}),
+                    }
+                  : isMobile && isMobileFit
                 ? {
                     transform: `scale(${scale})`,
                     transformOrigin: 'top center',
                 }
-                : undefined} className="a4-page-sheet bg-white w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 mx-auto print:mx-0 p-8 print:p-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0">
+                : undefined} className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border ${
+                  isPadMode
+                    ? 'w-[782px] min-w-[782px] max-w-[782px] h-[1070px] min-h-[1070px] max-h-[1070px]'
+                    : 'w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 p-8'
+                }`}>
                 <div className="a4-page-content space-y-6 flex-1">
                 {/* Header with Brand Logo on Left, QR Banner on Right */}
                 <DocumentHeader documentTitle="DELIVERY CHALLAN" documentSubtitle={`${profile.name || 'DotColorCommunication'} • Official Goods & Services Delivery Note`} documentNo={`CH-${invoice.invoiceNo}`} documentDate={invoice.date} referenceNo={invoice.referenceNo} isPadMode={isPadMode} padTopMarginMm={padTopMarginMm}/>
