@@ -1786,11 +1786,18 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                                 </td>
                                 <td className="py-2 px-3 border-r border-black">
                                   <div className="font-black text-black text-xs leading-snug">{item.name}</div>
-                                  {Boolean(item.totalSqft && item.width && item.height) && (
-                                    <div className="text-[11px] text-black font-bold mt-0.5">
-                                      Dimensions: {item.width}' × {item.height}' = {item.totalSqft} SqFt
-                                    </div>
-                                  )}
+                                  {Boolean(item.width && item.height) && (() => {
+                                    const singleSqft = Number(((item.width || 0) * (item.height || 0)).toFixed(2));
+                                    const qty = Number(item.qty) || 1;
+                                    const totSqft = item.totalSqft && item.totalSqft !== singleSqft
+                                      ? item.totalSqft
+                                      : Number((singleSqft * qty).toFixed(2));
+                                    return (
+                                      <div className="text-[11px] text-black font-bold mt-0.5">
+                                        Dimensions: {item.width}' × {item.height}' = {singleSqft} SqFt{qty > 1 ? ` × ${qty} = ${totSqft} SqFt` : ''}
+                                      </div>
+                                    );
+                                  })()}
                                   {item.notes && (<div className="text-[10px] text-black italic font-medium mt-0.5">{item.notes}</div>)}
                                 </td>
                                 {showType && (
@@ -1807,7 +1814,16 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                                   {item.unit || 'job'}
                                 </td>
                                 <td className={`py-2 text-center font-black text-black border-r border-black ${hasExtraCols ? 'px-1' : 'px-3'}`}>
-                                  {item.totalSqft ? item.totalSqft : (item.qty || 1)}
+                                  {(() => {
+                                    if (item.width && item.height) {
+                                      const singleSqft = Number(((item.width || 0) * (item.height || 0)).toFixed(2));
+                                      const qty = Number(item.qty) || 1;
+                                      return item.totalSqft && item.totalSqft !== singleSqft
+                                        ? item.totalSqft
+                                        : Number((singleSqft * qty).toFixed(2));
+                                    }
+                                    return item.totalSqft ? item.totalSqft : (item.qty || 1);
+                                  })()}
                                 </td>
                                 <td className={`py-2 text-right font-black text-black border-r border-black ${hasExtraCols ? 'px-2' : 'px-3'}`}>
                                   {(Number(item.unitPrice) || 0).toLocaleString()}
@@ -2076,10 +2092,18 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                           {item.region && <span className="bg-white px-1.5 py-0.5 rounded border border-amber-200">Region: {item.region}</span>}
                           {(item.type || item.itemType) && <span className="bg-white px-1.5 py-0.5 rounded border border-amber-200">Type: {item.type || item.itemType}</span>}
                         </div>
-                        {item.totalSqft && (<div className="text-xs font-extrabold text-slate-800 mt-0.5">
-                            📐 Exact Measurement: {item.width} Feet (W) × {item.height} Feet (H) ={' '}
-                            {item.totalSqft} SqFt
-                          </div>)}
+                        {Boolean(item.width && item.height) && (() => {
+                          const singleSqft = Number(((item.width || 0) * (item.height || 0)).toFixed(2));
+                          const qty = Number(item.qty) || 1;
+                          const totSqft = item.totalSqft && item.totalSqft !== singleSqft
+                            ? item.totalSqft
+                            : Number((singleSqft * qty).toFixed(2));
+                          return (
+                            <div className="text-xs font-extrabold text-slate-800 mt-0.5">
+                              📐 Exact Measurement: {item.width} Feet (W) × {item.height} Feet (H) = {singleSqft} SqFt{qty > 1 ? ` (Total: ${totSqft} SqFt for ${qty} ${item.unit || 'pcs'})` : ''}
+                            </div>
+                          );
+                        })()}
                         {item.notes && (<div className="text-xs text-slate-600 mt-1 bg-white p-2 rounded border border-amber-200">
                             <strong>Note:</strong> {item.notes}
                           </div>)}
@@ -2233,7 +2257,22 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                   <tbody className="text-xs bg-white">
                     {invoice.items.map((i, idx) => (<tr key={idx} className={`border-b border-slate-300 print:border-slate-400 last:border-b-0 hover:bg-slate-50/60 ${idx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white'}`}>
                         <td className="py-2.5 px-3 text-slate-700 font-bold text-center border-r border-slate-300 print:border-slate-400">{idx + 1}</td>
-                        <td className="py-2.5 px-3 font-bold text-slate-950 border-r border-slate-300 print:border-slate-400">{i.name}</td>
+                        <td className="py-2.5 px-3 font-bold text-slate-950 border-r border-slate-300 print:border-slate-400">
+                          <div>{i.name}</div>
+                          {Boolean(i.width && i.height) && (() => {
+                            const singleSqft = Number(((i.width || 0) * (i.height || 0)).toFixed(2));
+                            const qty = Number(i.qty) || 1;
+                            const totSqft = i.totalSqft && i.totalSqft !== singleSqft
+                              ? i.totalSqft
+                              : Number((singleSqft * qty).toFixed(2));
+                            return (
+                              <div className="text-[10px] text-slate-600 font-semibold mt-0.5">
+                                Dimensions: {i.width}' × {i.height}' = {singleSqft} SqFt{qty > 1 ? ` × ${qty} = ${totSqft} SqFt` : ''}
+                              </div>
+                            );
+                          })()}
+                          {i.notes && (<div className="text-[10px] text-slate-500 italic font-normal mt-0.5">{i.notes}</div>)}
+                        </td>
                         {showType && (
                           <td className="py-2.5 px-3 text-center font-medium text-slate-800 border-r border-slate-300 print:border-slate-400">
                             {i.type || i.itemType || '-'}
@@ -2355,15 +2394,33 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                       <div className="font-black text-[11px] text-black leading-snug break-words">
                         {idx + 1}. {i.name}
                       </div>
-                      {Boolean(i.totalSqft && i.width && i.height) && (<div className="text-[9px] text-black font-semibold pl-3">
-                          ({i.width}' x {i.height}' = {i.totalSqft} sqft)
-                        </div>)}
+                      {Boolean(i.width && i.height) && (() => {
+                        const singleSqft = Number(((i.width || 0) * (i.height || 0)).toFixed(2));
+                        const qty = Number(i.qty) || 1;
+                        const totSqft = i.totalSqft && i.totalSqft !== singleSqft
+                          ? i.totalSqft
+                          : Number((singleSqft * qty).toFixed(2));
+                        return (
+                          <div className="text-[9px] text-black font-semibold pl-3">
+                            ({i.width}' × {i.height}' = {singleSqft} sqft{qty > 1 ? ` × ${qty} = ${totSqft} sqft` : ''})
+                          </div>
+                        );
+                      })()}
                       {i.notes && (<div className="text-[9px] text-black pl-3 italic">
                           * {i.notes}
                         </div>)}
                       <div className="flex justify-between text-[11px] font-semibold pl-3">
                         <span className="text-[10px] text-black">
-                          {i.qty} {i.unit || 'pcs'} × {Number(i.unitPrice).toLocaleString()}
+                          {Boolean(i.width && i.height) ? (() => {
+                            const singleSqft = Number(((i.width || 0) * (i.height || 0)).toFixed(2));
+                            const qty = Number(i.qty) || 1;
+                            const totSqft = i.totalSqft && i.totalSqft !== singleSqft
+                              ? i.totalSqft
+                              : Number((singleSqft * qty).toFixed(2));
+                            return `${totSqft} sqft (${qty} ${i.unit || 'pcs'}) × ${Number(i.unitPrice).toLocaleString()}`;
+                          })() : (
+                            `${i.qty} ${i.unit || 'pcs'} × ${Number(i.unitPrice).toLocaleString()}`
+                          )}
                         </span>
                         <span className="font-black text-black">
                           {Number(i.totalPrice).toLocaleString()}

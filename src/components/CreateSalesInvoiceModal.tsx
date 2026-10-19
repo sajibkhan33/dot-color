@@ -114,8 +114,9 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
         }
         const w = Number(itemWidth) || 0;
         const h = Number(itemHeight) || 0;
-        const sqft = w > 0 && h > 0 ? Number((w * h).toFixed(2)) : undefined;
-        const rowTotal = sqft ? Math.round(sqft * itemQty * itemPrice) : Math.round(itemQty * itemPrice);
+        const singleSqft = w > 0 && h > 0 ? Number((w * h).toFixed(2)) : undefined;
+        const totalSqft = singleSqft ? Number((singleSqft * itemQty).toFixed(2)) : undefined;
+        const rowTotal = singleSqft ? Math.round(singleSqft * itemQty * itemPrice) : Math.round(itemQty * itemPrice);
         const newItem: InvoiceItem = {
             productId: selectedProductId || `custom-${Date.now()}`,
             name: itemName.trim(),
@@ -129,7 +130,7 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
             qty: itemQty,
             width: w > 0 ? w : undefined,
             height: h > 0 ? h : undefined,
-            totalSqft: sqft,
+            totalSqft: totalSqft,
             totalPrice: rowTotal,
             notes: itemNotes.trim() || undefined,
         };
@@ -158,12 +159,14 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
                 return it;
             const newQty = field === 'qty' ? Math.max(1, val) : it.qty;
             const newPrice = field === 'unitPrice' ? Math.max(0, val) : it.unitPrice;
-            const sqft = it.totalSqft;
-            const rowTotal = sqft ? Math.round(sqft * newQty * newPrice) : Math.round(newQty * newPrice);
+            const singleSqft = it.width && it.height ? Number((it.width * it.height).toFixed(2)) : undefined;
+            const newTotalSqft = singleSqft ? Number((singleSqft * newQty).toFixed(2)) : (it.totalSqft ? Number((it.totalSqft * (newQty / (it.qty || 1))).toFixed(2)) : undefined);
+            const rowTotal = singleSqft ? Math.round(singleSqft * newQty * newPrice) : Math.round(newQty * newPrice);
             return {
                 ...it,
                 qty: newQty,
                 unitPrice: newPrice,
+                totalSqft: newTotalSqft,
                 costPrice: Math.round(newPrice * 0.6),
                 totalPrice: rowTotal,
             };
@@ -209,8 +212,9 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
         if (finalItems.length === 0 && itemName.trim()) {
             const w = Number(itemWidth) || 0;
             const h = Number(itemHeight) || 0;
-            const sqft = w > 0 && h > 0 ? Number((w * h).toFixed(2)) : undefined;
-            const rowTotal = sqft ? Math.round(sqft * itemQty * itemPrice) : Math.round(itemQty * itemPrice);
+            const singleSqft = w > 0 && h > 0 ? Number((w * h).toFixed(2)) : undefined;
+            const totalSqft = singleSqft ? Number((singleSqft * itemQty).toFixed(2)) : undefined;
+            const rowTotal = singleSqft ? Math.round(singleSqft * itemQty * itemPrice) : Math.round(itemQty * itemPrice);
             finalItems.push({
                 productId: selectedProductId || `custom-${Date.now()}`,
                 name: itemName.trim(),
@@ -224,7 +228,7 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
                 qty: itemQty,
                 width: w > 0 ? w : undefined,
                 height: h > 0 ? h : undefined,
-                totalSqft: sqft,
+                totalSqft: totalSqft,
                 totalPrice: rowTotal,
                 notes: itemNotes.trim() || undefined,
             });
@@ -784,9 +788,16 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
                     {items.map((item, idx) => (<tr key={idx} className="hover:bg-slate-50/70">
                         <td className="p-2.5 text-center text-slate-400 font-bold">{idx + 1}</td>
                         <td className="p-2.5">
-                          <div className="font-bold text-slate-900">{item.name}</div>
-                          {item.totalSqft && (<div className="text-[10px] text-amber-700 font-semibold mt-0.5">📐 :{item.width}' × {item.height}' = {item.totalSqft} SqFt
-                            </div>)}
+                          {Boolean(item.width && item.height) && (() => {
+                            const singleSqft = Number(((item.width || 0) * (item.height || 0)).toFixed(2));
+                            const qty = Number(item.qty) || 1;
+                            const totSqft = item.totalSqft ?? Number((singleSqft * qty).toFixed(2));
+                            return (
+                              <div className="text-[10px] text-amber-700 font-semibold mt-0.5">
+                                📐 {item.width}' × {item.height}' = {singleSqft} SqFt{qty > 1 ? ` × ${qty} = ${totSqft} SqFt` : ''}
+                              </div>
+                            );
+                          })()}
                           {item.notes && (<div className="text-[10px] text-slate-500 italic">{item.notes}</div>)}
                         </td>
                         {showTypeColumn && (

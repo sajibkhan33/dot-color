@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { SalesInvoice, Quotation, Customer, ProductionStatus, PRESET_INVOICE_ITEM_TYPES } from '../types';
+import { SalesInvoice, Quotation, Customer, ProductionStatus, PRESET_INVOICE_ITEM_TYPES, UnitType, InvoiceItem } from '../types';
 import { FileText, Printer, Receipt, Plus, Search, CheckCircle2, Clock, Truck, ArrowRight, DollarSign, AlertCircle, Eye, Filter, Layers, Phone, User, Calendar, FileSpreadsheet, SlidersHorizontal, RefreshCw, Edit2, Trash2, X, UserPlus, RotateCcw, AlertTriangle, Landmark, Smartphone, Banknote, CreditCard, History, ChevronRight, FolderKanban, Briefcase, } from 'lucide-react';
 import { exportSalesToExcel } from '../utils/exportUtils';
 import { ReportPrintModal } from './ReportPrintModal';
@@ -45,6 +45,11 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
     const [invItemQty, setInvItemQty] = useState(1);
     const [invItemPrice, setInvItemPrice] = useState(1000);
     const [invSelectedProductId, setInvSelectedProductId] = useState('');
+    const [invItemUnit, setInvItemUnit] = useState<UnitType>('pcs');
+    const [invItemWidth, setInvItemWidth] = useState<number | ''>('');
+    const [invItemHeight, setInvItemHeight] = useState<number | ''>('');
+    const [invItemCategory, setInvItemCategory] = useState<string>('BRANDED PROMOTIONAL GIFTS');
+    const [editInvIsCustomItem, setEditInvIsCustomItem] = useState<boolean>(false);
     const [invoiceDiscount, setInvoiceDiscount] = useState(0);
     const [invoiceDiscountType, setInvoiceDiscountType] = useState<'amount' | 'percent'>('amount');
     const [invoiceVatType, setInvoiceVatType] = useState<'amount' | 'percent'>('percent');
@@ -109,21 +114,73 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
         }
         setProjectModalInvoice(null);
     };
-    const handleUpdateEditInvoiceItemRow = (index: number, field: 'qty' | 'unitPrice', val: number) => {
+    const handleUpdateEditInvoiceItemRow = (index: number, field: 'qty' | 'unitPrice' | 'width' | 'height' | 'unit', val: any) => {
         setEditInvoiceItems((prev) => prev.map((it, i) => {
             if (i !== index)
                 return it;
-            const newQty = field === 'qty' ? Math.max(1, val) : it.qty;
-            const newPrice = field === 'unitPrice' ? Math.max(0, val) : it.unitPrice;
-            const rowTotal = Math.round(newQty * newPrice);
+            const newQty = field === 'qty' ? Math.max(1, Number(val) || 1) : it.qty;
+            const newPrice = field === 'unitPrice' ? Math.max(0, Number(val) || 0) : it.unitPrice;
+            const newUnit = field === 'unit' ? val : it.unit;
+            const newWidth = field === 'width' ? (Number(val) > 0 ? Number(val) : undefined) : it.width;
+            const newHeight = field === 'height' ? (Number(val) > 0 ? Number(val) : undefined) : it.height;
+            const singleSqft = newWidth && newHeight ? Number((newWidth * newHeight).toFixed(2)) : undefined;
+            const newTotalSqft = singleSqft ? Number((singleSqft * newQty).toFixed(2)) : (it.totalSqft ? Number((it.totalSqft * (newQty / (it.qty || 1))).toFixed(2)) : undefined);
+            const rowTotal = singleSqft ? Math.round(singleSqft * newQty * newPrice) : (newTotalSqft ? Math.round(newTotalSqft * newPrice) : Math.round(newQty * newPrice));
             return {
                 ...it,
                 qty: newQty,
                 unitPrice: newPrice,
+                unit: newUnit,
+                width: newWidth,
+                height: newHeight,
+                totalSqft: newTotalSqft,
                 costPrice: Math.round(newPrice * 0.6),
                 totalPrice: rowTotal,
             };
         }));
+    };
+    const handleAddEditInvoiceItemRow = () => {
+        if (!invItemName.trim()) {
+            alert('Please enter or select item description!');
+            return;
+        }
+        const w = Number(invItemWidth) || 0;
+        const h = Number(invItemHeight) || 0;
+        const singleSqft = w > 0 && h > 0 ? Number((w * h).toFixed(2)) : undefined;
+        const totalSqft = singleSqft ? Number((singleSqft * invItemQty).toFixed(2)) : undefined;
+        const rowTotal = singleSqft ? Math.round(singleSqft * invItemQty * invItemPrice) : Math.round(invItemQty * invItemPrice);
+        const newItem: InvoiceItem = {
+            productId: invSelectedProductId || `custom-${Date.now()}`,
+            name: invItemName.trim(),
+            category: invItemCategory || 'BRANDED PROMOTIONAL GIFTS',
+            region: editInvShowRegionColumn && invItemRegion.trim() ? invItemRegion.trim() : undefined,
+            type: editInvShowTypeColumn && invItemType.trim() ? invItemType.trim() : undefined,
+            itemType: editInvShowTypeColumn && invItemType.trim() ? invItemType.trim() : undefined,
+            unit: invItemUnit,
+            unitPrice: invItemPrice,
+            costPrice: Math.round(invItemPrice * 0.6),
+            qty: invItemQty,
+            width: w > 0 ? w : undefined,
+            height: h > 0 ? h : undefined,
+            totalSqft: totalSqft,
+            totalPrice: rowTotal,
+        };
+        setEditInvoiceItems((prev) => [...prev, newItem]);
+        if (invItemType.trim() && !PRESET_INVOICE_ITEM_TYPES.includes(invItemType.trim() as any) && !editInvCustomTypes.includes(invItemType.trim())) {
+            setEditInvCustomTypes((prev) => [...prev, invItemType.trim()]);
+        }
+        // Reset item entry row
+        setInvSelectedProductId('');
+        setInvItemName('');
+        setInvItemRegion('');
+        setInvItemType('');
+        setEditInvIsCustomType(false);
+        setEditInvIsCustomItem(false);
+        setInvItemQty(1);
+        setInvItemPrice(1000);
+        setInvItemWidth('');
+        setInvItemHeight('');
+        setInvItemUnit('pcs');
     };
     const handleUpdateQuoteItemRow = (index: number, field: 'qty' | 'unitPrice', val: number) => {
         setAddedQuoteItems((prev) => prev.map((it, i) => {
@@ -147,18 +204,26 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
             return;
         let finalItems = [...editInvoiceItems];
         if (finalItems.length === 0 && invItemName.trim()) {
-            const subItem = invItemQty * invItemPrice;
+            const w = Number(invItemWidth) || 0;
+            const h = Number(invItemHeight) || 0;
+            const singleSqft = w > 0 && h > 0 ? Number((w * h).toFixed(2)) : undefined;
+            const totalSqft = singleSqft ? Number((singleSqft * invItemQty).toFixed(2)) : undefined;
+            const rowTotal = singleSqft ? Math.round(singleSqft * invItemQty * invItemPrice) : Math.round(invItemQty * invItemPrice);
             finalItems.push({
                 productId: invSelectedProductId || `custom-${Date.now()}`,
                 name: invItemName.trim(),
+                category: invItemCategory || 'BRANDED PROMOTIONAL GIFTS',
                 region: editInvShowRegionColumn && invItemRegion.trim() ? invItemRegion.trim() : undefined,
                 type: editInvShowTypeColumn && invItemType.trim() ? invItemType.trim() : undefined,
                 itemType: editInvShowTypeColumn && invItemType.trim() ? invItemType.trim() : undefined,
-                unit: 'pcs',
+                unit: invItemUnit,
                 unitPrice: invItemPrice,
                 costPrice: Math.round(invItemPrice * 0.6),
                 qty: invItemQty,
-                totalPrice: subItem,
+                width: w > 0 ? w : undefined,
+                height: h > 0 ? h : undefined,
+                totalSqft: totalSqft,
+                totalPrice: rowTotal,
             });
         }
         if (finalItems.length === 0) {
@@ -217,8 +282,13 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
         setEditInvShowRegionColumn(false);
         setEditInvShowTypeColumn(false);
         setInvSelectedProductId('');
+        setEditInvIsCustomItem(false);
         setInvItemQty(1);
         setInvItemPrice(1000);
+        setInvItemWidth('');
+        setInvItemHeight('');
+        setInvItemUnit('pcs');
+        setInvItemCategory('BRANDED PROMOTIONAL GIFTS');
         setInvoiceDiscount(0);
         setInvoiceDiscountType('amount');
         setInvoiceVatType('percent');
@@ -879,6 +949,11 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                     setInvItemName('');
                     setInvItemQty(1);
                     setInvItemPrice(1000);
+                    setInvItemUnit('pcs');
+                    setInvItemWidth('');
+                    setInvItemHeight('');
+                    setInvItemCategory('BRANDED PROMOTIONAL GIFTS');
+                    setEditInvIsCustomItem(false);
                     setInvSelectedProductId('');
                     setEditInvShowTypeColumn(inv.showTypeColumn ?? inv.items?.some(i => Boolean(i.type || i.itemType)) ?? false);
                     setEditInvShowRegionColumn(inv.showRegionColumn ?? inv.items?.some(i => Boolean(i.region)) ?? false);
@@ -1704,9 +1779,18 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 setEditInvoiceItems([]);
                 setInvItemName('');
                 setInvSelectedProductId('');
+                setEditInvIsCustomItem(false);
                 setInvItemQty(1);
                 setInvItemPrice(1000);
+                setInvItemUnit('pcs');
+                setInvItemWidth('');
+                setInvItemHeight('');
                 setInvoiceDiscount(0);
+                setEditInvoiceRefNo('');
+                setInvItemRegion('');
+                setInvItemType('');
+                setEditInvShowRegionColumn(false);
+                setEditInvShowTypeColumn(false);
             }} className="text-slate-400 hover:text-slate-600 font-bold">
                 ✕
               </button>
@@ -1757,42 +1841,112 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
               </div>
 
               <div className="bg-slate-50 p-3 rounded-xl border border-slate-200/80 space-y-3">
-                <div className="font-bold text-slate-800 border-b border-slate-200 pb-1 flex justify-between items-center">
-                  <span>{'Add Item Row'}</span>
-                  <span className="text-[10px] text-slate-400 font-medium">{'Click Add Row below to save to list'}</span>
+                <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
+                  <span className="font-extrabold text-slate-900 text-xs uppercase tracking-wider">{'Add Item Row'}</span>
+                  <span className="text-[11px] text-slate-500 font-bold">
+                    {`Total Items: ${editInvoiceItems.length}`}
+                  </span>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                  <div className={editInvShowRegionColumn && editInvShowTypeColumn ? "sm:col-span-4" : (editInvShowRegionColumn || editInvShowTypeColumn ? "sm:col-span-5" : "sm:col-span-6")}>
-                    <label className="font-bold text-slate-600 block mb-1">
-                      {'Service / Item Description *'}
-                    </label>
-                    <div className="flex gap-2">
-                      <select value={invSelectedProductId} onChange={(e) => {
-                const prodId = e.target.value;
-                setInvSelectedProductId(prodId);
-                const prod = products.find((p) => p.id === prodId);
-                if (prod) {
-                    setInvItemName(prod.name);
-                    setInvItemPrice(prod.unitPrice);
-                }
-                else {
-                    setInvItemName('');
-                }
-            }} className="w-1/2 px-3 py-1.5 border border-slate-200 rounded-lg bg-white font-bold">
-                        <option value="">{'-- Select Item --'}</option>
-                        {(products || []).filter(p => !p.isRawMaterial).map((prod) => (<option key={prod.id} value={prod.id}>
-                            {prod.name}
-                          </option>))}
-                      </select>
-                      <input type="text" value={invItemName} onChange={(e) => setInvItemName(e.target.value)} placeholder={'Manual description...'} className="w-1/2 px-3 py-1.5 border border-slate-200 rounded-lg bg-white"/>
+                {/* Entry Row Inputs matching Create Invoice */}
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                  <div className={editInvShowRegionColumn && editInvShowTypeColumn ? "sm:col-span-2" : "sm:col-span-3"}>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="font-bold text-slate-600 text-[11px] truncate">
+                        {'Service / Item Name *'}
+                      </label>
+                      {editInvIsCustomItem ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditInvIsCustomItem(false);
+                            setInvItemName('');
+                            setInvSelectedProductId('');
+                          }}
+                          className="text-[10px] text-amber-600 hover:text-amber-700 font-bold underline cursor-pointer"
+                          title="Choose from list"
+                        >
+                          List
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditInvIsCustomItem(true);
+                            setInvItemName('');
+                            setInvSelectedProductId('');
+                          }}
+                          className="text-[10px] text-indigo-600 hover:text-indigo-700 font-bold underline cursor-pointer"
+                          title="Custom item name"
+                        >
+                          + Custom
+                        </button>
+                      )}
                     </div>
+                    {editInvIsCustomItem ? (
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={invItemName}
+                          onChange={(e) => setInvItemName(e.target.value)}
+                          placeholder="e.g. Digital Sign Banner, Acrylic..."
+                          autoFocus
+                          className="w-full px-2 py-1.5 pr-6 bg-white border border-amber-300 rounded-lg font-bold text-xs focus:ring-1 focus:ring-amber-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditInvIsCustomItem(false);
+                            setInvItemName('');
+                            setInvSelectedProductId('');
+                          }}
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold cursor-pointer"
+                          title="Cancel custom"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <select
+                        value={invSelectedProductId}
+                        onChange={(e) => {
+                          const prodId = e.target.value;
+                          if (prodId === '__custom__') {
+                            setEditInvIsCustomItem(true);
+                            setInvSelectedProductId('');
+                            setInvItemName('');
+                            return;
+                          }
+                          setInvSelectedProductId(prodId);
+                          const prod = (products || []).find((p) => p.id === prodId);
+                          if (prod) {
+                            setInvItemName(prod.name);
+                            setInvItemPrice(prod.unitPrice);
+                            setInvItemCategory(prod.category || 'BRANDED PROMOTIONAL GIFTS');
+                            if (prod.unit) {
+                              setInvItemUnit(prod.unit as any);
+                            }
+                          } else {
+                            setInvItemName('');
+                          }
+                        }}
+                        className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-xs focus:ring-1 focus:ring-slate-900/20 focus:border-slate-950"
+                      >
+                        <option value="">{'-- Choose Item --'}</option>
+                        {(products || []).filter((p) => !p.isRawMaterial).map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name} (Tk{p.unitPrice}/{p.unit})
+                          </option>
+                        ))}
+                        <option value="__custom__">{'+ Custom Item...'}</option>
+                      </select>
+                    )}
                   </div>
 
                   {editInvShowTypeColumn && (
                     <div className="sm:col-span-2">
                       <div className="flex items-center justify-between mb-1">
-                        <label className="font-bold text-slate-600">
+                        <label className="font-bold text-slate-600 text-[11px] truncate">
                           {'Type'}
                         </label>
                         {editInvIsCustomType && (
@@ -1803,6 +1957,7 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                               setInvItemType('');
                             }}
                             className="text-[10px] text-amber-600 hover:text-amber-700 font-bold underline cursor-pointer"
+                            title="Back to list"
                           >
                             List
                           </button>
@@ -1816,7 +1971,7 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                             onChange={(e) => setInvItemType(e.target.value)}
                             placeholder="Enter custom type..."
                             autoFocus
-                            className="w-full px-3 py-1.5 pr-7 border border-amber-300 rounded-lg bg-white font-medium focus:ring-1 focus:ring-amber-500"
+                            className="w-full px-2 py-1.5 pr-6 bg-white border border-amber-300 rounded-lg font-bold text-xs focus:ring-1 focus:ring-amber-500"
                           />
                           <button
                             type="button"
@@ -1824,7 +1979,7 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                               setEditInvIsCustomType(false);
                               setInvItemType('');
                             }}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 font-bold cursor-pointer text-xs"
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold cursor-pointer"
                             title="Cancel custom"
                           >
                             ✕
@@ -1841,7 +1996,7 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                               setInvItemType(e.target.value);
                             }
                           }}
-                          className="w-full px-3 py-1.5 border border-slate-200 rounded-lg bg-white font-bold"
+                          className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-xs focus:ring-1 focus:ring-slate-900"
                         >
                           <option value="">{'-- Select Type --'}</option>
                           {PRESET_INVOICE_ITEM_TYPES.map((opt) => (
@@ -1862,7 +2017,7 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
 
                   {editInvShowRegionColumn && (
                     <div className="sm:col-span-2">
-                      <label className="font-bold text-slate-600 block mb-1">
+                      <label className="font-bold text-slate-600 block mb-1 text-[11px] truncate">
                         {'Region'}
                       </label>
                       <input
@@ -1870,61 +2025,97 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                         value={invItemRegion}
                         onChange={(e) => setInvItemRegion(e.target.value)}
                         placeholder="e.g. Dhaka, Chittagong"
-                        className="w-full px-3 py-1.5 border border-slate-200 rounded-lg bg-white font-medium"
+                        className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-xs focus:ring-1 focus:ring-slate-900"
                       />
                     </div>
                   )}
 
-                  <div className={editInvShowRegionColumn && editInvShowTypeColumn ? "sm:col-span-4 grid grid-cols-2 gap-2" : (editInvShowRegionColumn || editInvShowTypeColumn ? "sm:col-span-5 grid grid-cols-2 gap-2" : "sm:col-span-6 grid grid-cols-2 gap-2")}>
-                    <div>
-                      <label className="font-bold text-slate-600 block mb-1">
-                        {'Quantity'}
-                      </label>
-                      <input type="number" step="any" min="1" value={invItemQty} onChange={(e) => setInvItemQty(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-1.5 border border-slate-200 rounded-lg font-bold bg-white"/>
-                    </div>
-                    <div>
-                      <label className="font-bold text-slate-600 block mb-1">
-                        {"Unit RateTk"}
-                      </label>
-                      <input type="number" step="any" min="1" value={invItemPrice} onChange={(e) => setInvItemPrice(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-1.5 border border-slate-200 rounded-lg font-bold bg-white"/>
-                    </div>
+                  <div className="sm:col-span-1">
+                    <label className="font-bold text-slate-600 block mb-1 text-[11px] truncate">
+                      {'Unit'}
+                    </label>
+                    <select
+                      value={invItemUnit}
+                      onChange={(e) => setInvItemUnit(e.target.value as any)}
+                      className="w-full px-1.5 py-1.5 bg-white border border-slate-200 rounded-lg font-semibold text-xs"
+                    >
+                      <option value="pcs">pcs</option>
+                      <option value="sqft">sqft</option>
+                      <option value="set">set</option>
+                      <option value="roll">roll</option>
+                      <option value="packet">packet</option>
+                    </select>
                   </div>
-                </div>
 
-                <div className="flex justify-end">
-                  <button type="button" onClick={() => {
-                if (!invItemName.trim()) {
-                    alert('Please enter or select item name!');
-                    return;
-                }
-                const subTotal = invItemQty * invItemPrice;
-                const newItem = {
-                    productId: invSelectedProductId || `custom-${Date.now()}`,
-                    name: invItemName.trim(),
-                    region: editInvShowRegionColumn && invItemRegion.trim() ? invItemRegion.trim() : undefined,
-                    type: editInvShowTypeColumn && invItemType.trim() ? invItemType.trim() : undefined,
-                    itemType: editInvShowTypeColumn && invItemType.trim() ? invItemType.trim() : undefined,
-                    unit: 'pcs',
-                    unitPrice: invItemPrice,
-                    costPrice: Math.round(invItemPrice * 0.6),
-                    qty: invItemQty,
-                    totalPrice: subTotal,
-                };
-                setEditInvoiceItems([...editInvoiceItems, newItem]);
-                if (invItemType.trim() && !PRESET_INVOICE_ITEM_TYPES.includes(invItemType.trim() as any) && !editInvCustomTypes.includes(invItemType.trim())) {
-                    setEditInvCustomTypes(prev => [...prev, invItemType.trim()]);
-                }
-                setInvItemName('');
-                setInvItemRegion('');
-                setInvItemType('');
-                setEditInvIsCustomType(false);
-                setInvSelectedProductId('');
-                setInvItemQty(1);
-                setInvItemPrice(1000);
-            }} className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-4 py-1.5 rounded-lg transition-colors cursor-pointer">
-                    <Plus className="w-3.5 h-3.5"/>
-                    <span>{'Add Row'}</span>
-                  </button>
+                  {/* Dimensions if Sqft */}
+                  <div className="sm:col-span-1">
+                    <label className="font-bold text-slate-600 block mb-1 text-[11px] truncate" title="Width">
+                      {'Width (W)'}
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={invItemWidth}
+                      onChange={(e) => setInvItemWidth(e.target.value ? Number(e.target.value) : '')}
+                      placeholder="0"
+                      className="w-full px-1.5 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-xs text-center"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-1">
+                    <label className="font-bold text-slate-600 block mb-1 text-[11px] truncate" title="Height">
+                      {'Height (H)'}
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={invItemHeight}
+                      onChange={(e) => setInvItemHeight(e.target.value ? Number(e.target.value) : '')}
+                      placeholder="0"
+                      className="w-full px-1.5 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-xs text-center"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-1">
+                    <label className="font-bold text-slate-600 block mb-1 text-[11px] truncate">
+                      {'Qty'}
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="1"
+                      value={invItemQty}
+                      onChange={(e) => setInvItemQty(Math.max(1, Number(e.target.value)))}
+                      className="w-full px-1.5 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-xs text-center"
+                    />
+                  </div>
+
+                  <div className={editInvShowRegionColumn && editInvShowTypeColumn ? "sm:col-span-1" : (editInvShowRegionColumn || editInvShowTypeColumn ? "sm:col-span-1" : "sm:col-span-2")}>
+                    <label className="font-bold text-slate-600 block mb-1 text-[11px] truncate">
+                      {"Unit RateTk"}
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={invItemPrice}
+                      onChange={(e) => setInvItemPrice(Math.max(0, Number(e.target.value)))}
+                      className="w-full px-2 py-1.5 bg-white border border-slate-200 rounded-lg font-bold text-xs text-right"
+                    />
+                  </div>
+
+                  <div className={editInvShowRegionColumn && editInvShowTypeColumn ? "sm:col-span-1 flex items-end" : (editInvShowRegionColumn || editInvShowTypeColumn ? "sm:col-span-2 flex items-end" : "sm:col-span-3 flex items-end")}>
+                    <button
+                      type="button"
+                      onClick={handleAddEditInvoiceItemRow}
+                      className="w-full py-1.5 px-3 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5"/>
+                      <span>{'+ Add Item'}</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1933,51 +2124,90 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                   <div className="bg-slate-100 px-3 py-1.5 font-bold text-slate-700 border-b border-slate-200">
                     {'Added Items List'}
                   </div>
-                  <div className="max-h-40 overflow-y-auto">
+                  <div className="max-h-56 overflow-y-auto">
                     <table className="w-full text-left border-collapse">
                       <thead>
                         <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold text-[11px]">
-                          <th className="p-2 text-center w-10">SL</th>
-                          <th className="p-2">{'Description'}</th>
-                          {editInvShowTypeColumn && <th className="p-2 text-center w-24">{'Type'}</th>}
-                          {editInvShowRegionColumn && <th className="p-2 text-center w-24">{'Region'}</th>}
-                          <th className="p-2 text-center w-28">{'Qty'}</th>
-                          <th className="p-2 text-right w-32">{"RateTk"}</th>
-                          <th className="p-2 text-right w-28">{"TotalTk"}</th>
-                          <th className="p-2 text-center w-12"></th>
+                          <th className="p-2.5 text-center w-10">SL</th>
+                          <th className="p-2.5">{'Description'}</th>
+                          {editInvShowTypeColumn && <th className="p-2.5 text-center w-24">{'Type'}</th>}
+                          {editInvShowRegionColumn && <th className="p-2.5 text-center w-24">{'Region'}</th>}
+                          <th className="p-2.5 text-center w-16">{'Unit'}</th>
+                          <th className="p-2.5 text-center w-28">{'Qty'}</th>
+                          <th className="p-2.5 text-right w-32">{"RateTk"}</th>
+                          <th className="p-2.5 text-right w-28">{"TotalTk"}</th>
+                          <th className="p-2.5 text-center w-12"></th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-100">
+                      <tbody className="divide-y divide-slate-100 bg-white">
                         {editInvoiceItems.map((item, idx) => (<tr key={idx} className="hover:bg-slate-50/50">
-                            <td className="p-2 text-center text-slate-400">{idx + 1}</td>
-                            <td className="p-2 font-semibold text-slate-800">{item.name}</td>
+                            <td className="p-2.5 text-center text-slate-400 font-bold">{idx + 1}</td>
+                            <td className="p-2.5">
+                              <div className="font-bold text-slate-800 text-xs">{item.name}</div>
+                              {Boolean(item.width && item.height) && (() => {
+                                const singleSqft = Number(((item.width || 0) * (item.height || 0)).toFixed(2));
+                                const qty = Number(item.qty) || 1;
+                                const totSqft = item.totalSqft ?? Number((singleSqft * qty).toFixed(2));
+                                return (
+                                  <div className="flex items-center gap-1 text-[10px] text-amber-700 font-semibold mt-1">
+                                    <span>📐</span>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      min="0"
+                                      value={item.width || ''}
+                                      placeholder="W"
+                                      onChange={(e) => handleUpdateEditInvoiceItemRow(idx, 'width', Number(e.target.value) || 0)}
+                                      className="w-12 px-1 py-0.5 text-center bg-amber-50/80 hover:bg-white focus:bg-white border border-amber-300 rounded font-bold text-[10px]"
+                                      title="Width (Feet)"
+                                    />
+                                    <span>' ×</span>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      min="0"
+                                      value={item.height || ''}
+                                      placeholder="H"
+                                      onChange={(e) => handleUpdateEditInvoiceItemRow(idx, 'height', Number(e.target.value) || 0)}
+                                      className="w-12 px-1 py-0.5 text-center bg-amber-50/80 hover:bg-white focus:bg-white border border-amber-300 rounded font-bold text-[10px]"
+                                      title="Height (Feet)"
+                                    />
+                                    <span>' = {singleSqft} SqFt{qty > 1 ? ` × ${qty} = ${totSqft} SqFt` : ''}</span>
+                                  </div>
+                                );
+                              })()}
+                              {item.notes && (<div className="text-[10px] text-slate-500 italic">{item.notes}</div>)}
+                            </td>
                             {editInvShowTypeColumn && (
-                              <td className="p-2 text-center font-medium text-slate-700 text-xs">
+                              <td className="p-2.5 text-center font-medium text-slate-700 text-xs">
                                 {item.type || item.itemType || '-'}
                               </td>
                             )}
                             {editInvShowRegionColumn && (
-                              <td className="p-2 text-center font-medium text-slate-700 text-xs">
+                              <td className="p-2.5 text-center font-medium text-slate-700 text-xs">
                                 {item.region || '-'}
                               </td>
                             )}
-                            <td className="p-1.5 text-center">
+                            <td className="p-2.5 text-center font-medium text-slate-600 text-xs">
+                              {item.unit || 'pcs'}
+                            </td>
+                            <td className="p-2 text-center">
                               <div className="flex items-center justify-center gap-1">
                                 <input type="number" step="any" min="1" value={item.qty} onChange={(e) => handleUpdateEditInvoiceItemRow(idx, 'qty', Math.max(1, Number(e.target.value)))} className="w-16 px-1.5 py-1 text-center font-bold text-slate-800 bg-white border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-slate-900"/>
                                 <span className="text-[10px] text-slate-500 font-medium">{item.unit || 'pcs'}</span>
                               </div>
                             </td>
-                            <td className="p-1.5 text-right">
+                            <td className="p-2 text-right">
                               <div className="flex items-center justify-end gap-1">
                                 <span className="text-slate-400 font-semibold text-xs">Tk</span>
                                 <input type="number" step="any" min="0" value={item.unitPrice} onChange={(e) => handleUpdateEditInvoiceItemRow(idx, 'unitPrice', Math.max(0, Number(e.target.value)))} className="w-20 px-1.5 py-1 text-right font-bold text-slate-800 bg-white border border-slate-300 rounded-md text-xs focus:ring-1 focus:ring-slate-900"/>
                               </div>
                             </td>
-                            <td className="p-2 text-right font-bold text-slate-900">Tk{(Number(item.totalPrice) || 0).toLocaleString()}</td>
-                            <td className="p-2 text-center">
+                            <td className="p-2.5 text-right font-black text-slate-900">Tk{(Number(item.totalPrice) || 0).toLocaleString()}</td>
+                            <td className="p-2.5 text-center">
                               <button type="button" onClick={() => {
                         setEditInvoiceItems(editInvoiceItems.filter((_, i) => i !== idx));
-                    }} className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-md transition-colors cursor-pointer">
+                    }} className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-md transition-colors cursor-pointer" title="Remove row">
                                 <Trash2 className="w-3.5 h-3.5"/>
                               </button>
                             </td>
@@ -2077,9 +2307,18 @@ export const SalesModule: React.FC<SalesModuleProps> = ({ onOpenInvoiceModal, on
                 setEditInvoiceItems([]);
                 setInvItemName('');
                 setInvSelectedProductId('');
+                setEditInvIsCustomItem(false);
                 setInvItemQty(1);
                 setInvItemPrice(1000);
+                setInvItemUnit('pcs');
+                setInvItemWidth('');
+                setInvItemHeight('');
                 setInvoiceDiscount(0);
+                setEditInvoiceRefNo('');
+                setInvItemRegion('');
+                setInvItemType('');
+                setEditInvShowRegionColumn(false);
+                setEditInvShowTypeColumn(false);
             }} className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer">
                 {'Cancel'}
               </button>
