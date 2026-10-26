@@ -11,11 +11,14 @@ import { ReportModule } from './components/ReportModule';
 import { CompanyProfileModule } from './components/CompanyProfileModule';
 import { SettingsModule } from './components/SettingsModule';
 import { InvoicePrintModal } from './components/InvoicePrintModal';
+import { PublicDocumentView } from './components/PublicDocumentView';
 import { Login } from './components/Login';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SlidersHorizontal } from 'lucide-react';
+
 const VALID_TABS = ['pos', 'sales', 'inventory', 'supply', 'projects', 'accounting', 'reports', 'settings', 'profile'];
 const TAB_STORAGE_KEY = 'DOT_COLOR_ERP_ACTIVE_TAB';
+
 const getInitialTab = (): string => {
     try {
         // 1. Check URL query param: ?tab=supply
@@ -37,33 +40,54 @@ const getInitialTab = (): string => {
     catch { }
     return 'pos';
 };
+
+export interface PublicDocumentParam {
+    id: string;
+    type?: 'invoice' | 'quotation';
+}
+
 /**
- * Extracts any invoice query parameter from the URL (?invoiceId=..., ?invoiceNo=..., ?inv=...)
- * and immediately cleans it from the address bar via window.history.replaceState.
- * This guarantees that QR scans open the modal once, but refreshes or browser history
- * autocomplete will NOT continuously re-trigger the modal.
+ * Detects if the current URL points to a public document (QR scan, invoice verification link)
+ * Supports query params (?invoiceId=..., ?invoiceNo=..., ?inv=..., ?quoteId=..., ?verify=...)
+ * and hash routing (#verify/..., #invoice/..., #quotation/...)
  */
-const extractAndCleanInvoiceUrlParam = (): string | null => {
+export const getPublicDocumentParam = (): PublicDocumentParam | null => {
     try {
-        if (typeof window === 'undefined')
-            return null;
-        const url = new URL(window.location.href);
-        const id = url.searchParams.get('invoiceId') || url.searchParams.get('invoiceNo') || url.searchParams.get('inv');
-        if (id) {
-            url.searchParams.delete('invoiceId');
-            url.searchParams.delete('invoiceNo');
-            url.searchParams.delete('inv');
-            const cleanUrl = url.pathname + (url.searchParams.toString() ? `?${url.searchParams.toString()}` : '') + url.hash;
-            window.history.replaceState(window.history.state || {}, '', cleanUrl);
-            return id.trim();
+        if (typeof window === 'undefined') return null;
+        const search = new URLSearchParams(window.location.search);
+
+        const invoiceId = search.get('invoiceId') || search.get('invoiceNo') || search.get('inv');
+        if (invoiceId && invoiceId.trim()) {
+            return { id: invoiceId.trim(), type: 'invoice' };
         }
-    }
-    catch { }
+
+        const quoteId = search.get('quoteId') || search.get('quotationId') || search.get('quoteNo');
+        if (quoteId && quoteId.trim()) {
+            return { id: quoteId.trim(), type: 'quotation' };
+        }
+
+        const verifyId = search.get('verify') || search.get('v') || search.get('id');
+        if (verifyId && verifyId.trim()) {
+            return { id: verifyId.trim() };
+        }
+
+        const hash = window.location.hash.replace(/^#\/?/, '').trim();
+        if (hash.startsWith('verify/')) {
+            return { id: hash.replace(/^verify\//, '').trim() };
+        }
+        if (hash.startsWith('invoice/')) {
+            return { id: hash.replace(/^invoice\//, '').trim(), type: 'invoice' };
+        }
+        if (hash.startsWith('quotation/')) {
+            return { id: hash.replace(/^quotation\//, '').trim(), type: 'quotation' };
+        }
+    } catch { }
     return null;
 };
+
 const MainLayout: React.FC = () => {
     const [activeTab, setActiveTab] = useState<string>(getInitialTab);
-    const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(extractAndCleanInvoiceUrlParam);
+    const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
     const [modalMode, setModalMode] = useState<'invoice' | 'challan' | 'pos'>('invoice');
     const [directPrintOptions, setDirectPrintOptions] = useState<{
         autoPrint: boolean;
@@ -128,16 +152,14 @@ const MainLayout: React.FC = () => {
             setActiveTab(nextTab);
         }
     }, [activeTab, canAccessPOS, canAccessSales, canAccessInventory, canAccessSupply, canAccessProjects, canAccessAccounting, canAccessReports, canAccessSettings]);
+
     // Sync document title with company profile name
     useEffect(() => {
         if (profile?.name) {
             document.title = profile.name;
         }
     }, [profile?.name]);
-    // Auto-clean any lingering invoiceId / QR scan query params from the browser address bar
-    useEffect(() => {
-        extractAndCleanInvoiceUrlParam();
-    }, []);
+
     // Sync activeTab with URL & localStorage whenever it changes
     useEffect(() => {
         try {
@@ -154,6 +176,7 @@ const MainLayout: React.FC = () => {
         }
         catch { }
     }, [activeTab]);
+
     // Handle browser Back / Forward navigation
     useEffect(() => {
         const handlePopState = () => {
@@ -189,6 +212,7 @@ const MainLayout: React.FC = () => {
             window.removeEventListener('switch-tab', handleSwitchTab);
         };
     }, []);
+
     const handleOpenInvoice = (id: string, mode: 'invoice' | 'challan' | 'pos' = 'invoice', options?: {
         autoPrint?: boolean;
         isPadMode?: boolean;
@@ -200,11 +224,13 @@ const MainLayout: React.FC = () => {
             isPadMode: Boolean(options?.isPadMode),
         });
     };
+
     const handleOpenChallan = (id: string) => {
         setSelectedInvoiceId(id);
         setModalMode('challan');
         setDirectPrintOptions({ autoPrint: false, isPadMode: false });
     };
+
     return (<div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans antialiased selection:bg-amber-100 selection:text-amber-900">
       {/* Top Header & Navigation */}
       <Header activeTab={activeTab} setActiveTab={setActiveTab}/>
@@ -284,26 +310,44 @@ const MainLayout: React.FC = () => {
       </footer>
     </div>);
 };
+
 const AppContent: React.FC = () => {
     const { isAuthenticated } = useApp();
-    const [publicInvoiceId, setPublicInvoiceId] = useState<string | null>(extractAndCleanInvoiceUrlParam);
+    const [publicDoc, setPublicDoc] = useState<PublicDocumentParam | null>(getPublicDocumentParam);
+
     useEffect(() => {
-        // Extra safety: clean any lingering invoice params from address bar on mount
-        extractAndCleanInvoiceUrlParam();
+        const handleNav = () => {
+            setPublicDoc(getPublicDocumentParam());
+        };
+        window.addEventListener('popstate', handleNav);
+        window.addEventListener('hashchange', handleNav);
+        return () => {
+            window.removeEventListener('popstate', handleNav);
+            window.removeEventListener('hashchange', handleNav);
+        };
     }, []);
-    if (!isAuthenticated && publicInvoiceId) {
-        return (<div className="min-h-screen bg-slate-900/60 flex items-center justify-center p-2 sm:p-4">
-        <InvoicePrintModal invoiceId={publicInvoiceId} mode="invoice" isPublicView={true} onClose={() => {
-                extractAndCleanInvoiceUrlParam();
-                setPublicInvoiceId(null);
-            }}/>
-      </div>);
+
+    // 1. Standalone Independent Public Verification View
+    // Automatically activated whenever QR code is scanned or URL contains invoice/quote param.
+    // Zero login/logout prompts, completely standalone, refresh safe, mobile responsive!
+    if (publicDoc) {
+        return (
+            <PublicDocumentView
+                documentId={publicDoc.id}
+                documentType={publicDoc.type}
+            />
+        );
     }
+
+    // 2. Unauthenticated Staff -> Login Page
     if (!isAuthenticated) {
         return <Login />;
     }
+
+    // 3. Authenticated Staff -> Full ERP
     return <MainLayout />;
 };
+
 export default function App() {
     return (<ErrorBoundary>
       <AppProvider>

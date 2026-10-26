@@ -116,7 +116,8 @@ app.get('/api/state', async (_req, res) => {
 
 // Public single invoice fetch endpoint (for QR code scan lookup)
 app.get('/api/public/invoice/:id', async (req, res) => {
-  const queryId = (req.params.id || '').trim().toLowerCase();
+  const rawId = (req.params.id || '').trim();
+  const queryId = rawId.toLowerCase();
   const queryNoHash = queryId.replace(/^#/, '');
 
   if (!isConnected) {
@@ -133,11 +134,18 @@ app.get('/api/public/invoice/:id', async (req, res) => {
     const quotations = Array.isArray(doc.data.quotations) ? doc.data.quotations : [];
     const profile = doc.data.profile || {};
 
+    const cleanMatches = (val?: string) => {
+      if (!val) return false;
+      const v = String(val).trim().toLowerCase();
+      const vNoHash = v.replace(/^#/, '');
+      return v === queryId || vNoHash === queryNoHash || v === queryNoHash || vNoHash === queryId;
+    };
+
     const foundInvoice = invoices.find(
       (inv: any) =>
-        (inv.id && inv.id.toLowerCase() === queryId) ||
-        (inv.invoiceNo && inv.invoiceNo.toLowerCase() === queryId) ||
-        (inv.invoiceNo && inv.invoiceNo.toLowerCase() === queryNoHash)
+        cleanMatches(inv.id) ||
+        cleanMatches(inv.invoiceNo) ||
+        cleanMatches(inv.referenceNo)
     );
 
     if (foundInvoice) {
@@ -146,9 +154,9 @@ app.get('/api/public/invoice/:id', async (req, res) => {
 
     const foundQuote = quotations.find(
       (q: any) =>
-        (q.id && q.id.toLowerCase() === queryId) ||
-        (q.quoteNo && q.quoteNo.toLowerCase() === queryId) ||
-        (q.quoteNo && q.quoteNo.toLowerCase() === queryNoHash)
+        cleanMatches(q.id) ||
+        cleanMatches(q.quoteNo) ||
+        cleanMatches(q.referenceNo)
     );
 
     if (foundQuote) {

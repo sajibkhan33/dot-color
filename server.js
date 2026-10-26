@@ -91,7 +91,8 @@ app.get("/api/state", async (_req, res) => {
   }
 });
 app.get("/api/public/invoice/:id", async (req, res) => {
-  const queryId = (req.params.id || "").trim().toLowerCase();
+  const rawId = (req.params.id || "").trim();
+  const queryId = rawId.toLowerCase();
   const queryNoHash = queryId.replace(/^#/, "");
   if (!isConnected) {
     return res.status(503).json({ success: false, message: "Database is currently offline." });
@@ -104,14 +105,20 @@ app.get("/api/public/invoice/:id", async (req, res) => {
     const invoices = Array.isArray(doc.data.invoices) ? doc.data.invoices : [];
     const quotations = Array.isArray(doc.data.quotations) ? doc.data.quotations : [];
     const profile = doc.data.profile || {};
+    const cleanMatches = (val) => {
+      if (!val) return false;
+      const v = String(val).trim().toLowerCase();
+      const vNoHash = v.replace(/^#/, "");
+      return v === queryId || vNoHash === queryNoHash || v === queryNoHash || vNoHash === queryId;
+    };
     const foundInvoice = invoices.find(
-      (inv) => inv.id && inv.id.toLowerCase() === queryId || inv.invoiceNo && inv.invoiceNo.toLowerCase() === queryId || inv.invoiceNo && inv.invoiceNo.toLowerCase() === queryNoHash
+      (inv) => cleanMatches(inv.id) || cleanMatches(inv.invoiceNo) || cleanMatches(inv.referenceNo)
     );
     if (foundInvoice) {
       return res.json({ success: true, type: "invoice", data: foundInvoice, profile });
     }
     const foundQuote = quotations.find(
-      (q) => q.id && q.id.toLowerCase() === queryId || q.quoteNo && q.quoteNo.toLowerCase() === queryId || q.quoteNo && q.quoteNo.toLowerCase() === queryNoHash
+      (q) => cleanMatches(q.id) || cleanMatches(q.quoteNo) || cleanMatches(q.referenceNo)
     );
     if (foundQuote) {
       return res.json({ success: true, type: "quotation", data: foundQuote, profile });

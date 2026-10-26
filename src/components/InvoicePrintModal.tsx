@@ -1368,36 +1368,41 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
         
         {/* Top Control Bar (Hidden when printing via CSS @media print) */}
         <div className="print:hidden p-3 sm:p-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 bg-slate-50 rounded-t-2xl">
-          {isPublicView ? (<div className="flex items-center justify-between w-full gap-2">
-              <div className="flex items-center gap-2">
-                <div className="p-2 bg-black rounded-xl text-white shadow-2xs">
-                  <FileText className="w-5 h-5"/>
-                </div>
-                <div>
-                  <div className="text-xs sm:text-sm font-black text-slate-900 tracking-wider uppercase">
-                    {'SALES INVOICE'}
+          {isPublicView ? (<div className="flex flex-col sm:flex-row sm:items-center justify-between w-full gap-2">
+              <div className="flex items-center justify-between w-full sm:w-auto">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 bg-black rounded-xl text-white shadow-2xs">
+                    <FileText className="w-5 h-5"/>
                   </div>
-                  <div className="text-[11px] font-mono font-bold text-slate-600">
-                    #{invoice.invoiceNo}
+                  <div>
+                    <div className="text-xs sm:text-sm font-black text-slate-900 tracking-wider uppercase">
+                      {(invoice as any).isQuote ? 'PRICE QUOTATION' : 'SALES INVOICE'}
+                    </div>
+                    <div className="text-[11px] font-mono font-bold text-slate-600">
+                      #{invoice.invoiceNo}
+                    </div>
                   </div>
                 </div>
+                <button type="button" onClick={onClose} className="sm:hidden p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200 cursor-pointer" title="Close">
+                  <X className="w-5 h-5"/>
+                </button>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {/* Mobile Fit vs 100% Zoom Toggle */}
-                {isMobile && template !== 'POS' && (<button type="button" onClick={() => setIsMobileFit((prev) => !prev)} className="px-2.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-2xs" title={isMobileFit ? "%" : ""}>
+                {isMobile && template !== 'POS' && (<button type="button" onClick={() => setIsMobileFit((prev) => !prev)} className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-2xs" title={isMobileFit ? "100%" : "Fit"}>
                     {isMobileFit ? (<>
                         <ZoomIn className="w-4 h-4"/>
                         <span className="hidden sm:inline">100%</span>
                       </>) : (<>
                         <Maximize2 className="w-4 h-4"/>
-                        <span className="hidden sm:inline"></span>
+                        <span className="hidden sm:inline">Fit</span>
                       </>)}
                   </button>)}
 
                 {/* Column Toggles Pill (COLS: Type, Region) */}
                 {template !== 'POS' && (
-                  <div className="bg-amber-50 border border-amber-200/90 text-amber-900 px-3 py-1.5 rounded-full flex items-center gap-2 text-xs font-semibold shadow-2xs">
+                  <div className="bg-amber-50 border border-amber-200/90 text-amber-900 px-2.5 py-1 rounded-full flex items-center gap-2 text-xs font-semibold shadow-2xs">
                     <span className="font-black text-amber-950">COLS:</span>
                     <label className="flex items-center gap-1 cursor-pointer select-none text-slate-800 hover:text-black">
                       <input
@@ -1421,19 +1426,19 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 )}
 
                 {/* Print Document */}
-                <button type="button" onClick={() => handlePrint(false)} disabled={isPrinting} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all" title="Print   Save as PDF">
+                <button type="button" onClick={() => handlePrint(false)} disabled={isPrinting} className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all">
                   <Printer className="w-4 h-4 text-amber-400"/>
                   <span>{isPrinting ? ('Printing...') : ('Print')}</span>
                 </button>
 
                 {/* Direct PDF Download */}
-                <button type="button" onClick={handleDownloadPDF} disabled={isDownloadingPdf} className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-slate-950 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all" title="PDF.pdf">
+                <button type="button" onClick={handleDownloadPDF} disabled={isDownloadingPdf} className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-slate-950 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all">
                   {isDownloadingPdf ? (<div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"/>) : (<Download className="w-4 h-4"/>)}
                   <span>{isDownloadingPdf ? ('Generating...') : ('Download PDF')}</span>
                 </button>
 
-                {/* Close Button */}
-                <button type="button" onClick={onClose} className="p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200 cursor-pointer" title="Close">
+                {/* Close Button Desktop */}
+                <button type="button" onClick={onClose} className="hidden sm:inline-flex p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200 cursor-pointer" title="Close">
                   <X className="w-5 h-5"/>
                 </button>
               </div>
@@ -1600,13 +1605,14 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
           {/* ============================================================== */}
           {/* 1. STANDARD A4 TAX / SALES INVOICE (Paginated) */}
           {/* ============================================================== */}
-          {template === 'A4' && (<div className="w-full flex flex-col items-center gap-6 print:gap-0 print:block print:w-full print:max-w-full print:m-0 print:p-0" style={isMobile && isMobileFit
-                ? {
-                    height: `${Math.ceil((sheetHeight || (isPadMode ? 1070 : 1123)) * scale * invoicePages.length)}px`,
-                    overflow: 'hidden',
-                }
-                : undefined}>
-              {invoicePages.map((page, pIdx) => (
+          {template === 'A4' && (<div className="w-full flex flex-col items-center gap-6 print:gap-0 print:block print:w-full print:max-w-full print:m-0 print:p-0">
+              {invoicePages.map((page, pIdx) => {
+                const naturalWidth = isPadMode ? 782 : 794;
+                const naturalHeight = isPadMode ? 1070 : 1123;
+                const scaledWidth = Math.round(naturalWidth * scale);
+                const scaledHeight = Math.round(naturalHeight * scale);
+
+                const sheetNode = (
                 <div
                   key={page.pageNumber}
                   ref={pIdx === 0 ? sheetRef : undefined}
@@ -1627,18 +1633,30 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                           ...(isMobile && isMobileFit
                             ? {
                                 transform: `scale(${scale})`,
-                                transformOrigin: 'top center',
+                                transformOrigin: 'top left',
+                                position: 'absolute',
+                                top: 0,
+                                left: 0,
                               }
                             : {}),
                         }
                       : isMobile && isMobileFit
                       ? {
+                          width: '794px',
+                          minWidth: '794px',
+                          maxWidth: '794px',
+                          height: '1123px',
+                          minHeight: '1123px',
+                          maxHeight: '1123px',
                           transform: `scale(${scale})`,
-                          transformOrigin: 'top center',
+                          transformOrigin: 'top left',
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
                         }
                       : undefined
                   }
-                  className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border ${
+                  className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border print:static print:transform-none ${
                     isPadMode
                       ? 'w-[782px] min-w-[782px] max-w-[782px] h-[1070px] min-h-[1070px] max-h-[1070px]'
                       : 'w-[794px] min-w-[794px] max-w-[794px] h-[1123px] min-h-[1123px] max-h-[1123px] p-8'
@@ -1990,18 +2008,37 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+
+                return isMobile && isMobileFit ? (
+                  <div
+                    key={`scaled-wrap-${page.pageNumber}`}
+                    style={{
+                      width: `${scaledWidth}px`,
+                      height: `${scaledHeight}px`,
+                      position: 'relative',
+                      overflow: 'hidden',
+                      margin: '0 auto',
+                      flexShrink: 0,
+                    }}
+                    className="print:w-auto print:h-auto print:overflow-visible print:static"
+                  >
+                    {sheetNode}
+                  </div>
+                ) : sheetNode;
+              })}
             </div>)}
 
         {/* ============================================================== */}
         {/* 2. FACTORY WORK ORDER / JOB CARD */}
         {/* ============================================================== */}
-        {template === 'WORK_ORDER' && (<div className="w-full flex justify-center print:block print:w-full print:max-w-full print:m-0 print:p-0" style={isMobile && isMobileFit
-                ? {
-                    height: `${Math.ceil((sheetHeight || 1123) * scale)}px`,
-                    overflow: 'hidden',
-                }
-                : undefined}>
+        {template === 'WORK_ORDER' && (() => {
+            const naturalWidth = isPadMode ? 782 : 794;
+            const naturalHeight = isPadMode ? 1070 : 1123;
+            const scaledWidth = Math.round(naturalWidth * scale);
+            const scaledHeight = Math.round(naturalHeight * scale);
+
+            const woNode = (
             <div ref={sheetRef} id="a4-document-sheet" style={
               isPadMode
                 ? {
@@ -2018,16 +2055,28 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     ...(isMobile && isMobileFit
                       ? {
                           transform: `scale(${scale})`,
-                          transformOrigin: 'top center',
+                          transformOrigin: 'top left',
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
                         }
                       : {}),
                   }
                 : isMobile && isMobileFit
                 ? {
+                    width: '794px',
+                    minWidth: '794px',
+                    maxWidth: '794px',
+                    height: '1123px',
+                    minHeight: '1123px',
+                    maxHeight: '1123px',
                     transform: `scale(${scale})`,
-                    transformOrigin: 'top center',
+                    transformOrigin: 'top left',
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
                 }
-                : undefined} className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-xs text-slate-900 shrink-0 box-border ${
+                : undefined} className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-xs text-slate-900 shrink-0 box-border print:static print:transform-none ${
                   isPadMode
                     ? 'w-[782px] min-w-[782px] max-w-[782px] h-[1070px] min-h-[1070px] max-h-[1070px]'
                     : 'w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 p-8'
@@ -2149,17 +2198,39 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 </div>
               </div>
             </div>
-          </div>)}
+            );
+
+            return (
+              <div className="w-full flex justify-center print:block print:w-full print:max-w-full print:m-0 print:p-0">
+                {isMobile && isMobileFit ? (
+                  <div
+                    style={{
+                      width: `${scaledWidth}px`,
+                      height: `${scaledHeight}px`,
+                      position: 'relative',
+                      overflow: 'hidden',
+                      margin: '0 auto',
+                      flexShrink: 0,
+                    }}
+                    className="print:w-auto print:h-auto print:overflow-visible print:static"
+                  >
+                    {woNode}
+                  </div>
+                ) : woNode}
+              </div>
+            );
+          })()}
 
           {/* ============================================================== */}
           {/* 3. DELIVERY CHALLAN */}
           {/* ============================================================== */}
-          {template === 'CHALLAN' && (<div className="w-full flex justify-center print:block print:w-full print:max-w-full print:m-0 print:p-0" style={isMobile && isMobileFit
-                ? {
-                    height: `${Math.ceil((sheetHeight || 1123) * scale)}px`,
-                    overflow: 'hidden',
-                }
-                : undefined}>
+          {template === 'CHALLAN' && (() => {
+            const naturalWidth = isPadMode ? 782 : 794;
+            const naturalHeight = isPadMode ? 1070 : 1123;
+            const scaledWidth = Math.round(naturalWidth * scale);
+            const scaledHeight = Math.round(naturalHeight * scale);
+
+            const challanNode = (
               <div ref={sheetRef} id="a4-document-sheet" style={
                 isPadMode
                   ? {
@@ -2176,16 +2247,28 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                       ...(isMobile && isMobileFit
                         ? {
                             transform: `scale(${scale})`,
-                            transformOrigin: 'top center',
+                            transformOrigin: 'top left',
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
                           }
                         : {}),
                     }
                   : isMobile && isMobileFit
                 ? {
+                    width: '794px',
+                    minWidth: '794px',
+                    maxWidth: '794px',
+                    height: '1123px',
+                    minHeight: '1123px',
+                    maxHeight: '1123px',
                     transform: `scale(${scale})`,
-                    transformOrigin: 'top center',
+                    transformOrigin: 'top left',
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
                 }
-                : undefined} className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border ${
+                : undefined} className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border print:static print:transform-none ${
                   isPadMode
                     ? 'w-[782px] min-w-[782px] max-w-[782px] h-[1070px] min-h-[1070px] max-h-[1070px]'
                     : 'w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 p-8'
@@ -2319,7 +2402,28 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 </div>
               </div>
             </div>
-          </div>)}
+            );
+
+            return (
+              <div className="w-full flex justify-center print:block print:w-full print:max-w-full print:m-0 print:p-0">
+                {isMobile && isMobileFit ? (
+                  <div
+                    style={{
+                      width: `${scaledWidth}px`,
+                      height: `${scaledHeight}px`,
+                      position: 'relative',
+                      overflow: 'hidden',
+                      margin: '0 auto',
+                      flexShrink: 0,
+                    }}
+                    className="print:w-auto print:h-auto print:overflow-visible print:static"
+                  >
+                    {challanNode}
+                  </div>
+                ) : challanNode}
+              </div>
+            );
+          })()}
 
           {/* ============================================================== */}
           {/* 4. POS THERMAL 80MM SLIP */}
