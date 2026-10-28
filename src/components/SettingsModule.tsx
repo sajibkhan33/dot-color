@@ -2582,7 +2582,7 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
                   </span>
                 </div>
 
-                {['POS', 'Sales', 'Inventory', 'Supply Chain', 'Accounting', 'Settings'].map((cat) => {
+                {['POS', 'Sales', 'Inventory', 'Supply Chain', 'Accounting', 'Projects', 'Reports', 'Settings'].map((cat) => {
                 const perms = SYSTEM_PERMISSIONS.filter((p) => p.category === cat);
                 const allCatSelected = perms.every((p) => roleFormData.permissions.includes(p.code));
                 return (<div key={cat} className="bg-white p-3 rounded-xl border border-slate-200 space-y-2">

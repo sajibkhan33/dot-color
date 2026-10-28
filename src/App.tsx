@@ -100,13 +100,14 @@ const MainLayout: React.FC = () => {
                 checkPermission('settings.manage_payments'))
     );
 
-    const canAccessPOS = isSuperAdmin || Boolean(checkPermission && checkPermission('pos.view'));
-    const canAccessSales = isSuperAdmin || Boolean(checkPermission && checkPermission('sales.view'));
-    const canAccessInventory = isSuperAdmin || Boolean(checkPermission && checkPermission('inventory.view'));
-    const canAccessSupply = isSuperAdmin || Boolean(checkPermission && checkPermission('supply.view'));
-    const canAccessProjects = isSuperAdmin || Boolean(checkPermission && (checkPermission('projects.view') || checkPermission('projects.manage')));
-    const canAccessAccounting = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.view'));
-    const canAccessReports = isSuperAdmin || Boolean(checkPermission && (checkPermission('reports.view') || checkPermission('accounting.export_reports')));
+    // Tick-marked modules: accessible to all roles
+    const canAccessPOS = true;
+    const canAccessSales = true;
+    const canAccessInventory = true;
+    const canAccessSupply = true;
+    const canAccessProjects = true;
+    const canAccessAccounting = true;
+    const canAccessReports = true;
 
     // Determine first permitted tab for redirection if current tab is not allowed
     const isTabPermitted = (tab: string): boolean => {

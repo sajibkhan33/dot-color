@@ -337,6 +337,21 @@ export const sanitizeUserRoles = (list: UserRole[]): UserRole[] => {
                 )
             );
 
+            // Auto-heal: If role is Admin, Managing Director, Accountant, or Sales, ensure projects permission is available
+            const rNameLower = (role.name || '').toLowerCase().trim();
+            if (
+                rNameLower === 'admin' ||
+                rNameLower === 'administrator' ||
+                role.id === 'role-admin' ||
+                role.id === 'role-md' ||
+                role.id === 'role-acc' ||
+                role.id === 'role-sales'
+            ) {
+                if (!normalizedPerms.includes('projects.view')) normalizedPerms.push('projects.view');
+                if (!normalizedPerms.includes('projects.manage')) normalizedPerms.push('projects.manage');
+                if (!normalizedPerms.includes('reports.view')) normalizedPerms.push('reports.view');
+            }
+
             nonSuperRoles.push({
                 ...role,
                 permissions: normalizedPerms,
