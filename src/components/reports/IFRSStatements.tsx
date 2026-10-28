@@ -1,6 +1,8 @@
-import React, { useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { ChartOfAccount, AccountingTransaction, SalesInvoice, PurchaseOrder, Product, Customer, Language, CompanyProfile, } from '../../types';
-import { Scale, TrendingUp, FileText, DollarSign, CheckCircle2, AlertCircle, Building, ArrowDownRight, ArrowUpRight, } from 'lucide-react';
+import { Scale, TrendingUp, FileText, DollarSign, CheckCircle2, AlertCircle, Building, ArrowDownRight, ArrowUpRight, Edit2, } from 'lucide-react';
+import { calculateSingleAccountBalance, calculateTotalCustomerReceivables, calculateTotalSupplierPayables, isSupplierPaymentTransaction, calculateInventoryValuation, isProjectTransaction, isDueReceivableTransaction, isAdvanceDepositTransaction, isAdvanceAdjustmentTransaction } from '../../utils/accountUtils';
+import { useApp } from '../../context/AppContext';
 interface IFRSStatementsProps {
     reportId: string;
     chartOfAccounts: ChartOfAccount[];
@@ -13,8 +15,22 @@ interface IFRSStatementsProps {
     language: Language;
 }
 export const IFRSStatements: React.FC<IFRSStatementsProps> = ({ reportId, chartOfAccounts, transactions, invoices, purchaseOrders, products, customers, profile, language, }) => {
+    const { updateProfile, journalEntries = [], projects = [] } = useApp();
     const isBn = language === 'bn';
     const currency = profile.currencySymbol || "Tk";
+    const configuredTaxRate = profile.incomeTaxRate !== undefined ? profile.incomeTaxRate : 0;
+    const [taxRate, setTaxRate] = useState<number>(configuredTaxRate);
+    const [isEditingTax, setIsEditingTax] = useState(false);
+    const [taxRateInput, setTaxRateInput] = useState<string>(String(configuredTaxRate));
+
+    useEffect(() => {
+        if (!isEditingTax) {
+            const currentRate = profile.incomeTaxRate !== undefined ? profile.incomeTaxRate : 0;
+            setTaxRate(currentRate);
+            setTaxRateInput(String(currentRate));
+        }
+    }, [profile.incomeTaxRate, isEditingTax]);
+
     const isWiped = useMemo(() => {
         const pettyCashAcc = (chartOfAccounts || []).find((acc) => acc.id === 'coa-1010');
         return !pettyCashAcc || (pettyCashAcc.openingBalance || 0) === 0;
@@ -24,147 +40,369 @@ export const IFRSStatements: React.FC<IFRSStatementsProps> = ({ reportId, chartO
     // -------------------------------------------------------------
     // Gross Revenue & Discounts
     const grossSalesRevenue = useMemo(() => {
-        return invoices.reduce((sum, inv) => sum + (inv.subtotal || inv.grandTotal), 0);
-    }, [invoices]);
+        const invoiceTotal = invoices.reduce((sum, inv) => sum + (inv.subtotal || inv.grandTotal), 0);
+        
+        // Direct non-invoiced operating income transactions from Financial Ledger
+        const directIncomeTotal = (transactions || [])
+            .filter((t) => {
+                if (t.type !== 'INCOME') return false;
+                if (isDueReceivableTransaction(t)) return false;
+                if (isAdvanceDepositTransaction(t)) return false;
+                if (isAdvanceAdjustmentTransaction(t)) return false;
+                // Exclude invoice-matching transactions
+                if (t.refNo && invoices.some(i => i.invoiceNo && i.invoiceNo.toLowerCase().trim() === t.refNo.toLowerCase().trim())) return false;
+                const desc = (t.description || '').toLowerCase();
+                if (desc.includes('due collection') || desc.includes('customer due') || desc.includes('invoice #')) return false;
+                return true;
+            })
+            .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+        return invoiceTotal + directIncomeTotal;
+    }, [invoices, transactions]);
     const salesDiscounts = useMemo(() => {
         return invoices.reduce((sum, inv) => sum + (inv.discount || 0), 0);
     }, [invoices]);
     const netSalesRevenue = grossSalesRevenue - salesDiscounts;
     // Inventory & COGS
+    const invAcc = useMemo(() => {
+        return (chartOfAccounts || []).find(a => 
+            a.code === '1002' || a.code === '1060' || 
+            a.id === 'coa-1002' || a.id === 'coa-1060' ||
+            (a.name || '').toLowerCase().includes('raw material') ||
+            (a.name || '').toLowerCase().includes('inventory')
+        );
+    }, [chartOfAccounts]);
+
     const closingStockValuation = useMemo(() => {
+        const calculated = calculateInventoryValuation(products, purchaseOrders, invAcc, journalEntries);
+        if (calculated > 0) return calculated;
         return products.reduce((sum, p) => sum + (p.stockOffice + p.stockFactory) * (p.costPrice || 0), 0);
-    }, [products]);
+    }, [products, purchaseOrders, invAcc, journalEntries]);
+
     const rawMaterialPurchases = useMemo(() => {
         return purchaseOrders.reduce((sum, po) => sum + (po.totalAmount || 0), 0);
     }, [purchaseOrders]);
     // Opening stock (baseline estimation for period)
-    const openingStockValuation = isWiped ? 0 : Math.max(150000, Math.round(closingStockValuation * 0.85));
-    // COGS = Opening Stock + Purchases - Closing Stock + Direct Job/Factory Labor
-    const directProductionLabor = isWiped ? 0 : 45000;
-    const costOfGoodsSold = isWiped ? 0 : Math.max(50000, openingStockValuation + rawMaterialPurchases + directProductionLabor - closingStockValuation);
+    const openingStockValuation = useMemo(() => {
+        return (invAcc?.openingBalance || 0);
+    }, [invAcc]);
+    const directProductionLabor = useMemo(() => {
+        return (transactions || [])
+            .filter((t) => t.type === 'EXPENSE' && ((t.category || '').toLowerCase().includes('production labor') || (t.category || '').toLowerCase().includes('factory labor')))
+            .reduce((s, t) => s + t.amount, 0);
+    }, [transactions]);
+    // COGS = Opening Stock + Purchases + Direct Labor - Closing Stock
+    const costOfGoodsSold = useMemo(() => {
+        const cogsFromStock = Math.max(0, openingStockValuation + rawMaterialPurchases + directProductionLabor - closingStockValuation);
+        // Only use poExp as a fallback if NO purchase orders and NO inventory tracking exists at all
+        if (rawMaterialPurchases === 0 && closingStockValuation === 0 && openingStockValuation === 0) {
+            const poExp = (transactions || []).filter(t => t.type === 'EXPENSE' && !isSupplierPaymentTransaction(t) && (t.category?.toLowerCase().includes('raw') || t.category?.toLowerCase().includes('purchase'))).reduce((s, t) => s + t.amount, 0);
+            return poExp;
+        }
+        return cogsFromStock;
+    }, [openingStockValuation, rawMaterialPurchases, directProductionLabor, closingStockValuation, transactions]);
     const grossProfit = netSalesRevenue - costOfGoodsSold;
     const grossMarginPct = netSalesRevenue > 0 ? (grossProfit / netSalesRevenue) * 100 : 0;
     // Itemized Operating Expenses from transactions & chart of accounts
     const operatingExpensesList = useMemo(() => {
-        if (isWiped)
-            return [];
-        const expenseCategories = [
-            { name: 'Factory Electricity & Power', nameBn: "Factory", amount: 32000 },
-            { name: 'Office & Showroom Rent', nameBn: "", amount: 65000 },
-            { name: 'Staff Salaries & Allowances', nameBn: "", amount: 85000 },
-            { name: 'Printing Machinery Maintenance & Spares', nameBn: "Print", amount: 18500 },
-            { name: 'Marketing & Corporate Relations', nameBn: "", amount: 12000 },
-            { name: 'Delivery, Freight & Transportation', nameBn: "Product", amount: 14200 },
-            { name: 'Office Stationery & Tea/Entertainment', nameBn: "", amount: 8400 },
-            { name: 'Depreciation on Plant & Machinery', nameBn: "", amount: 22500 },
-        ];
-        // Combine with any extra expense transactions
-        const extraExpenses = transactions
-            .filter((t) => t.type === 'EXPENSE')
-            .reduce((sum, t) => sum + t.amount, 0);
-        if (extraExpenses > 0) {
-            expenseCategories.push({
-                name: 'Other Administrative & Operational Expenses',
-                nameBn: "",
-                amount: Math.min(extraExpenses, 45000),
+        const map = new Map<string, { name: string; nameBn?: string; amount: number }>();
+        (transactions || []).filter((t) => {
+            if (t.type !== 'EXPENSE') return false;
+            // 1. Exclude supplier debt payments / PO settlements (they belong to Accounts Payable & COGS, never OPEX)
+            if (isSupplierPaymentTransaction(t)) return false;
+            const cat = (t.category || '').toLowerCase();
+            const desc = (t.description || '').toLowerCase();
+            if (cat.includes('raw') || cat.includes('purchase') || cat.includes('po payment') || desc.includes('payment for purchase order') || desc.includes('supplier')) {
+                return false;
+            }
+            // 2. Exclude direct factory labor (already handled in COGS Section 2)
+            if (cat.includes('production labor') || cat.includes('factory labor')) {
+                return false;
+            }
+            // 3. Exclude finance costs / bank charges (handled in Finance Costs Section 4)
+            if (cat.includes('bank') || cat.includes('finance') || desc.includes('charge') || desc.includes('interest')) {
+                return false;
+            }
+            return true;
+        }).forEach((t) => {
+            const cat = t.category || t.accountHead || 'General Operational Expense';
+            const existing = map.get(cat);
+            if (existing) {
+                existing.amount += (Number(t.amount) || 0);
+            } else {
+                map.set(cat, { name: cat, nameBn: t.categoryBn, amount: Number(t.amount) || 0 });
+            }
+        });
+        if (map.size === 0) {
+            (chartOfAccounts || []).filter(a => a.classification === 'Expense' && a.code !== '5001' && a.code !== '5010' && !a.name.toLowerCase().includes('cost of goods') && !a.name.toLowerCase().includes('cogs') && (a.openingBalance || a.currentBalance)).forEach(a => {
+                map.set(a.name, { name: a.name, nameBn: a.nameBn, amount: Math.max(0, a.currentBalance || a.openingBalance || 0) });
             });
         }
-        return expenseCategories;
-    }, [transactions, isWiped]);
+        return Array.from(map.values());
+    }, [transactions, chartOfAccounts]);
     const totalOperatingExpenses = operatingExpensesList.reduce((s, e) => s + e.amount, 0);
     const operatingProfitEBIT = grossProfit - totalOperatingExpenses;
-    const financeCosts = isWiped ? 0 : 7500; // Bank interest/charges
+    const financeCosts = useMemo(() => {
+        return (transactions || [])
+            .filter((t) => t.type === 'EXPENSE' && ((t.category || '').toLowerCase().includes('bank') || (t.category || '').toLowerCase().includes('finance') || (t.description || '').toLowerCase().includes('charge')))
+            .reduce((s, t) => s + t.amount, 0);
+    }, [transactions]);
     const netProfitBeforeTax = operatingProfitEBIT - financeCosts;
-    const taxProvision = Math.max(0, Math.round(netProfitBeforeTax * 0.15));
+    const taxProvision = Math.max(0, Math.round(netProfitBeforeTax * (taxRate / 100)));
     const netProfitForThePeriod = netProfitBeforeTax - taxProvision;
     const netMarginPct = netSalesRevenue > 0 ? (netProfitForThePeriod / netSalesRevenue) * 100 : 0;
     // -------------------------------------------------------------
     // 16. TRIAL BALANCE
     // -------------------------------------------------------------
     const trialBalanceAccounts = useMemo(() => {
-        // Collect all balances from Chart of Accounts, Invoices, Stock, Receivables, Payables
-        const totalReceivables = invoices.reduce((sum, inv) => sum + (inv.dueAmount || 0), 0);
-        const totalPayables = purchaseOrders.reduce((sum, po) => sum + (po.dueAmount || 0), 0);
-        const totalAdvances = customers.reduce((sum, c) => sum + (c.advanceBalance || 0), 0);
-        const list = [
-            // Assets (Debit balances)
-            { code: '1010', name: 'Petty Cash & Counter Cash', nameBn: "Cash   Cash", type: 'Asset', debit: isWiped ? 0 : 185000, credit: 0 },
-            { code: '1020', name: 'BRAC Bank Ltd. (A/C: 150120)', nameBn: "Bank", type: 'Asset', debit: isWiped ? 0 : 450000, credit: 0 },
-            { code: '1050', name: 'Accounts Receivable (Customer Dues)', nameBn: "", type: 'Asset', debit: totalReceivables, credit: 0 },
-            { code: '1100', name: 'Inventories at Cost (Materials & Finished Goods)', nameBn: "", type: 'Asset', debit: closingStockValuation, credit: 0 },
-            { code: '1200', name: 'Security Deposits (Office & Factory Premises)', nameBn: "", type: 'Asset', debit: isWiped ? 0 : 350000, credit: 0 },
-            { code: '1500', name: 'Plant & Machinery (CNC, Laser, Offset, UV)', nameBn: ",   Print", type: 'Asset', debit: isWiped ? 0 : 2450000, credit: 0 },
-            { code: '1550', name: 'Office Equipment & Computers', nameBn: "", type: 'Asset', debit: isWiped ? 0 : 280000, credit: 0 },
-            // Liabilities (Credit balances)
-            { code: '2010', name: 'Accounts Payable (Suppliers & Vendors)', nameBn: "Supplier", type: 'Liability', debit: 0, credit: totalPayables },
-            { code: '2050', name: 'Customer Advance Deposits Held', nameBn: "", type: 'Liability', debit: 0, credit: isWiped ? totalAdvances : Math.max(20500, totalAdvances) },
-            { code: '2100', name: 'Accrued Operating Expenses & Utilities', nameBn: "", type: 'Liability', debit: 0, credit: isWiped ? 0 : 85000 },
-            { code: '2500', name: 'Long-term Bank Borrowings (Term Loan)', nameBn: "Bank", type: 'Liability', debit: 0, credit: isWiped ? 0 : 950000 },
-            // Equity (Credit balances)
-            { code: '3010', name: 'Owner’s Capital (Paid-up Capital)', nameBn: "", type: 'Equity', debit: 0, credit: isWiped ? 0 : 2250000 },
-            { code: '3050', name: 'Retained Earnings (Beginning)', nameBn: "", type: 'Equity', debit: 0, credit: isWiped ? 0 : 865000 },
-            // Revenue (Credit)
-            { code: '4010', name: 'Gross Printing & Packaging Sales', nameBn: "Print", type: 'Revenue', debit: 0, credit: grossSalesRevenue },
-            // Cost of Goods Sold & Expenses (Debit)
-            { code: '5010', name: 'Cost of Goods Sold (Raw Materials & Direct Labor)', nameBn: "COGS", type: 'Expense', debit: costOfGoodsSold, credit: 0 },
-            { code: '6010', name: 'Operating & Administrative Expenses', nameBn: "", type: 'Expense', debit: totalOperatingExpenses, credit: 0 },
-            { code: '6050', name: 'Financial Charges & Bank Interest', nameBn: "Bank", type: 'Expense', debit: financeCosts, credit: 0 },
-        ];
-        // Compute balancing
-        const sumDebit = list.reduce((s, i) => s + i.debit, 0);
-        const sumCredit = list.reduce((s, i) => s + i.credit, 0);
-        const difference = sumDebit - sumCredit;
-        if (difference !== 0) {
-            // Balance into owner equity / retained balancing line
-            const equityItem = list.find((i) => i.code === '3050');
-            if (equityItem) {
-                equityItem.credit += difference;
+        const totalReceivables = calculateTotalCustomerReceivables(invoices, customers, []);
+        const totalPayables = calculateTotalSupplierPayables([], purchaseOrders);
+        const totalAdvances = (customers || []).reduce((sum, c) => sum + (c.advanceBalance || 0), 0);
+
+        let cogsAssigned = false;
+
+        const accounts = (chartOfAccounts || []).map((acc) => {
+            const nameLower = (acc.name || '').toLowerCase();
+            let debit = 0;
+            let credit = 0;
+
+            if (acc.classification === 'Asset') {
+                if (acc.code === '1003' || acc.code === '1050' || nameLower.includes('receivable')) {
+                    debit = totalReceivables > 0 ? totalReceivables : (acc.openingBalance || 0);
+                } else if (acc.code === '1002' || acc.code === '1060' || acc.code === '1070' || nameLower.includes('inventory') || nameLower.includes('stock')) {
+                    debit = closingStockValuation > 0 ? closingStockValuation : (acc.openingBalance || 0);
+                } else {
+                    debit = calculateSingleAccountBalance(acc, transactions, invoices, [], journalEntries);
+                }
+            } else if (acc.classification === 'Liability') {
+                if (acc.code === '2001' || acc.code === '2010' || nameLower.includes('payable')) {
+                    credit = totalPayables > 0 ? totalPayables : (acc.openingBalance || 0);
+                } else if (acc.code === '2002' || acc.code === '2020' || nameLower.includes('advance')) {
+                    credit = totalAdvances > 0 ? totalAdvances : (acc.openingBalance || 0);
+                } else {
+                    credit = acc.currentBalance || acc.openingBalance || 0;
+                }
+            } else if (acc.classification === 'Equity') {
+                const isDrawings = acc.normalBalance === 'Debit' || nameLower.includes('drawing') || (acc.nameBn || '').includes('উত্তোলন');
+                if (isDrawings) {
+                    let journalDrawingsDelta = 0;
+                    (journalEntries || []).forEach(j => {
+                        if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE' || j.source === 'EXPENSE' || j.source === 'SALES' || j.source === 'PURCHASE' || j.source === 'LEDGER_SYNC') return;
+                        const isDebit = (j.debitAccountId === acc.id || j.debitAccountId === acc.code || (j.debitAccountName && j.debitAccountName.toLowerCase().trim() === nameLower));
+                        const isCredit = (j.creditAccountId === acc.id || j.creditAccountId === acc.code || (j.creditAccountName && j.creditAccountName.toLowerCase().trim() === nameLower));
+                        const amt = Number(j.amount) || 0;
+                        if (isDebit && !isCredit) journalDrawingsDelta += amt;
+                        else if (isCredit && !isDebit) journalDrawingsDelta -= amt;
+                    });
+                    const txDrawings = (transactions || [])
+                        .filter(t => t.type === 'EXPENSE' && ((t.category || '').toLowerCase().includes('drawing') || (t.description || '').toLowerCase().includes('drawing') || (t.accountHead || '').toLowerCase().includes('drawing')))
+                        .reduce((s, t) => s + t.amount, 0);
+                    debit = Math.max(0, (acc.openingBalance || 0) + journalDrawingsDelta + txDrawings);
+                } else {
+                    let journalEquityDelta = 0;
+                    (journalEntries || []).forEach(j => {
+                        if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE' || j.source === 'EXPENSE' || j.source === 'SALES' || j.source === 'PURCHASE' || j.source === 'LEDGER_SYNC') return;
+                        if (j.refNo && (transactions || []).some(t => t.refNo && t.refNo.toLowerCase().trim() === j.refNo.toLowerCase().trim())) return;
+                        const isDebit = (j.debitAccountId === acc.id || j.debitAccountId === acc.code || (j.debitAccountName && j.debitAccountName.toLowerCase().trim() === nameLower));
+                        const isCredit = (j.creditAccountId === acc.id || j.creditAccountId === acc.code || (j.creditAccountName && j.creditAccountName.toLowerCase().trim() === nameLower));
+                        const amt = Number(j.amount) || 0;
+                        if (isCredit && !isDebit) journalEquityDelta += amt;
+                        else if (isDebit && !isCredit) journalEquityDelta -= amt;
+                    });
+                    credit = Math.max(0, (acc.openingBalance || 0) + journalEquityDelta);
+                }
+            } else if (acc.classification === 'Revenue') {
+                const isPrj = acc.code === '4002' || acc.code === '4051' || acc.code === '4060' || nameLower.includes('project') || (acc.nameBn || '').includes('প্রজেক্ট');
+                if (isPrj) {
+                    const prjInvSales = (invoices || [])
+                        .filter(i => i.projectId || i.projectCode)
+                        .reduce((s, i) => s + (Number(i.grandTotal) || (Number(i.paidAmount) + Number(i.dueAmount)) || 0), 0);
+                    
+                    const prjTxSales = (transactions || [])
+                        .filter(t => t.type === 'INCOME' && !isDueReceivableTransaction(t) && !isAdvanceDepositTransaction(t) && !isAdvanceAdjustmentTransaction(t) && (
+                            isProjectTransaction(t) || 
+                            (t.category && t.category.toLowerCase().includes('project')) ||
+                            (t.accountHead && t.accountHead.toLowerCase().includes('project')) ||
+                            (t.refNo && (t.refNo.toUpperCase().startsWith('PRJ-') || (projects || []).some(p => p.code === t.refNo)))
+                        ))
+                        .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+
+                    let journalPrjDelta = 0;
+                    (journalEntries || []).forEach(j => {
+                        const isCredit = (j.creditAccountId === acc.id || j.creditAccountId === acc.code || (j.creditAccountName && j.creditAccountName.toLowerCase().trim() === nameLower) || (j.creditAccountName && j.creditAccountName.toLowerCase().includes('project')));
+                        const isDebit = (j.debitAccountId === acc.id || j.debitAccountId === acc.code || (j.debitAccountName && j.debitAccountName.toLowerCase().trim() === nameLower) || (j.debitAccountName && j.debitAccountName.toLowerCase().includes('project')));
+                        const amt = Number(j.amount) || 0;
+                        if (isCredit && !isDebit) journalPrjDelta += amt;
+                        else if (isDebit && !isCredit) journalPrjDelta -= amt;
+                    });
+
+                    credit = Math.max(
+                        (acc.openingBalance || 0) + (acc.currentBalance || 0),
+                        (acc.openingBalance || 0) + prjInvSales,
+                        (acc.openingBalance || 0) + prjTxSales,
+                        (acc.openingBalance || 0) + journalPrjDelta
+                    );
+                } else if (acc.code === '4001' || acc.code === '4010' || nameLower.includes('sales')) {
+                    const nonPrjSales = (invoices || [])
+                        .filter(i => !i.projectId && !i.projectCode)
+                        .reduce((s, i) => s + (Number(i.grandTotal) || (Number(i.paidAmount) + Number(i.dueAmount)) || 0), 0);
+                    credit = (acc.openingBalance || 0) + (nonPrjSales > 0 ? nonPrjSales : (acc.currentBalance || 0));
+                } else {
+                    credit = (acc.openingBalance || 0) + (acc.currentBalance || 0);
+                }
+            } else if (acc.classification === 'Expense') {
+                const isCogs = (
+                    acc.code === '5001' ||
+                    acc.code === '5010' ||
+                    acc.id === 'coa-5001' ||
+                    acc.id === 'coa-5010' ||
+                    nameLower.includes('cost of goods') ||
+                    nameLower.includes('cogs') ||
+                    (acc.nameBn || '').includes('বিক্রিত পণ্যের ব্যয়')
+                );
+                if (isCogs && !cogsAssigned) {
+                    cogsAssigned = true;
+                    debit = costOfGoodsSold > 0 ? costOfGoodsSold : ((acc.openingBalance || 0) + (acc.currentBalance || 0));
+                } else {
+                    debit = (acc.openingBalance || 0) + (acc.currentBalance || 0);
+                }
             }
+
+            return {
+                code: acc.code,
+                name: acc.name,
+                nameBn: acc.nameBn,
+                type: acc.classification,
+                debit,
+                credit,
+            };
+        });
+
+        if (!cogsAssigned && costOfGoodsSold > 0) {
+            accounts.push({
+                code: '5010',
+                name: 'Cost of Goods Sold - Raw Materials & Inks',
+                nameBn: 'বিক্রিত পণ্যের ব্যয় (কাঁচামাল ও কালি)',
+                type: 'Expense',
+                debit: costOfGoodsSold,
+                credit: 0,
+            });
         }
-        return list;
-    }, [invoices, purchaseOrders, products, customers, closingStockValuation, grossSalesRevenue, costOfGoodsSold, totalOperatingExpenses, financeCosts]);
+
+        return accounts;
+    }, [chartOfAccounts, invoices, purchaseOrders, products, customers, transactions, closingStockValuation, costOfGoodsSold, netSalesRevenue, netProfitForThePeriod, journalEntries, projects]);
     // -------------------------------------------------------------
     // 18. IFRS BALANCE SHEET (STATEMENT OF FINANCIAL POSITION)
     // -------------------------------------------------------------
     const balanceSheetData = useMemo(() => {
-        const totalReceivables = invoices.reduce((sum, inv) => sum + (inv.dueAmount || 0), 0);
-        const totalPayables = purchaseOrders.reduce((sum, po) => sum + (po.dueAmount || 0), 0);
-        const totalAdvances = customers.reduce((sum, c) => sum + (c.advanceBalance || 0), 0);
-        const liquidCashAndBank = isWiped ? 0 : 635000;
+        const totalReceivables = calculateTotalCustomerReceivables(invoices, customers, []);
+        const totalPayables = calculateTotalSupplierPayables([], purchaseOrders);
+        const totalAdvances = (customers || []).reduce((sum, c) => sum + (c.advanceBalance || 0), 0);
+
         // ASSETS
-        const nonCurrentAssets = isWiped ? [] : [
-            { name: 'Property, Plant & Equipment (Offset & Large-Format Printers, CNC Routers, Laser Cutters)', amount: 2450000 },
-            { name: 'Office IT Equipment & Graphic Workstations', amount: 280000 },
-            { name: 'Security Deposits on Factory & Office Premises', amount: 350000 },
-        ];
+        const nonCurrentAssets = (chartOfAccounts || [])
+            .filter((acc) => acc.classification === 'Asset' && (acc.accountGroup === 'Fixed Assets' || acc.code.startsWith('11') || acc.code.startsWith('12') || acc.code.startsWith('15')))
+            .map((acc) => ({ name: acc.name, amount: acc.openingBalance || acc.currentBalance || 0 }));
+
         const totalNonCurrentAssets = nonCurrentAssets.reduce((s, a) => s + a.amount, 0);
+
+        const liquidCashAndBank = (chartOfAccounts || [])
+            .filter((acc) => acc.classification === 'Asset' && !(
+                acc.accountGroup === 'Fixed Assets' || 
+                acc.code.startsWith('11') || acc.code.startsWith('12') || acc.code.startsWith('15') || 
+                acc.code === '1002' || acc.code === '1003' || acc.code === '1050' || acc.code === '1060' || acc.code === '1070' ||
+                (acc.name || '').toLowerCase().includes('inventory') ||
+                (acc.name || '').toLowerCase().includes('receivable') ||
+                (acc.name || '').toLowerCase().includes('raw material')
+            ))
+            .reduce((s, acc) => s + calculateSingleAccountBalance(acc, transactions, invoices, [], journalEntries), 0);
+
         const currentAssets = [
             { name: 'Inventories at Cost (Raw Materials & Stock)', amount: closingStockValuation },
             { name: 'Trade & Other Receivables (Customer Dues)', amount: totalReceivables },
-            { name: 'Cash and Cash Equivalents (Counter Cash & Bank)', amount: liquidCashAndBank },
+            { name: 'Cash and Cash Equivalents (Counter Cash, Bank & Wallets)', amount: liquidCashAndBank },
         ];
         const totalCurrentAssets = currentAssets.reduce((s, a) => s + a.amount, 0);
         const totalAssets = totalNonCurrentAssets + totalCurrentAssets;
+
         // LIABILITIES
-        const nonCurrentLiabilities = isWiped ? [] : [
-            { name: 'Long-term Bank Borrowings (Term Financing)', amount: 950000 },
-        ];
+        const nonCurrentLiabilities = (chartOfAccounts || [])
+            .filter((acc) => acc.classification === 'Liability' && (acc.accountGroup === 'Long-term Liabilities' || acc.code.startsWith('25')))
+            .map((acc) => ({ name: acc.name, amount: acc.openingBalance || acc.currentBalance || 0 }));
+
         const totalNonCurrentLiabilities = nonCurrentLiabilities.reduce((s, l) => s + l.amount, 0);
+
         const currentLiabilities = [
             { name: 'Trade Payables (Suppliers & Raw Material Vendors)', amount: totalPayables },
-            { name: 'Customer Advances & Prepayment Deposits Held', amount: isWiped ? totalAdvances : Math.max(20500, totalAdvances) },
+            { name: 'Customer Advances & Prepayment Deposits Held', amount: totalAdvances },
         ];
-        if (!isWiped) {
-            currentLiabilities.push({ name: 'Accrued Operating Expenses & Utilities', amount: 85000 });
-        }
+
+        (chartOfAccounts || [])
+            .filter((acc) => acc.classification === 'Liability' && !(
+                acc.accountGroup === 'Long-term Liabilities' || 
+                acc.code.startsWith('25') || 
+                acc.code === '2001' || acc.code === '2010' ||
+                acc.code === '2002' || acc.code === '2020' ||
+                (acc.name || '').toLowerCase().includes('payable') ||
+                (acc.name || '').toLowerCase().includes('supplier') ||
+                (acc.name || '').toLowerCase().includes('advance')
+            ))
+            .forEach((acc) => {
+                const bal = acc.openingBalance || acc.currentBalance || 0;
+                if (bal > 0) currentLiabilities.push({ name: acc.name, amount: bal });
+            });
+
         const totalCurrentLiabilities = currentLiabilities.reduce((s, l) => s + l.amount, 0);
         const totalLiabilities = totalNonCurrentLiabilities + totalCurrentLiabilities;
+
         // EQUITY
-        const ownerCapital = isWiped ? 0 : 2250000;
+        const capitalAcc = (chartOfAccounts || []).find((a) => a.code === '3001' || a.code === '3010' || a.name.toLowerCase().includes('capital'));
+        let journalCapitalDelta = 0;
+        if (capitalAcc) {
+            const capNameLower = (capitalAcc.name || '').toLowerCase().trim();
+            (journalEntries || []).forEach(j => {
+                if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE' || j.source === 'EXPENSE' || j.source === 'SALES' || j.source === 'PURCHASE' || j.source === 'LEDGER_SYNC') return;
+                if (j.refNo && (transactions || []).some(t => t.refNo && t.refNo.toLowerCase().trim() === j.refNo.toLowerCase().trim())) return;
+                const isDebit = (j.debitAccountId === capitalAcc.id || j.debitAccountId === capitalAcc.code || (j.debitAccountName && j.debitAccountName.toLowerCase().trim() === capNameLower));
+                const isCredit = (j.creditAccountId === capitalAcc.id || j.creditAccountId === capitalAcc.code || (j.creditAccountName && j.creditAccountName.toLowerCase().trim() === capNameLower));
+                const amt = Number(j.amount) || 0;
+                if (isCredit && !isDebit) journalCapitalDelta += amt;
+                else if (isDebit && !isCredit) journalCapitalDelta -= amt;
+            });
+        }
+        const ownerCapital = capitalAcc 
+            ? Math.max(0, (capitalAcc.openingBalance || 0) + journalCapitalDelta) 
+            : 0;
+
         const currentPeriodEarnings = netProfitForThePeriod;
-        // Retained earnings computed to achieve true accounting balance: Equity = Assets - Liabilities
-        const retainedEarnings = isWiped ? 0 : (totalAssets - totalLiabilities - ownerCapital - currentPeriodEarnings);
-        const totalEquity = ownerCapital + retainedEarnings + currentPeriodEarnings;
+        const retainedAcc = (chartOfAccounts || []).find((a) => a.classification === 'Equity' && (a.id === 'coa-3020' || a.name.toLowerCase().includes('retained') || (a.nameBn || '').includes('সংরক্ষিত')));
+        const openingRetained = Number(retainedAcc?.openingBalance) || 0;
+        // Prior accumulated retained earnings (opening balance from previous fiscal years)
+        const retainedEarnings = openingRetained;
+
+        // Owner's Drawings (Contra-Equity reduction)
+        const drawingAcc = (chartOfAccounts || []).find((a) => a.classification === 'Equity' && (a.normalBalance === 'Debit' || a.name.toLowerCase().includes('drawing') || (a.nameBn || '').includes('উত্তোলন')));
+        let journalDrawingsDelta = 0;
+        if (drawingAcc) {
+            const drawNameLower = (drawingAcc.name || '').toLowerCase().trim();
+            (journalEntries || []).forEach(j => {
+                if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE' || j.source === 'EXPENSE' || j.source === 'SALES' || j.source === 'PURCHASE' || j.source === 'LEDGER_SYNC') return;
+                const isDebit = (j.debitAccountId === drawingAcc.id || j.debitAccountId === drawingAcc.code || (j.debitAccountName && j.debitAccountName.toLowerCase().trim() === drawNameLower));
+                const isCredit = (j.creditAccountId === drawingAcc.id || j.creditAccountId === drawingAcc.code || (j.creditAccountName && j.creditAccountName.toLowerCase().trim() === drawNameLower));
+                const amt = Number(j.amount) || 0;
+                if (isDebit && !isCredit) journalDrawingsDelta += amt;
+                else if (isCredit && !isDebit) journalDrawingsDelta -= amt;
+            });
+        }
+        const txDrawings = (transactions || [])
+            .filter(t => t.type === 'EXPENSE' && ((t.category || '').toLowerCase().includes('drawing') || (t.description || '').toLowerCase().includes('drawing') || (t.accountHead || '').toLowerCase().includes('drawing')))
+            .reduce((s, t) => s + t.amount, 0);
+        const ownerDrawings = drawingAcc 
+            ? Math.max(0, (drawingAcc.openingBalance || 0) + journalDrawingsDelta + txDrawings) 
+            : 0;
+
+        const totalEquity = ownerCapital + retainedEarnings + currentPeriodEarnings - ownerDrawings;
+
         return {
             nonCurrentAssets,
             totalNonCurrentAssets,
@@ -179,29 +417,81 @@ export const IFRSStatements: React.FC<IFRSStatementsProps> = ({ reportId, chartO
             ownerCapital,
             retainedEarnings,
             currentPeriodEarnings,
+            ownerDrawings,
             totalEquity,
             totalEquityAndLiabilities: totalEquity + totalLiabilities,
         };
-    }, [invoices, purchaseOrders, customers, closingStockValuation, netProfitForThePeriod, isWiped]);
+    }, [chartOfAccounts, invoices, purchaseOrders, customers, transactions, closingStockValuation, netProfitForThePeriod, journalEntries]);
     // -------------------------------------------------------------
     // 19. STATEMENT OF CASH FLOWS (IAS 7)
     // -------------------------------------------------------------
     const cashFlowData = useMemo(() => {
         // 1. Operating Activities
-        const cashReceiptsFromCustomers = invoices.reduce((s, inv) => s + (inv.paidAmount || 0), 0);
-        const cashPaidToSuppliers = purchaseOrders.reduce((s, po) => s + (po.paidAmount || 0), 0);
-        const cashPaidForExpenses = isWiped ? 0 : 145000;
+        const customerReceiptsFromTx = (transactions || []).filter(t => t.type === 'INCOME').reduce((s, t) => s + t.amount, 0);
+        const cashReceiptsFromCustomers = Math.max(customerReceiptsFromTx, invoices.reduce((s, inv) => s + (inv.paidAmount || 0), 0));
+
+        const supplierPaymentsFromTx = (transactions || []).filter(t => t.type === 'EXPENSE' && isSupplierPaymentTransaction(t)).reduce((s, t) => s + t.amount, 0);
+        const cashPaidToSuppliers = Math.max(supplierPaymentsFromTx, purchaseOrders.reduce((s, po) => s + (po.paidAmount || 0), 0));
+
+        const cashPaidForExpenses = (transactions || [])
+            .filter((t) => t.type === 'EXPENSE' && !isSupplierPaymentTransaction(t))
+            .reduce((s, t) => s + (Number(t.amount) || 0), 0);
         const netCashOperating = cashReceiptsFromCustomers - cashPaidToSuppliers - cashPaidForExpenses;
-        // 2. Investing Activities
-        const capitalExpenditureMachinery = isWiped ? 0 : -45000; // CNC repair / maintenance overhaul
+
+        // 2. Investing Activities (Purchase/sale of fixed assets from transactions)
+        const capitalExpenditureMachinery = (transactions || [])
+            .filter((t) => t.type === 'EXPENSE' && ((t.category || '').toLowerCase().includes('machinery') || (t.category || '').toLowerCase().includes('equipment')))
+            .reduce((s, t) => s - (Number(t.amount) || 0), 0);
         const netCashInvesting = capitalExpenditureMachinery;
-        // 3. Financing Activities
-        const loanRepayments = isWiped ? 0 : -25000;
-        const ownerDrawings = isWiped ? 0 : -30000;
-        const netCashFinancing = loanRepayments + ownerDrawings;
+
+        // 3. Financing Activities (Capital contributions, Loan repayments & owner drawings)
+        let capitalInfusions = 0;
+        (journalEntries || []).forEach(j => {
+            if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE' || j.source === 'EXPENSE' || j.source === 'SALES' || j.source === 'PURCHASE' || j.source === 'LEDGER_SYNC') return;
+            const cName = (j.creditAccountName || '').toLowerCase();
+            const cId = (j.creditAccountId || '').toLowerCase();
+            if (cId === 'coa-3001' || cId === '3001' || cName.includes('capital') || cName.includes('মূলধন')) {
+                capitalInfusions += Number(j.amount) || 0;
+            }
+        });
+
+        const loanRepayments = (transactions || [])
+            .filter((t) => t.type === 'EXPENSE' && ((t.category || '').toLowerCase().includes('loan') || (t.category || '').toLowerCase().includes('borrowing')))
+            .reduce((s, t) => s - (Number(t.amount) || 0), 0);
+
+        const txDrawings = (transactions || [])
+            .filter((t) => t.type === 'EXPENSE' && ((t.category || '').toLowerCase().includes('drawing') || (t.category || '').toLowerCase().includes('owner drawing')))
+            .reduce((s, t) => s - (Number(t.amount) || 0), 0);
+
+        let journalDrawings = 0;
+        (journalEntries || []).forEach(j => {
+            if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE' || j.source === 'EXPENSE' || j.source === 'SALES' || j.source === 'PURCHASE' || j.source === 'LEDGER_SYNC') return;
+            const dName = (j.debitAccountName || '').toLowerCase();
+            const dId = (j.debitAccountId || '').toLowerCase();
+            if (dId === 'coa-3002' || dId === '3002' || dName.includes('drawing') || dName.includes('উত্তোলন')) {
+                journalDrawings -= Number(j.amount) || 0;
+            }
+        });
+
+        const ownerDrawings = txDrawings + journalDrawings;
+        const netCashFinancing = capitalInfusions + loanRepayments + ownerDrawings;
+
         const netChangeInCash = netCashOperating + netCashInvesting + netCashFinancing;
-        const openingCash = isWiped ? 0 : 735000;
+
+        // Opening cash & bank balance from chart of accounts
+        const openingCash = (chartOfAccounts || [])
+            .filter((a) => a.classification === 'Asset' && !(
+                a.accountGroup === 'Fixed Assets' || 
+                a.code.startsWith('11') || a.code.startsWith('12') || a.code.startsWith('15') || 
+                a.code === '1002' || a.code === '1003' || a.code === '1050' || a.code === '1060' || a.code === '1070' ||
+                (a.name || '').toLowerCase().includes('inventory') ||
+                (a.name || '').toLowerCase().includes('receivable') ||
+                (a.name || '').toLowerCase().includes('raw material')
+            ))
+            .reduce((s, a) => s + (Number(a.openingBalance) || 0), 0);
+
         const closingCash = openingCash + netChangeInCash;
+
         return {
             cashReceiptsFromCustomers,
             cashPaidToSuppliers,
@@ -209,6 +499,7 @@ export const IFRSStatements: React.FC<IFRSStatementsProps> = ({ reportId, chartO
             netCashOperating,
             capitalExpenditureMachinery,
             netCashInvesting,
+            capitalInfusions,
             loanRepayments,
             ownerDrawings,
             netCashFinancing,
@@ -216,7 +507,11 @@ export const IFRSStatements: React.FC<IFRSStatementsProps> = ({ reportId, chartO
             openingCash,
             closingCash,
         };
-    }, [invoices, purchaseOrders, isWiped]);
+    }, [invoices, purchaseOrders, transactions, chartOfAccounts, journalEntries]);
+    const totalTbDebits = useMemo(() => trialBalanceAccounts.reduce((s, a) => s + a.debit, 0), [trialBalanceAccounts]);
+    const totalTbCredits = useMemo(() => trialBalanceAccounts.reduce((s, a) => s + a.credit, 0), [trialBalanceAccounts]);
+    const isTbBalanced = Math.abs(totalTbDebits - totalTbCredits) < 0.01;
+
     return (<div className="space-y-6">
       {/* ------------------------------------------------------------- */}
       {/* REPORT 16: TRIAL BALANCE */}
@@ -231,10 +526,17 @@ export const IFRSStatements: React.FC<IFRSStatementsProps> = ({ reportId, chartO
                 {'Verification of double-entry ledger parity across Assets, Liabilities, Equity, Revenue, and Expenses'}
               </p>
             </div>
-            <div className="flex items-center gap-2 bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded-lg border border-emerald-200 text-xs font-bold">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600"/>
-              <span>{'Trial Balance is Mathematically Balanced'}</span>
-            </div>
+            {isTbBalanced ? (
+              <div className="flex items-center gap-2 bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded-lg border border-emerald-200 text-xs font-bold">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600"/>
+                <span>{isBn ? "রেওয়ামিল গাণিতিকভাবে শতভাগ ব্যালেন্সড" : "Trial Balance is Mathematically Balanced"}</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 bg-rose-50 text-rose-800 px-3 py-1.5 rounded-lg border border-rose-200 text-xs font-bold">
+                <AlertCircle className="w-4 h-4 text-rose-600"/>
+                <span>{isBn ? `রেওয়ামিলে গরমিল: ${currency} ${Math.abs(totalTbDebits - totalTbCredits).toLocaleString()}` : `Trial Balance Out of Balance: ${currency} ${Math.abs(totalTbDebits - totalTbCredits).toLocaleString()}`}</span>
+              </div>
+            )}
           </div>
 
           <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
@@ -315,6 +617,10 @@ export const IFRSStatements: React.FC<IFRSStatementsProps> = ({ reportId, chartO
                 <div>
                   <span className="text-[11px] text-slate-400 block">{'Gross Margin'}</span>
                   <span className="font-bold text-slate-900 text-base">{grossMarginPct.toFixed(1)}%</span>
+                </div>
+                <div>
+                  <span className="text-[11px] text-slate-400 block">{'Tax Provision'}</span>
+                  <span className="font-bold text-rose-600 text-base">{taxRate}%</span>
                 </div>
                 <div>
                   <span className="text-[11px] text-slate-400 block">{'Net Profit for Period'}</span>
@@ -443,7 +749,63 @@ export const IFRSStatements: React.FC<IFRSStatementsProps> = ({ reportId, chartO
                   <td className="py-2 px-5 text-right font-mono text-slate-900">{currency} {netProfitBeforeTax.toLocaleString()}</td>
                 </tr>
                 <tr>
-                  <td className="py-2 px-5 pl-8 text-slate-700">{'Income Tax Expense / Provision (15%)'}</td>
+                  <td className="py-2 px-5 pl-8 text-slate-700">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>{'Income Tax Expense / Provision'} ({taxRate}%)</span>
+                      {!isEditingTax ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTaxRateInput(String(taxRate));
+                            setIsEditingTax(true);
+                          }}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2 py-0.5 rounded-md cursor-pointer transition-colors print:hidden"
+                          title={isBn ? "ট্যাক্স রেট পরিবর্তন করুন" : "Change Corporate Tax Rate"}
+                        >
+                          <Edit2 className="w-3 h-3 text-amber-600" />
+                          <span>{isBn ? "পরিবর্তন" : "Change %"}</span>
+                        </button>
+                      ) : (
+                        <div className="inline-flex items-center gap-1.5 print:hidden">
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            step="0.5"
+                            value={taxRateInput}
+                            onChange={(e) => setTaxRateInput(e.target.value)}
+                            className="w-16 px-2 py-0.5 text-xs font-mono font-bold border border-amber-400 rounded-md bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                            autoFocus
+                          />
+                          <span className="text-xs font-bold text-slate-600">%</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const parsed = Math.max(0, Math.min(100, Number(taxRateInput) || 0));
+                              setTaxRate(parsed);
+                              updateProfile({ incomeTaxRate: parsed });
+                              setIsEditingTax(false);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-md cursor-pointer shadow-2xs"
+                            title={isBn ? "কোম্পানি প্রোফাইলে সেভ করুন" : "Save as default in Company Profile"}
+                          >
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>{isBn ? "সংরক্ষণ" : "Save"}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTaxRateInput(String(taxRate));
+                              setIsEditingTax(false);
+                            }}
+                            className="px-2 py-0.5 text-xs text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-md cursor-pointer"
+                          >
+                            {isBn ? "বাতিল" : "Cancel"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </td>
                   <td className="py-2 px-5 text-right font-mono text-slate-400">-</td>
                   <td className="py-2 px-5 text-right font-mono text-rose-600">({currency} {taxProvision.toLocaleString()})</td>
                 </tr>
@@ -478,10 +840,17 @@ export const IFRSStatements: React.FC<IFRSStatementsProps> = ({ reportId, chartO
                 {'Statement of Financial Position (Balance Sheet)'}
               </h3>
             </div>
-            <div className="flex items-center gap-2 bg-emerald-500/20 text-emerald-300 px-3 py-1.5 rounded-lg border border-emerald-500/30 text-xs font-bold font-mono">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400"/>
-              <span>Total Assets === Total Equity & Liabilities</span>
-            </div>
+            {Math.abs(balanceSheetData.totalAssets - balanceSheetData.totalEquityAndLiabilities) < 0.01 ? (
+              <div className="flex items-center gap-2 bg-emerald-500/20 text-emerald-300 px-3 py-1.5 rounded-lg border border-emerald-500/30 text-xs font-bold font-mono">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400"/>
+                <span>{isBn ? "মোট সম্পদ = মোট ইকুইটি ও দায় (ব্যালেন্সড)" : "Total Assets === Total Equity & Liabilities"}</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 bg-rose-500/20 text-rose-300 px-3 py-1.5 rounded-lg border border-rose-500/30 text-xs font-bold font-mono">
+                <AlertCircle className="w-4 h-4 text-rose-400"/>
+                <span>{isBn ? `ব্যালেন্স শিটে গরমিল: ${currency} ${Math.abs(balanceSheetData.totalAssets - balanceSheetData.totalEquityAndLiabilities).toLocaleString()}` : `Balance Sheet Mismatch: ${currency} ${Math.abs(balanceSheetData.totalAssets - balanceSheetData.totalEquityAndLiabilities).toLocaleString()}`}</span>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -567,6 +936,12 @@ export const IFRSStatements: React.FC<IFRSStatementsProps> = ({ reportId, chartO
                         <span className="text-slate-700">{'Current Period Net Profit'}</span>
                         <span className="font-mono font-bold text-emerald-700">{currency} {balanceSheetData.currentPeriodEarnings.toLocaleString()}</span>
                       </div>
+                      {balanceSheetData.ownerDrawings > 0 && (
+                        <div className="flex justify-between text-xs py-1 border-b border-slate-100 text-rose-600">
+                          <span>{isBn ? 'বাদ: মালিকের ব্যক্তিগত উত্তোলন' : 'Less: Owner’s Personal Drawings'}</span>
+                          <span className="font-mono font-bold">-{currency} {balanceSheetData.ownerDrawings.toLocaleString()}</span>
+                        </div>
+                      )}
                       <div className="flex justify-between text-xs font-bold text-slate-800 pt-1">
                         <span>{'Total Equity:'}</span>
                         <span className="font-mono">{currency} {balanceSheetData.totalEquity.toLocaleString()}</span>
@@ -706,6 +1081,15 @@ export const IFRSStatements: React.FC<IFRSStatementsProps> = ({ reportId, chartO
                     3. {'Cash Flows from Financing Activities'}
                   </td>
                 </tr>
+                {cashFlowData.capitalInfusions > 0 && (
+                  <tr>
+                    <td className="py-2 px-5 pl-8 text-slate-800">{'Capital contribution by owner'}</td>
+                    <td className="py-2 px-5 text-right font-mono text-emerald-600">
+                      +{currency} {cashFlowData.capitalInfusions.toLocaleString()}
+                    </td>
+                    <td className="py-2 px-5 text-right font-mono text-slate-400">-</td>
+                  </tr>
+                )}
                 <tr>
                   <td className="py-2 px-5 pl-8 text-slate-800">{'Repayment of bank borrowings'}</td>
                   <td className="py-2 px-5 text-right font-mono text-rose-600">

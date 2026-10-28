@@ -5,7 +5,18 @@ import { Package, Boxes, ArrowRightLeft, AlertTriangle, Plus, Search, Filter, La
 import { BulkProductImportModal } from './BulkProductImportModal';
 import { ProductCategoryManager } from './ProductCategoryManager';
 export const InventoryModule: React.FC = () => {
-    const { products, productCategories, profile, language, activeLocation, addProduct, updateProduct, deleteProduct, adjustStock, addProductCategory, updateProductCategory, } = useApp();
+    const { products, productCategories, profile, language, activeLocation, addProduct, updateProduct, deleteProduct, adjustStock, addProductCategory, updateProductCategory, checkPermission, activeStaff, } = useApp();
+
+    const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
+        (activeStaff?.name || '').toLowerCase().includes('super admin');
+    const canAddProduct = isSuperAdmin || Boolean(checkPermission && checkPermission('inventory.add_product'));
+    const canEditProduct = isSuperAdmin || Boolean(checkPermission && checkPermission('inventory.edit_product'));
+    const canDeleteProduct = isSuperAdmin || Boolean(checkPermission && checkPermission('inventory.delete_product'));
+    const canAdjustStock = isSuperAdmin || Boolean(checkPermission && checkPermission('inventory.adjust_stock'));
+    const canBulkImport = isSuperAdmin || Boolean(checkPermission && checkPermission('inventory.bulk_import'));
+    const canManageCategories = isSuperAdmin || Boolean(checkPermission && checkPermission('inventory.manage_categories'));
     const [activeTab, setActiveTab] = useState<'inventory' | 'categories'>('inventory');
     const [filterType, setFilterType] = useState<'ALL' | 'RAW' | 'FINISHED' | 'LOW_STOCK'>('ALL');
     const [searchQuery, setSearchQuery] = useState('');
@@ -259,21 +270,27 @@ export const InventoryModule: React.FC = () => {
           <button type="button" onClick={() => setActiveTab('inventory')} className={`flex-1 md:flex-none px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'inventory' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}>
             {'Inventory & Products'}
           </button>
-          <button type="button" id="tab-inventory-categories" onClick={() => setActiveTab('categories')} className={`flex-1 md:flex-none px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'categories' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}>
-            {'Category Manager'}
-          </button>
+          {canManageCategories && (
+            <button type="button" id="tab-inventory-categories" onClick={() => setActiveTab('categories')} className={`flex-1 md:flex-none px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${activeTab === 'categories' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}>
+              {'Category Manager'}
+            </button>
+          )}
         </div>
 
         {activeTab === 'inventory' && (<div className="flex items-center gap-2 w-full md:w-auto">
-            <button type="button" id="btn-open-bulk-import" onClick={() => setShowBulkImportModal(true)} className="flex-1 md:flex-none px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all" title={'Bulk upload products via CSV template'}>
-              <UploadCloud className="w-4 h-4 text-emerald-600"/>
-              <span>{'Bulk Import CSV'}</span>
-            </button>
+            {canBulkImport && (
+              <button type="button" id="btn-open-bulk-import" onClick={() => setShowBulkImportModal(true)} className="flex-1 md:flex-none px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all" title={'Bulk upload products via CSV template'}>
+                <UploadCloud className="w-4 h-4 text-emerald-600"/>
+                <span>{'Bulk Import CSV'}</span>
+              </button>
+            )}
 
-            <button type="button" id="btn-open-add-product" onClick={handleOpenAdd} className="flex-1 md:flex-none px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all">
-              <Plus className="w-4 h-4 text-amber-400"/>
-              <span>{'+ Add New Item'}</span>
-            </button>
+            {canAddProduct && (
+              <button type="button" id="btn-open-add-product" onClick={handleOpenAdd} className="flex-1 md:flex-none px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all">
+                <Plus className="w-4 h-4 text-amber-400"/>
+                <span>{'+ Add New Item'}</span>
+              </button>
+            )}
           </div>)}
       </div>
 
@@ -371,24 +388,31 @@ export const InventoryModule: React.FC = () => {
 
                       <td className="py-3 px-4 text-center">
                         <div className="flex items-center justify-center gap-1.5">
-                          {/* Stock In/Out/Transfer Adjust button */}
-                          <button type="button" onClick={() => {
-                        setAdjustModalProduct(p);
-                        setAdjustQty(1);
-                        setAdjustType('IN');
-                    }} className="p-1.5 text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg border border-amber-200 text-[10px] font-bold" title="Adjust / Transfer Stock">
-                            <ArrowRightLeft className="w-3.5 h-3.5"/>
-                          </button>
+                          {/* Stock In/Out/Transfer Adjust button (Disabled) */}
+                          {canAdjustStock && (
+                            <button
+                              type="button"
+                              disabled
+                              className="p-1.5 text-amber-500/40 bg-amber-50/40 rounded-lg border border-amber-200/40 text-[10px] font-bold cursor-not-allowed opacity-50"
+                              title="Stock adjustment / transfer is disabled"
+                            >
+                              <ArrowRightLeft className="w-3.5 h-3.5"/>
+                            </button>
+                          )}
 
                           {/* Edit Product */}
-                          <button type="button" onClick={() => handleOpenEdit(p)} className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg border border-slate-200" title="Edit Item">
-                            <Edit2 className="w-3.5 h-3.5"/>
-                          </button>
+                          {canEditProduct && (
+                            <button type="button" onClick={() => handleOpenEdit(p)} className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg border border-slate-200" title="Edit Item">
+                              <Edit2 className="w-3.5 h-3.5"/>
+                            </button>
+                          )}
 
                           {/* Delete Product */}
-                          <button type="button" onClick={() => setProductToDelete(p)} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg border border-slate-200" title={'Delete Item'}>
-                            <Trash2 className="w-3.5 h-3.5"/>
-                          </button>
+                          {canDeleteProduct && (
+                            <button type="button" onClick={() => setProductToDelete(p)} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg border border-slate-200" title={'Delete Item'}>
+                              <Trash2 className="w-3.5 h-3.5"/>
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>);
@@ -622,7 +646,7 @@ export const InventoryModule: React.FC = () => {
                       {productCategories && productCategories.length > 0 ? (
                         productCategories.map((c) => (
                           <option key={c.id} value={c.name}>
-                            {c.name} {c.nameBn ? `(${c.nameBn})` : ''} {c.isRawMaterialGroup || c.isRawMaterial ? ' [Raw Material]' : ''}
+                            {c.name} {c.isRawMaterialGroup || c.isRawMaterial ? ' [Raw Material]' : ''}
                           </option>
                         ))
                       ) : (
@@ -869,7 +893,7 @@ export const InventoryModule: React.FC = () => {
                   type="text"
                   value={categoryFormData.nameBn}
                   onChange={(e) => setCategoryFormData({ ...categoryFormData, nameBn: e.target.value })}
-                  placeholder="e.g. বিএসআরএম স্টিল লিমিটেড"
+                  placeholder="e.g. Category Name in Bengali (Optional)"
                   className="w-full px-3 py-2 border border-slate-200 rounded-xl focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                 />
               </div>

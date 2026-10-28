@@ -40,6 +40,8 @@ const COLOR_MAP: Record<string, {
 export const CompanyProfileModule: React.FC = () => {
     const { profile, updateProfile, language, activeStaff, checkPermission } = useApp();
     const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
         (activeStaff?.name || '').toLowerCase().includes('super admin');
     const canEditCompany = isSuperAdmin || Boolean(checkPermission && checkPermission('settings.view'));
     const canManagePayments = isSuperAdmin ||
@@ -54,7 +56,7 @@ export const CompanyProfileModule: React.FC = () => {
         open: boolean;
         titleEn: string;
         titleBn: string;
-        fieldKey: 'phone' | 'email' | 'vatTaxNumber' | 'experience' | 'factory' | 'office' | 'brand' | 'headerCard' | 'logo' | 'companyName';
+        fieldKey: 'phone' | 'email' | 'vatTaxNumber' | 'incomeTaxRate' | 'experience' | 'factory' | 'office' | 'brand' | 'headerCard' | 'logo' | 'companyName';
         val1: string;
         val2?: string;
         val3?: string;
@@ -77,6 +79,10 @@ export const CompanyProfileModule: React.FC = () => {
         }
         else if (quickEditModal.fieldKey === 'vatTaxNumber') {
             updateProfile({ vatTaxNumber: quickEditModal.val1 });
+        }
+        else if (quickEditModal.fieldKey === 'incomeTaxRate') {
+            const parsedRate = Math.max(0, Math.min(100, Number(quickEditModal.val1) || 0));
+            updateProfile({ incomeTaxRate: parsedRate });
         }
         else if (quickEditModal.fieldKey === 'experience') {
             updateProfile({
@@ -191,6 +197,7 @@ export const CompanyProfileModule: React.FC = () => {
         website: profile.website || '',
         facebook: profile.facebook || '',
         vatTaxNumber: profile.vatTaxNumber || '',
+        incomeTaxRate: profile.incomeTaxRate !== undefined ? profile.incomeTaxRate : 0,
         tradeLicense: profile.tradeLicense || '',
         currency: profile.currency || 'BDT',
         currencySymbol: profile.currencySymbol || "Tk",
@@ -269,6 +276,7 @@ export const CompanyProfileModule: React.FC = () => {
             website: profile.website || '',
             facebook: profile.facebook || '',
             vatTaxNumber: profile.vatTaxNumber || '',
+            incomeTaxRate: profile.incomeTaxRate !== undefined ? profile.incomeTaxRate : 0,
             tradeLicense: profile.tradeLicense || '',
             currency: profile.currency || 'BDT',
             currencySymbol: profile.currencySymbol || "Tk",
@@ -337,6 +345,7 @@ export const CompanyProfileModule: React.FC = () => {
             website: formData.website,
             facebook: formData.facebook,
             vatTaxNumber: formData.vatTaxNumber,
+            incomeTaxRate: Math.max(0, Math.min(100, Number(formData.incomeTaxRate) || 0)),
             tradeLicense: formData.tradeLicense,
             currency: formData.currency,
             currencySymbol: formData.currencySymbol,
@@ -622,6 +631,26 @@ export const CompanyProfileModule: React.FC = () => {
           </div>
           <p className="font-bold text-slate-900 text-xs mt-1 font-mono group-hover:text-amber-800 transition-colors">
             {profile.vatTaxNumber || 'BIN: 004829104-0503'}
+          </p>
+        </div>
+
+        <div onClick={() => setQuickEditModal({
+            open: true,
+            titleEn: 'Edit Corporate Income Tax Rate',
+            titleBn: 'Corporate Tax Rate',
+            fieldKey: 'incomeTaxRate',
+            val1: String(profile.incomeTaxRate !== undefined ? profile.incomeTaxRate : 0),
+        })} className="bg-white rounded-xl border border-slate-200 hover:border-amber-400 p-3.5 shadow-2xs hover:shadow-md transition-all cursor-pointer group relative" title={'Click to edit Corporate Tax Rate'}>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
+              {'Corporate Tax %'}
+            </span>
+            <span className="p-1 text-slate-500 bg-slate-100 group-hover:text-amber-700 group-hover:bg-amber-100 rounded-md transition-colors">
+              <Edit2 className="w-3 h-3 text-amber-600"/>
+            </span>
+          </div>
+          <p className="font-bold text-slate-900 text-xs mt-1 font-mono group-hover:text-amber-800 transition-colors">
+            {profile.incomeTaxRate !== undefined ? profile.incomeTaxRate : 0}% {'(IFRS P&L)'}
           </p>
         </div>
 
@@ -1125,6 +1154,10 @@ export const CompanyProfileModule: React.FC = () => {
                       <label className="font-bold text-slate-700 block mb-1">Trade License Number</label>
                       <input type="text" value={formData.tradeLicense} onChange={(e) => setFormData({ ...formData, tradeLicense: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono"/>
                     </div>
+                    <div>
+                      <label className="font-bold text-slate-700 block mb-1">Corporate Tax Rate (%) - IFRS P&L</label>
+                      <input type="number" min="0" max="100" step="0.5" value={formData.incomeTaxRate ?? 0} onChange={(e) => setFormData({ ...formData, incomeTaxRate: Number(e.target.value) || 0 })} className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono"/>
+                    </div>
 
                     <div>
                       <label className="font-bold text-slate-700 block mb-1">Currency Code</label>
@@ -1482,6 +1515,29 @@ export const CompanyProfileModule: React.FC = () => {
                     {'BIN / VAT Tax Number'}
                   </label>
                   <input type="text" required value={quickEditModal.val1} onChange={(e) => setQuickEditModal({ ...quickEditModal, val1: e.target.value })} className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl font-mono text-sm focus:ring-2 focus:ring-amber-400 focus:outline-hidden" placeholder="BIN: 004829104-0503"/>
+                </div>)}
+
+              {quickEditModal.fieldKey === 'incomeTaxRate' && (<div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    {'Corporate Income Tax Provision Rate (%)'}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.5"
+                      required
+                      value={quickEditModal.val1}
+                      onChange={(e) => setQuickEditModal({ ...quickEditModal, val1: e.target.value })}
+                      className="w-full px-3.5 py-2.5 pr-8 border border-slate-200 rounded-xl font-mono text-sm focus:ring-2 focus:ring-amber-400 focus:outline-hidden"
+                      placeholder="0"
+                    />
+                    <span className="absolute right-3.5 top-2.5 font-bold text-slate-400 text-sm">%</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1.5">
+                    Used in IFRS Statement of Profit or Loss to calculate Income Tax Expense / Provision.
+                  </p>
                 </div>)}
 
               {quickEditModal.fieldKey === 'experience' && (<>

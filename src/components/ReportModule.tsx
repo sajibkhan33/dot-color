@@ -250,8 +250,13 @@ export const REPORT_REGISTRY: ReportDefinition[] = [
     },
 ];
 export const ReportModule: React.FC = () => {
-    const { invoices, customers, products, purchaseOrders, suppliers, stockMovements, transactions, chartOfAccounts, staffMembers, profile, language, activeLocation, } = useApp();
+    const { invoices, customers, products, purchaseOrders, suppliers, stockMovements, transactions, chartOfAccounts, staffMembers, profile, language, activeLocation, checkPermission, activeStaff } = useApp();
     const isBn = language === 'bn';
+    const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
+        (activeStaff?.name || '').toLowerCase().includes('super admin');
+    const canExportReports = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.export_reports'));
     // Active Selected Report
     const [activeReportId, setActiveReportId] = useState<string>('item-sales');
     const [searchQuery, setSearchQuery] = useState('');
@@ -467,7 +472,7 @@ export const ReportModule: React.FC = () => {
         {/* Right Side: Active Report Workspace */}
         <div className="lg:col-span-8 xl:col-span-9 space-y-5 min-w-0">
           {/* Header Component with official letterhead & export buttons */}
-          <ReportHeader titleEn={activeReport.titleEn} titleBn={activeReport.titleBn} categoryEn={activeReport.categoryEn} categoryBn={activeReport.categoryBn} profile={profile} language={language} dateRangeText={dateRangeText} locationFilter={locationFilter} onPrint={handlePrint} onExportExcel={handleExportExcel}/>
+          <ReportHeader titleEn={activeReport.titleEn} titleBn={activeReport.titleBn} categoryEn={activeReport.categoryEn} categoryBn={activeReport.categoryBn} profile={profile} language={language} dateRangeText={dateRangeText} locationFilter={locationFilter} onPrint={canExportReports ? handlePrint : undefined} onExportExcel={canExportReports ? handleExportExcel : undefined}/>
 
           {/* Report Body Components */}
           {activeReport.category === 'sales' && (<SalesReports reportId={activeReport.id} invoices={invoices} customers={customers} products={products} staffMembers={staffMembers} profile={profile} language={language}/>)}

@@ -9,3 +9,4 @@ coverage/
 cpanel-deploy/
 deploy.zip
 package.prod.json
+*.zip

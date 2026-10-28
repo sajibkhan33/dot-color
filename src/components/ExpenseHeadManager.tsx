@@ -2,15 +2,22 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { ExpenseHead } from '../types';
 import { Layers, Plus, Search, Edit2, Trash2, Eye, CheckCircle2, XCircle, TrendingDown, DollarSign, AlertCircle, Briefcase, Sliders, } from 'lucide-react';
+import { resolveExpenseAccount } from '../utils/accountUtils';
 export const ExpenseHeadManager: React.FC = () => {
-    const { expenseHeads, chartOfAccounts, language, profile, addExpenseHead, updateExpenseHead, deleteExpenseHead, checkPermission, } = useApp();
+    const { expenseHeads, chartOfAccounts, language, profile, activeStaff, addExpenseHead, updateExpenseHead, deleteExpenseHead, checkPermission, } = useApp();
     const [searchQuery, setSearchQuery] = useState('');
     const [filterCategory, setFilterCategory] = useState<string>('ALL');
     const [showAddModal, setShowAddModal] = useState(false);
     const [editingHead, setEditingHead] = useState<ExpenseHead | null>(null);
     const [viewingHead, setViewingHead] = useState<ExpenseHead | null>(null);
     const [deleteError, setDeleteError] = useState<string | null>(null);
-    const canManageExpenses = checkPermission('accounting.manage_expense_heads') || checkPermission('ACCOUNTING_EXPENSE_HEADS');
+    const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
+        (activeStaff?.name || '').toLowerCase().includes('super admin');
+    const canManageExpenses = isSuperAdmin || Boolean(checkPermission && (checkPermission('accounting.manage_expense_heads') || checkPermission('ACCOUNTING_EXPENSE_HEADS')));
+    const canEditExpenseHead = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.edit_transaction'));
+    const canDeleteExpenseHead = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.delete_transaction'));
     // Form state
     const [formData, setFormData] = useState({
         code: '',
@@ -73,33 +80,13 @@ export const ExpenseHeadManager: React.FC = () => {
             const exact = chartOfAccounts.find(a => 
                 a.id === head.linkedAccountId || 
                 a.code === head.linkedAccountId || 
-                a.code === head.linkedAccountId.replace('coa-', '')
+                a.code === head.linkedAccountId.replace('coa-', '') ||
+                a.id === `coa-${head.linkedAccountId}`
             );
             if (exact) return exact;
         }
-        // Intelligent dynamic matching by Head Code or Category
-        if (head.code === 'EH-PRJ' || head.category?.toLowerCase() === 'projects' || head.name.toLowerCase().includes('project')) {
-            return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5100' || a.name.toLowerCase().includes('project')));
-        }
-        if (head.code === 'EH-RENT' || head.category?.toLowerCase() === 'facility' || head.name.toLowerCase().includes('rent')) {
-            return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5050' || a.name.toLowerCase().includes('rent')));
-        }
-        if (head.code === 'EH-ELEC' || head.category?.toLowerCase() === 'utilities' || head.name.toLowerCase().includes('electricity')) {
-            return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5040' || a.name.toLowerCase().includes('electricity')));
-        }
-        if (head.code === 'EH-MAINT' || head.category?.toLowerCase() === 'maintenance' || head.name.toLowerCase().includes('servicing')) {
-            return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5030' || a.name.toLowerCase().includes('servicing')));
-        }
-        if (head.code === 'EH-WAGE' || head.category?.toLowerCase() === 'payroll' || head.name.toLowerCase().includes('wage') || head.name.toLowerCase().includes('salary')) {
-            return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5070' || a.name.toLowerCase().includes('wages') || a.name.toLowerCase().includes('salaries')));
-        }
-        if (head.code === 'EH-TRANS' || head.category?.toLowerCase() === 'logistics' || head.name.toLowerCase().includes('conveyance')) {
-            return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5080' || a.name.toLowerCase().includes('conveyance')));
-        }
-        if (head.code === 'EH-CONS' || head.code === 'EH-PACK' || head.category?.toLowerCase() === 'operations') {
-            return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5010' || a.name.toLowerCase().includes('raw') || a.name.toLowerCase().includes('cost')));
-        }
-        return null;
+        // Intelligent dynamic matching by Head Code, Name or Category
+        return resolveExpenseAccount(head.name, head.description, chartOfAccounts, expenseHeads) || null;
     };
 
     const filteredHeads = useMemo(() => {
@@ -403,12 +390,16 @@ export const ExpenseHeadManager: React.FC = () => {
                           <button type="button" onClick={() => setViewingHead(head)} className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors" title={'View'}>
                             <Eye className="w-3.5 h-3.5"/>
                           </button>
-                          <button type="button" onClick={() => handleOpenEdit(head)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg border border-slate-200 transition-colors" title={'Edit'}>
-                            <Edit2 className="w-3.5 h-3.5"/>
-                          </button>
-                          <button type="button" onClick={() => handleDelete(head.id)} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg border border-slate-200 transition-colors" title={'Delete'}>
-                            <Trash2 className="w-3.5 h-3.5"/>
-                          </button>
+                          {canEditExpenseHead && (
+                            <button type="button" onClick={() => handleOpenEdit(head)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg border border-slate-200 transition-colors" title={'Edit'}>
+                              <Edit2 className="w-3.5 h-3.5"/>
+                            </button>
+                          )}
+                          {canDeleteExpenseHead && (
+                            <button type="button" onClick={() => handleDelete(head.id)} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg border border-slate-200 transition-colors" title={'Delete'}>
+                              <Trash2 className="w-3.5 h-3.5"/>
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>);

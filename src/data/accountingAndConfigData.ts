@@ -39,9 +39,16 @@ export const ALL_SYSTEM_PERMISSIONS: RolePermission[] = [
     { id: 'perm-acc-1', code: 'accounting.view', name: 'View Ledgers & Balances', nameBn: "", category: 'Accounting' },
     { id: 'perm-acc-2', code: 'accounting.add_income', name: 'Record Income', nameBn: "", category: 'Accounting' },
     { id: 'perm-acc-3', code: 'accounting.add_expense', name: 'Record Operating Expenses', nameBn: "", category: 'Accounting' },
-    { id: 'perm-acc-4', code: 'accounting.manage_expense_heads', name: 'Manage Expense Heads', nameBn: "", category: 'Accounting' },
-    { id: 'perm-acc-5', code: 'accounting.chart_of_accounts', name: 'Manage Chart of Accounts', nameBn: "", category: 'Accounting' },
-    { id: 'perm-acc-6', code: 'accounting.export_reports', name: 'Export Financial Reports', nameBn: "Report   Print", category: 'Accounting' },
+    { id: 'perm-acc-4', code: 'accounting.edit_transaction', name: 'Edit Transactions & Vouchers', nameBn: "লেনদেন ও ভাউচার এডিট", category: 'Accounting' },
+    { id: 'perm-acc-5', code: 'accounting.delete_transaction', name: 'Delete Transactions & Vouchers', nameBn: "লেনদেন ও ভাউচার ডিলিট", category: 'Accounting' },
+    { id: 'perm-acc-6', code: 'accounting.manage_expense_heads', name: 'Manage Expense Heads', nameBn: "", category: 'Accounting' },
+    { id: 'perm-acc-7', code: 'accounting.chart_of_accounts', name: 'Manage Chart of Accounts', nameBn: "", category: 'Accounting' },
+    { id: 'perm-acc-8', code: 'accounting.export_reports', name: 'Export Financial Reports', nameBn: "Report   Print", category: 'Accounting' },
+    // Projects
+    { id: 'perm-prj-1', code: 'projects.view', name: 'View Projects & Site Status', nameBn: 'প্রজেক্ট ও সাইট ভিউ', category: 'Projects' },
+    { id: 'perm-prj-2', code: 'projects.manage', name: 'Create & Manage Projects', nameBn: 'প্রজেক্ট তৈরি ও পরিচালনা', category: 'Projects' },
+    // Reports
+    { id: 'perm-rep-1', code: 'reports.view', name: 'View Business Analytics & Reports', nameBn: 'রিপোর্ট ও অ্যানালিটিক্স', category: 'Reports' },
     // Settings & Configuration
     { id: 'perm-set-1', code: 'settings.view', name: 'Access Configuration Module', nameBn: "", category: 'Settings' },
     { id: 'perm-set-2', code: 'settings.manage_users', name: 'Manage Users & Staff', nameBn: ",", category: 'Settings' },
@@ -89,6 +96,8 @@ export const INITIAL_USER_ROLES: UserRole[] = [
             'accounting.view',
             'accounting.add_income',
             'accounting.add_expense',
+            'accounting.edit_transaction',
+            'accounting.delete_transaction',
             'accounting.manage_expense_heads',
             'accounting.chart_of_accounts',
             'accounting.export_reports',

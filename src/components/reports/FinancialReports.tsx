@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { AccountingTransaction, ChartOfAccount, Language, CompanyProfile, } from '../../types';
 import { BookOpen, Calendar, Layers, Search, ArrowDownLeft, ArrowUpRight, Wallet, Building, FolderKanban, TrendingUp, TrendingDown, } from 'lucide-react';
-import { isAdvanceAdjustmentTransaction, isDueReceivableTransaction } from '../../utils/accountUtils';
+import { isAdvanceAdjustmentTransaction, isDueReceivableTransaction, getCashAccountsBreakdown, getBankAccountsBreakdown } from '../../utils/accountUtils';
 interface FinancialReportsProps {
     reportId: string;
     transactions: AccountingTransaction[];
@@ -11,7 +11,7 @@ interface FinancialReportsProps {
     language: Language;
 }
 export const FinancialReports: React.FC<FinancialReportsProps> = ({ reportId, transactions, chartOfAccounts, profile, language, }) => {
-    const { projects } = useApp();
+    const { projects, invoices = [], journalEntries = [] } = useApp();
     const isBn = language === 'bn';
     const currency = profile.currencySymbol || "Tk";
     const [selectedAccount, setSelectedAccount] = useState('ALL');
@@ -20,22 +20,33 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({ reportId, tr
     // -------------------------------------------------------------
     // 13. GENERAL LEDGER REPORT
     // -------------------------------------------------------------
+    const normAccountHead = (raw?: string): string => {
+        if (!raw) return 'General';
+        const l = raw.toLowerCase().trim();
+        if (l === 'cash' || l === 'cash in hand' || l === 'cashinhand' || l === 'counter cash' || l === 'office cash' || l === 'pm-cash') {
+            return 'Cash In Hand';
+        }
+        return raw;
+    };
+
     const ledgerAccounts = useMemo(() => {
         const set = new Set<string>();
         (transactions || []).forEach((tx) => {
             if (tx && tx.accountHead) {
-                set.add(tx.accountHead);
+                set.add(normAccountHead(tx.accountHead));
             }
         });
         return Array.from(set);
     }, [transactions]);
+
     const ledgerData = useMemo(() => {
         let runningBalance = 0;
         const filtered = (transactions || [])
             .filter((tx) => {
             if (!tx)
                 return false;
-            const matchAcc = selectedAccount === 'ALL' || tx.accountHead === selectedAccount;
+            const head = normAccountHead(tx.accountHead);
+            const matchAcc = selectedAccount === 'ALL' || head === selectedAccount;
             const matchSearch = (tx.description || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
                 (tx.voucherNo || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
                 (tx.reference && tx.reference.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -46,12 +57,10 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({ reportId, tr
             const isDebit = tx.type === 'DEBIT' || tx.type === 'EXPENSE';
             const debitAmount = isDebit ? tx.amount : 0;
             const creditAmount = !isDebit ? tx.amount : 0;
-            // In accounting: for Asset/Expense, Debit increases balance. For Income/Liability/Equity, Credit increases.
-            // For general cash/bank ledger: Debit is money received (Inflow) or asset debit, Credit is money paid (Outflow)
-            // We compute running balance:
             runningBalance += creditAmount - debitAmount;
             return {
                 ...tx,
+                accountHead: normAccountHead(tx.accountHead),
                 debitAmount,
                 creditAmount,
                 runningBalance,
@@ -102,34 +111,87 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({ reportId, tr
     // 15. RECEIPTS & PAYMENTS ACCOUNT
     // -------------------------------------------------------------
     const receiptsAndPaymentsData = useMemo(() => {
-        // Receipts (Inflows): Counter Cash Sales, Bank receipts, Due Collections
+        // Receipts (Inflows): Counter Cash Sales, Bank receipts, Due Collections, Capital Injection
         const receiptsMap = new Map<string, number>();
         const paymentsMap = new Map<string, number>();
-        // Initial cash and bank opening estimates dynamically from chart of accounts
-        const openingCash = (chartOfAccounts || []).filter(acc => acc.classification === 'Asset' && !(acc.name || '').toLowerCase().includes('bank') && !(acc.name || '').toLowerCase().includes('plc') && !(acc.name || '').toLowerCase().includes('bkash') && !(acc.name || '').toLowerCase().includes('nagad')).reduce((sum, acc) => sum + (acc.openingBalance || acc.currentBalance || 0), 0);
-        const openingBank = (chartOfAccounts || []).filter(acc => acc.classification === 'Asset' && ((acc.name || '').toLowerCase().includes('bank') || (acc.name || '').toLowerCase().includes('plc') || (acc.name || '').toLowerCase().includes('bkash') || (acc.name || '').toLowerCase().includes('nagad'))).reduce((sum, acc) => sum + (acc.openingBalance || acc.currentBalance || 0), 0);
-        const totalOpening = openingCash + openingBank;
-        (transactions || []).forEach((tx) => {
-            if (!tx)
-                return;
-            if ((tx.type === 'CREDIT' || tx.type === 'INCOME') && !isAdvanceAdjustmentTransaction(tx) && !isDueReceivableTransaction(tx)) {
-                const head = tx.accountHead || 'Sales Revenue';
-                receiptsMap.set(head, (receiptsMap.get(head) || 0) + (tx.amount || 0));
+
+        const normLiquidHead = (raw?: string): string => {
+            if (!raw) return 'Cash In Hand';
+            const l = raw.toLowerCase().trim();
+            if (l === 'cash' || l === 'cash in hand' || l === 'cashinhand' || l === 'counter cash' || l === 'office cash' || l === 'pm-cash') {
+                return 'Cash In Hand';
             }
-            else {
-                const head = tx.accountHead || 'General Expenses';
-                paymentsMap.set(head, (paymentsMap.get(head) || 0) + (tx.amount || 0));
+            return raw;
+        };
+
+        // Real opening cash and bank balances dynamically from chart of accounts opening balances
+        const openingCash = (chartOfAccounts || []).filter(acc => 
+            acc.classification === 'Asset' && 
+            (acc.code === '1001' || acc.code === '1010' || acc.name.toLowerCase().includes('cash in hand') || acc.name.toLowerCase() === 'cash') && 
+            !acc.name.toLowerCase().includes('bkash') && 
+            !acc.name.toLowerCase().includes('nagad')
+        ).reduce((sum, acc) => sum + (Number(acc.openingBalance) || 0), 0);
+
+        const openingBank = (chartOfAccounts || []).filter(acc => 
+            acc.classification === 'Asset' && 
+            ((acc.name || '').toLowerCase().includes('bank') || (acc.name || '').toLowerCase().includes('plc') || (acc.name || '').toLowerCase().includes('bkash') || (acc.name || '').toLowerCase().includes('nagad'))
+        ).reduce((sum, acc) => sum + (Number(acc.openingBalance) || 0), 0);
+
+        const totalOpening = openingCash + openingBank;
+
+        // Process ledger transactions
+        (transactions || []).forEach((tx) => {
+            if (!tx) return;
+            const amt = Number(tx.amount) || 0;
+            if (amt <= 0) return;
+
+            if ((tx.type === 'CREDIT' || tx.type === 'INCOME') && !isAdvanceAdjustmentTransaction(tx) && !isDueReceivableTransaction(tx)) {
+                const rawHead = tx.paymentAccount || tx.accountHead || 'Sales Revenue';
+                const head = normLiquidHead(rawHead);
+                receiptsMap.set(head, (receiptsMap.get(head) || 0) + amt);
+            } else if (tx.type === 'DEBIT' || tx.type === 'EXPENSE') {
+                const rawHead = tx.accountHead || tx.category || 'General Expenses';
+                const head = normLiquidHead(rawHead);
+                paymentsMap.set(head, (paymentsMap.get(head) || 0) + amt);
             }
         });
+
+        // Include non-synced manual journal entries impacting liquid cash/bank (e.g. Owner Capital Injection)
+        (journalEntries || []).forEach(j => {
+            if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE' || j.source === 'EXPENSE' || j.source === 'SALES' || j.source === 'PURCHASE' || j.source === 'LEDGER_SYNC') return;
+            const amt = Number(j.amount) || 0;
+            if (amt <= 0) return;
+            const dName = (j.debitAccountName || '').toLowerCase();
+            const cName = (j.creditAccountName || '').toLowerCase();
+
+            // Cash/Bank Debited -> Cash Inflow (Receipt)
+            if (dName.includes('cash') || dName.includes('bank') || dName.includes('bkash') || dName.includes('nagad')) {
+                const head = j.creditAccountName || 'Owner Capital Investment';
+                receiptsMap.set(head, (receiptsMap.get(head) || 0) + amt);
+            }
+            // Cash/Bank Credited -> Cash Outflow (Payment)
+            else if (cName.includes('cash') || cName.includes('bank') || cName.includes('bkash') || cName.includes('nagad')) {
+                const head = j.debitAccountName || "Owner's Drawings";
+                paymentsMap.set(head, (paymentsMap.get(head) || 0) + amt);
+            }
+        });
+
         const receiptsList = Array.from(receiptsMap.entries()).map(([head, amount]) => ({ head, amount }));
         const paymentsList = Array.from(paymentsMap.entries()).map(([head, amount]) => ({ head, amount }));
+
         const totalPeriodReceipts = receiptsList.reduce((s, r) => s + r.amount, 0);
         const totalPeriodPayments = paymentsList.reduce((s, p) => s + p.amount, 0);
-        const netClosing = totalOpening + totalPeriodReceipts - totalPeriodPayments;
-        const pettyCashAcc = (chartOfAccounts || []).find((acc) => acc.id === 'coa-1010');
-        const isWiped = !pettyCashAcc || (pettyCashAcc.openingBalance || 0) === 0;
-        const closingCash = isWiped ? 0 : Math.max(25000, Math.round(netClosing * 0.35));
-        const closingBank = isWiped ? 0 : Math.max(50000, netClosing - closingCash);
+
+        const cashData = getCashAccountsBreakdown(chartOfAccounts, transactions, invoices, projects, journalEntries);
+        const bankData = getBankAccountsBreakdown(chartOfAccounts, transactions, invoices, projects, journalEntries);
+
+        const closingCash = cashData.total;
+        const closingBank = bankData.reduce((acc, b) => acc + b.balance, 0);
+        const totalClosing = closingCash + closingBank;
+
+        const grandTotalReceipts = totalOpening + totalPeriodReceipts;
+        const grandTotalPayments = totalPeriodPayments + totalClosing;
+
         return {
             openingCash,
             openingBank,
@@ -140,11 +202,11 @@ export const FinancialReports: React.FC<FinancialReportsProps> = ({ reportId, tr
             totalPeriodPayments,
             closingCash,
             closingBank,
-            totalClosing: closingCash + closingBank,
-            grandTotalReceipts: totalOpening + totalPeriodReceipts,
-            grandTotalPayments: totalPeriodPayments + closingCash + closingBank,
+            totalClosing,
+            grandTotalReceipts,
+            grandTotalPayments,
         };
-    }, [transactions, chartOfAccounts]);
+    }, [transactions, chartOfAccounts, invoices, projects, journalEntries]);
     return (<div className="space-y-6">
       {/* ------------------------------------------------------------- */}
       {/* REPORT 13: GENERAL LEDGER REPORT */}

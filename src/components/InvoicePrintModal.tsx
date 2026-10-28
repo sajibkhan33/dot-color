@@ -232,9 +232,13 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [onClose]);
     const isMobile = viewportWidth < 820;
+    const baseSheetWidth = isPadMode ? 782 : 794;
+    const baseSheetHeight = isPadMode ? 1070 : 1123;
     const scale = isMobile && isMobileFit
-        ? Math.max(0.3, Math.min(1, (viewportWidth - 32) / 794))
+        ? Math.max(0.3, Math.min(1, (viewportWidth - (isPublicView ? 16 : 24)) / baseSheetWidth))
         : 1;
+    const scaledWidth = Math.ceil(baseSheetWidth * scale);
+    const scaledHeight = Math.ceil(baseSheetHeight * scale);
     useEffect(() => {
         if (sheetRef.current) {
             setSheetHeight(sheetRef.current.offsetHeight || 1123);
@@ -260,83 +264,111 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
             (inv.invoiceNo && inv.invoiceNo.toLowerCase() === lowerCleanId) ||
             (inv.invoiceNo && inv.invoiceNo.toLowerCase() === lowerNoHash) ||
             (inv.id && inv.id.toLowerCase() === lowerCleanId));
-    // Fallback direct single invoice fetch from public API (for mobile QR code scans)
+
+    // Instant local storage fallback (for newly created invoice before React state re-render)
+    const localFallbackInvoice = React.useMemo(() => {
+        if (realInvoice || !invoiceId || isQuote) return null;
+        try {
+            const raw = localStorage.getItem('DOT_COLOR_ERP_V1_STATE_INVOICES');
+            if (raw) {
+                const list = JSON.parse(raw);
+                if (Array.isArray(list)) {
+                    return list.find((inv: any) =>
+                        inv.id === cleanId ||
+                        (inv.invoiceNo && inv.invoiceNo.toLowerCase() === lowerCleanId) ||
+                        (inv.invoiceNo && inv.invoiceNo.toLowerCase() === lowerNoHash) ||
+                        (inv.id && inv.id.toLowerCase() === lowerCleanId)
+                    ) || null;
+                }
+            }
+        } catch {}
+        return null;
+    }, [realInvoice, invoiceId, isQuote, cleanId, lowerCleanId, lowerNoHash]);
+
+    // Fallback direct single invoice fetch from public API with automatic retries (for mobile QR code scans)
     useEffect(() => {
-        if (!invoiceId || realInvoice || quote || fetchedInvoice)
+        if (!invoiceId || realInvoice || localFallbackInvoice || quote || fetchedInvoice)
             return;
         let isCancelled = false;
         setIsFetchingInvoice(true);
         const loadSingleInvoice = async () => {
-            try {
-                const queryId = invoiceId.trim().replace(/^#/, '');
-                const res = await fetch(`/api/public/invoice/${encodeURIComponent(queryId)}`);
-                if (!res.ok) {
-                    throw new Error('Invoice not found');
+            const queryId = invoiceId.trim().replace(/^#/, '');
+            const maxRetries = 4;
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                if (isCancelled) return;
+                try {
+                    const res = await fetch(`/api/public/invoice/${encodeURIComponent(queryId)}?t=${Date.now()}`, {
+                        cache: 'no-store'
+                    });
+                    if (res.ok) {
+                        const data = await res.json();
+                        if (data.success && data.data && !isCancelled) {
+                            if (data.type === 'quotation') {
+                                const q = data.data;
+                                setFetchedInvoice({
+                                    id: q.id,
+                                    invoiceNo: q.quoteNo,
+                                    referenceNo: q.referenceNo,
+                                    date: q.date,
+                                    customerId: 'quote',
+                                    customerName: q.customerName,
+                                    customerPhone: q.customerPhone,
+                                    customerCompany: q.customerCompany || '',
+                                    customerAddress: q.customerAddress || '',
+                                    items: (q.items || []).map((item: any) => ({
+                                        ...item,
+                                        totalSqft: 0,
+                                        width: 0,
+                                        height: 0,
+                                    })),
+                                    subtotal: q.grandTotal,
+                                    discount: 0,
+                                    discountType: 'amount' as const,
+                                    discountValue: 0,
+                                    vatRate: 0,
+                                    vatAmount: 0,
+                                    grandTotal: q.grandTotal,
+                                    paidAmount: 0,
+                                    dueAmount: q.grandTotal,
+                                    paymentMethod: 'Cash',
+                                    paymentStatus: (q.status as any) || 'Due',
+                                    productionStatus: 'Queued',
+                                    warehouseLocation: 'Office',
+                                    notes: q.notes || '',
+                                    jobSpecs: '',
+                                    deliveryDate: q.validUntil,
+                                    isQuote: true,
+                                    showRegionColumn: q.showRegionColumn,
+                                    showTypeColumn: q.showTypeColumn,
+                                });
+                            } else {
+                                setFetchedInvoice(data.data);
+                            }
+                            setIsFetchingInvoice(false);
+                            return;
+                        }
+                    }
+                } catch (err: any) {
+                    if (!isCancelled) {
+                        console.warn(`[Public Invoice Fetch] Attempt ${attempt} failed:`, err);
+                    }
                 }
-                const data = await res.json();
-                if (data.success && data.data && !isCancelled) {
-                    if (data.type === 'quotation') {
-                        const q = data.data;
-                        setFetchedInvoice({
-                            id: q.id,
-                            invoiceNo: q.quoteNo,
-                            referenceNo: q.referenceNo,
-                            date: q.date,
-                            customerId: 'quote',
-                            customerName: q.customerName,
-                            customerPhone: q.customerPhone,
-                            customerCompany: q.customerCompany || '',
-                            customerAddress: q.customerAddress || '',
-                            items: (q.items || []).map((item: any) => ({
-                                ...item,
-                                totalSqft: 0,
-                                width: 0,
-                                height: 0,
-                            })),
-                            subtotal: q.grandTotal,
-                            discount: 0,
-                            discountType: 'amount' as const,
-                            discountValue: 0,
-                            vatRate: 0,
-                            vatAmount: 0,
-                            grandTotal: q.grandTotal,
-                            paidAmount: 0,
-                            dueAmount: q.grandTotal,
-                            paymentMethod: 'Cash',
-                            paymentStatus: (q.status as any) || 'Due',
-                            productionStatus: 'Queued',
-                            warehouseLocation: 'Office',
-                            notes: q.notes || '',
-                            jobSpecs: '',
-                            deliveryDate: q.validUntil,
-                            isQuote: true,
-                            showRegionColumn: q.showRegionColumn,
-                            showTypeColumn: q.showTypeColumn,
-                        });
-                    }
-                    else {
-                        setFetchedInvoice(data.data);
-                    }
+                if (attempt < maxRetries && !isCancelled) {
+                    // Backoff retry: 500ms, 1000ms, 1500ms
+                    await new Promise((r) => setTimeout(r, attempt * 500));
                 }
             }
-            catch (err: any) {
-                if (!isCancelled) {
-                    console.warn('Could not load invoice directly from public endpoint:', err);
-                }
-            }
-            finally {
-                if (!isCancelled) {
-                    setIsFetchingInvoice(false);
-                }
+            if (!isCancelled) {
+                setIsFetchingInvoice(false);
             }
         };
         loadSingleInvoice();
         return () => {
             isCancelled = true;
         };
-    }, [invoiceId, realInvoice, quote, fetchedInvoice]);
+    }, [invoiceId, realInvoice, localFallbackInvoice, quote, fetchedInvoice]);
     // Adapt quotation or raw invoice into a robust normalized invoice schema for rendering
-    const rawResolvedInvoice: SalesInvoice | null = realInvoice || (quote ? {
+    const rawResolvedInvoice: SalesInvoice | null = realInvoice || localFallbackInvoice || (quote ? {
         id: quote.id,
         invoiceNo: quote.quoteNo,
         referenceNo: quote.referenceNo,
@@ -432,6 +464,55 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
         };
     }, [rawResolvedInvoice]);
 
+    const itemizedPayments = React.useMemo(() => {
+        if (!invoice) return [];
+        if (!invoice.splitPayments || Object.keys(invoice.splitPayments).length === 0) {
+            return [];
+        }
+
+        const rawSplits = invoice.splitPayments;
+        const entries = Object.entries(rawSplits).filter(([channel, amt]) => {
+            const lk = channel.toLowerCase().trim();
+            return lk !== 'due' && !lk.startsWith('pm-') && (Number(amt) || 0) > 0;
+        });
+
+        if (entries.length === 0) return [];
+
+        // Prioritize proper-named keys if both alias and named exist
+        const hasNamedChannels = entries.some(([k]) => !['cash', 'card', 'bank', 'bkash', 'nagad'].includes(k.toLowerCase().trim()));
+        const effectiveEntries = hasNamedChannels
+            ? entries.filter(([k]) => !['cash', 'card', 'bank', 'bkash', 'nagad'].includes(k.toLowerCase().trim()))
+            : entries;
+
+        const channelMap = new Map();
+
+        effectiveEntries.forEach(([channel, amt]) => {
+            const cl = channel.toLowerCase().replace(/[\s_-]/g, '');
+            const label = (cl === 'cash' || cl === 'cashinhand' || cl === 'countercash') ? 'Paid Cash:'
+                : (cl === 'card' || cl === 'bank' || cl.includes('bank')) ? 'Paid Card / Bank:'
+                : cl === 'bkash' ? 'Paid bKash:'
+                : cl === 'nagad' ? 'Paid Nagad:'
+                : cl === 'rocket' ? 'Paid Rocket:'
+                : cl.includes('advance') ? 'Paid Customer Advance:'
+                : `Paid (${channel}):`;
+
+            const normKey = label.toLowerCase();
+            const numAmt = Number(amt) || 0;
+            if (!channelMap.has(normKey)) {
+                channelMap.set(normKey, { label, amount: numAmt });
+            } else {
+                const existing = channelMap.get(normKey);
+                channelMap.set(normKey, { label, amount: Math.max(existing.amount, numAmt) });
+            }
+        });
+
+        return Array.from(channelMap.entries()).map(([k, v]) => ({
+            key: k,
+            label: v.label,
+            amount: v.amount
+        }));
+    }, [invoice]);
+
     useEffect(() => {
         if (invoice) {
             const hasRegion = Boolean(invoice.showRegionColumn ?? invoice.items?.some((i) => Boolean(i.region)));
@@ -469,7 +550,9 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 ? window.location.origin
                 : 'https://dotcolor.onrender.com';
             const targetInvoiceId = invoice.id || invoice.invoiceNo;
-            const invoiceQrUrl = `${origin}/?invoiceId=${encodeURIComponent(targetInvoiceId)}`;
+            const isQuote = Boolean((invoice as any).isQuote || (targetInvoiceId && (targetInvoiceId.startsWith('qt-') || targetInvoiceId.startsWith('QT-') || targetInvoiceId.startsWith('q-') || targetInvoiceId.startsWith('Q-'))));
+            const paramKey = isQuote ? 'quotationId' : 'invoiceId';
+            const invoiceQrUrl = `${origin}/?${paramKey}=${encodeURIComponent(targetInvoiceId)}`;
             QRCode.toDataURL(invoiceQrUrl, {
                 width: 160,
                 margin: 1,
@@ -1240,6 +1323,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
 
       <div className={autoPrint
             ? `fixed -left-[9999px] -top-[9999px] ${template === 'POS' ? 'w-[80mm]' : 'w-[210mm]'} opacity-0 pointer-events-none`
+            : isPublicView
+            ? "w-full min-h-screen bg-slate-900 flex flex-col items-center p-0 sm:py-6 sm:px-4 overflow-y-auto print:static print:bg-white print:p-0 print:overflow-visible print:block"
             : "fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4 overflow-y-auto print:static print:bg-white print:p-0 print:overflow-visible print:block"}>
       {/* Print styles for direct browser print (Ctrl+P / direct print) */}
       <style>{`
@@ -1363,62 +1448,61 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
           ` : ''}
         }
       `}</style>
-      {/* Container */}
-      <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[96vh] flex flex-col shadow-2xl border border-slate-200 print:max-w-none print:w-full print:max-h-none print:h-auto print:border-none print:shadow-none print:rounded-none">
+      {/* Container - Sized to match A4 invoice document width */}
+      <div className={`bg-white ${
+        isPublicView
+          ? 'w-full max-w-[860px] min-h-screen sm:min-h-0 sm:rounded-2xl border-0 sm:border border-slate-200'
+          : 'rounded-2xl max-w-[820px] w-full max-h-[96vh] border border-slate-200'
+      } flex flex-col shadow-2xl print:max-w-none print:w-full print:max-h-none print:h-auto print:border-none print:shadow-none print:rounded-none`}>
         
         {/* Top Control Bar (Hidden when printing via CSS @media print) */}
-        <div className="print:hidden p-3 sm:p-4 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 bg-slate-50 rounded-t-2xl">
-          {isPublicView ? (<div className="flex flex-col sm:flex-row sm:items-center justify-between w-full gap-2">
-              <div className="flex items-center justify-between w-full sm:w-auto">
-                <div className="flex items-center gap-2">
-                  <div className="p-2 bg-black rounded-xl text-white shadow-2xs">
-                    <FileText className="w-5 h-5"/>
+        <div className="print:hidden px-2 sm:px-3 py-1.5 border-b border-slate-200 flex items-center justify-between gap-1 overflow-x-auto scrollbar-none bg-slate-50 rounded-t-2xl">
+          {isPublicView ? (<div className="flex items-center justify-between w-full gap-2">
+              <div className="flex items-center gap-2">
+                <div className="p-1 bg-black rounded-lg text-white shadow-2xs">
+                  <FileText className="w-3.5 h-3.5"/>
+                </div>
+                <div>
+                  <div className="text-xs font-black text-slate-900 tracking-wider uppercase">
+                    {'SALES INVOICE'}
                   </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-black text-slate-900 tracking-wider uppercase">
-                      {(invoice as any).isQuote ? 'PRICE QUOTATION' : 'SALES INVOICE'}
-                    </div>
-                    <div className="text-[11px] font-mono font-bold text-slate-600">
-                      #{invoice.invoiceNo}
-                    </div>
+                  <div className="text-[10px] font-mono font-bold text-slate-600">
+                    #{invoice.invoiceNo}
                   </div>
                 </div>
-                <button type="button" onClick={onClose} className="sm:hidden p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200 cursor-pointer" title="Close">
-                  <X className="w-5 h-5"/>
-                </button>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1">
                 {/* Mobile Fit vs 100% Zoom Toggle */}
-                {isMobile && template !== 'POS' && (<button type="button" onClick={() => setIsMobileFit((prev) => !prev)} className="px-2.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-2xs" title={isMobileFit ? "100%" : "Fit"}>
+                {isMobile && template !== 'POS' && (<button type="button" onClick={() => setIsMobileFit((prev) => !prev)} className="px-1.5 py-0.5 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-lg text-[10.5px] font-bold flex items-center gap-1 cursor-pointer transition-all shadow-2xs" title={isMobileFit ? "%" : ""}>
                     {isMobileFit ? (<>
-                        <ZoomIn className="w-4 h-4"/>
+                        <ZoomIn className="w-3.5 h-3.5"/>
                         <span className="hidden sm:inline">100%</span>
                       </>) : (<>
-                        <Maximize2 className="w-4 h-4"/>
-                        <span className="hidden sm:inline">Fit</span>
+                        <Maximize2 className="w-3.5 h-3.5"/>
+                        <span className="hidden sm:inline"></span>
                       </>)}
                   </button>)}
 
                 {/* Column Toggles Pill (COLS: Type, Region) */}
                 {template !== 'POS' && (
-                  <div className="bg-amber-50 border border-amber-200/90 text-amber-900 px-2.5 py-1 rounded-full flex items-center gap-2 text-xs font-semibold shadow-2xs">
-                    <span className="font-black text-amber-950">COLS:</span>
-                    <label className="flex items-center gap-1 cursor-pointer select-none text-slate-800 hover:text-black">
+                  <div className="bg-amber-50 border border-amber-200/90 text-amber-900 px-1.5 py-0.5 rounded-full flex items-center gap-1 text-[10.5px] font-semibold shadow-2xs whitespace-nowrap">
+                    <span className="font-bold text-amber-950">COLS:</span>
+                    <label className="flex items-center gap-0.5 cursor-pointer select-none text-slate-800 hover:text-black">
                       <input
                         type="checkbox"
                         checked={showType}
                         onChange={(e) => setShowType(e.target.checked)}
-                        className="w-3.5 h-3.5 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
+                        className="w-3 h-3 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
                       />
                       <span>Type</span>
                     </label>
-                    <label className="flex items-center gap-1 cursor-pointer select-none text-slate-800 hover:text-black">
+                    <label className="flex items-center gap-0.5 cursor-pointer select-none text-slate-800 hover:text-black">
                       <input
                         type="checkbox"
                         checked={showRegion}
                         onChange={(e) => setShowRegion(e.target.checked)}
-                        className="w-3.5 h-3.5 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
+                        className="w-3 h-3 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
                       />
                       <span>Region</span>
                     </label>
@@ -1426,128 +1510,119 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 )}
 
                 {/* Print Document */}
-                <button type="button" onClick={() => handlePrint(false)} disabled={isPrinting} className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all">
-                  <Printer className="w-4 h-4 text-amber-400"/>
+                <button type="button" onClick={() => handlePrint(false)} disabled={isPrinting} className="px-2 py-1 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded-lg text-[10.5px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-all whitespace-nowrap" title="Print / Save as PDF">
+                  <Printer className="w-3.5 h-3.5 text-amber-400"/>
                   <span>{isPrinting ? ('Printing...') : ('Print')}</span>
                 </button>
 
                 {/* Direct PDF Download */}
-                <button type="button" onClick={handleDownloadPDF} disabled={isDownloadingPdf} className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-slate-950 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all">
-                  {isDownloadingPdf ? (<div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"/>) : (<Download className="w-4 h-4"/>)}
+                <button type="button" onClick={handleDownloadPDF} disabled={isDownloadingPdf} className="px-2 py-1 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-slate-950 rounded-lg text-[10.5px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-all whitespace-nowrap" title="PDF.pdf">
+                  {isDownloadingPdf ? (<div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"/>) : (<Download className="w-3.5 h-3.5"/>)}
                   <span>{isDownloadingPdf ? ('Generating...') : ('Download PDF')}</span>
                 </button>
 
-                {/* Close Button Desktop */}
-                <button type="button" onClick={onClose} className="hidden sm:inline-flex p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200 cursor-pointer" title="Close">
-                  <X className="w-5 h-5"/>
+                {/* Close Button */}
+                <button type="button" onClick={onClose} className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-200 cursor-pointer" title="Close">
+                  <X className="w-4 h-4"/>
                 </button>
               </div>
             </div>) : (<>
-              {/* Template Switcher & Pad Mode Toggle */}
-              <div className="flex flex-wrap items-center gap-2">
-                {isQuote ? (<div className="text-slate-800 text-sm font-black flex items-center gap-2 px-1">
-                    <FileText className="w-5 h-5 text-amber-500"/>
+              {/* Template Switcher & Column Toggles (Left side) */}
+              <div className="flex items-center gap-1 shrink-0">
+                {isQuote ? (<div className="text-slate-800 text-xs font-black flex items-center gap-1.5 px-1 whitespace-nowrap">
+                    <FileText className="w-4 h-4 text-amber-500"/>
                     <span>{'Quotation Print & View'}</span>
-                  </div>) : (<div className="flex items-center gap-1.5 bg-slate-200/80 p-1 rounded-xl text-xs font-bold">
-                    <button type="button" onClick={() => setTemplate('A4')} className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${template === 'A4' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}>A4</button>
-                    <button type="button" onClick={() => setTemplate('WORK_ORDER')} className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${template === 'WORK_ORDER' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}>Factory Work Order</button>
-                    <button type="button" onClick={() => setTemplate('CHALLAN')} className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${template === 'CHALLAN' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}>Challan</button>
-                    <button type="button" onClick={() => setTemplate('POS')} className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${template === 'POS' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}>80mm POS</button>
+                  </div>) : (<div className="flex items-center gap-0.5 bg-slate-200/80 p-0.5 rounded-lg text-[10.5px] font-bold">
+                    <button type="button" onClick={() => setTemplate('A4')} className={`px-2 py-0.5 rounded-md transition-all cursor-pointer whitespace-nowrap ${template === 'A4' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}>A4</button>
+                    <button type="button" onClick={() => setTemplate('WORK_ORDER')} className={`px-2 py-0.5 rounded-md transition-all cursor-pointer whitespace-nowrap ${template === 'WORK_ORDER' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}>Work Order</button>
+                    <button type="button" onClick={() => setTemplate('CHALLAN')} className={`px-2 py-0.5 rounded-md transition-all cursor-pointer whitespace-nowrap ${template === 'CHALLAN' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}>Challan</button>
+                    <button type="button" onClick={() => setTemplate('POS')} className={`px-2 py-0.5 rounded-md transition-all cursor-pointer whitespace-nowrap ${template === 'POS' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`}>POS</button>
                   </div>)}
 
-                {/* Quick Pad View Toggle */}
-                {template !== 'POS' && (<div className="flex items-center gap-1 bg-white border border-slate-300 rounded-xl p-0.5 shadow-2xs text-xs">
-                    <button type="button" onClick={() => setIsPadMode(false)} className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer ${!isPadMode ? 'bg-slate-900 text-white shadow-2xs' : 'text-slate-600 hover:text-slate-900'}`} title="Normal Mode with Header">Normal</button>
-                    <button type="button" onClick={() => setIsPadMode(true)} className={`px-2.5 py-1 rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${isPadMode ? 'bg-indigo-600 text-white shadow-2xs' : 'text-slate-600 hover:text-indigo-600'}`} title="Pad Mode (No Header/Footer)">
-                      <FileSpreadsheet className="w-3.5 h-3.5"/>
-                      <span>Pad</span>
-                    </button>
-                  </div>)}
-              </div>
-
-              {/* Action buttons (Right side: user mark 1 area) */}
-              <div className="flex items-center gap-2">
-                {/* Mobile Fit vs 100% Zoom Toggle for Admin */}
-                {isMobile && template !== 'POS' && (<button type="button" onClick={() => setIsMobileFit((prev) => !prev)} className="px-2.5 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all shadow-2xs" title={isMobileFit ? "%" : ""}>
-                    {isMobileFit ? (<>
-                        <ZoomIn className="w-4 h-4"/>
-                        <span className="hidden sm:inline">100%</span>
-                      </>) : (<>
-                        <Maximize2 className="w-4 h-4"/>
-                        <span className="hidden sm:inline">Fit</span>
-                      </>)}
-                  </button>)}
-
-                {/* Direct Hardware Thermal Print Button for 80mm POS Slip */}
-                {template === 'POS' && (<button type="button" onClick={handleHardwarePrint} disabled={isHardwarePrinting} className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all ${hardwareAgentStatus.isOnline
-                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white ring-2 ring-emerald-300'
-                    : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`} title={hardwareAgentStatus.isOnline
-                    ? `Direct Hardware Print on 80mm Printer (${hardwareAgentStatus.activePrinter || '80 Printer'})`
-                    : ""}>
-                    <Printer className="w-4 h-4 text-emerald-200"/>
-                    <span>
-                      {isHardwarePrinting
-                    ? ('Printing...')
-                    : ('Thermal Printer (Agent)')}
-                    </span>
-                    {hardwareAgentStatus.isOnline ? (<span className="w-2 h-2 rounded-full bg-emerald-300 animate-pulse" title="Agent Online"/>) : (<span className="text-[10px] px-1 bg-white/20 rounded font-normal">Setup</span>)}
-                  </button>)}
-
-                {template === 'POS' && (<button type="button" onClick={() => setIsPrinterBridgeOpen(true)} className="p-2 text-slate-600 hover:text-slate-900 bg-slate-200/80 hover:bg-slate-300 rounded-xl transition-all cursor-pointer flex items-center gap-1 text-xs font-bold" title={'Printer Agent Status & Setup'}>
-                    <Settings className="w-4 h-4 text-slate-700"/>
-                  </button>)}
-
-                {/* Column Toggles Pill (COLS: Type, Region) as shown in user picture 2 */}
+                {/* Column Toggles Pill (COLS: Type, Region) */}
                 {template !== 'POS' && (
-                  <div className="bg-amber-50 border border-amber-200/90 text-amber-900 px-3 py-1.5 rounded-full flex items-center gap-2 text-xs font-semibold shadow-2xs">
-                    <span className="font-black text-amber-950">COLS:</span>
-                    <label className="flex items-center gap-1 cursor-pointer select-none text-slate-800 hover:text-black">
+                  <div className="bg-amber-50 border border-amber-200/90 text-amber-900 px-1.5 py-0.5 rounded-full flex items-center gap-1.5 text-[10.5px] font-semibold shadow-2xs whitespace-nowrap">
+                    <span className="font-bold text-amber-950">COLS:</span>
+                    <label className="flex items-center gap-0.5 cursor-pointer select-none text-slate-800 hover:text-black">
                       <input
                         type="checkbox"
                         checked={showType}
                         onChange={(e) => setShowType(e.target.checked)}
-                        className="w-3.5 h-3.5 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
+                        className="w-3 h-3 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
                       />
                       <span>Type</span>
                     </label>
-                    <label className="flex items-center gap-1 cursor-pointer select-none text-slate-800 hover:text-black">
+                    <label className="flex items-center gap-0.5 cursor-pointer select-none text-slate-800 hover:text-black">
                       <input
                         type="checkbox"
                         checked={showRegion}
                         onChange={(e) => setShowRegion(e.target.checked)}
-                        className="w-3.5 h-3.5 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
+                        className="w-3 h-3 rounded border-amber-300 text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
                       />
                       <span>Region</span>
                     </label>
                   </div>
                 )}
+              </div>
+
+              {/* Action buttons (Right side) */}
+              <div className="flex items-center gap-1 shrink-0">
+                {/* Mobile Fit vs 100% Zoom Toggle for Admin */}
+                {isMobile && template !== 'POS' && (<button type="button" onClick={() => setIsMobileFit((prev) => !prev)} className="px-1.5 py-0.5 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-lg text-[10.5px] font-bold flex items-center gap-1 cursor-pointer transition-all shadow-2xs whitespace-nowrap" title={isMobileFit ? "%" : ""}>
+                    {isMobileFit ? (<>
+                        <ZoomIn className="w-3.5 h-3.5"/>
+                        <span className="hidden sm:inline">100%</span>
+                      </>) : (<>
+                        <Maximize2 className="w-3.5 h-3.5"/>
+                        <span className="hidden sm:inline">Fit</span>
+                      </>)}
+                  </button>)}
+
+                {/* Direct Hardware Thermal Print Button for 80mm POS Slip */}
+                {template === 'POS' && (<button type="button" onClick={handleHardwarePrint} disabled={isHardwarePrinting} className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-all whitespace-nowrap ${hardwareAgentStatus.isOnline
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white ring-1 ring-emerald-300'
+                    : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`} title={hardwareAgentStatus.isOnline
+                    ? `Direct Hardware Print on 80mm Printer (${hardwareAgentStatus.activePrinter || '80 Printer'})`
+                    : ""}>
+                    <Printer className="w-3.5 h-3.5 text-emerald-200"/>
+                    <span>
+                      {isHardwarePrinting
+                    ? ('Printing...')
+                    : ('Thermal Print')}
+                    </span>
+                    {hardwareAgentStatus.isOnline ? (<span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse" title="Agent Online"/>) : (<span className="text-[9px] px-1 bg-white/20 rounded font-normal">Setup</span>)}
+                  </button>)}
+
+                {template === 'POS' && (<button type="button" onClick={() => setIsPrinterBridgeOpen(true)} className="p-1 text-slate-600 hover:text-slate-900 bg-slate-200/80 hover:bg-slate-300 rounded-lg transition-all cursor-pointer flex items-center gap-1 text-[10.5px] font-bold" title={'Printer Agent Status & Setup'}>
+                    <Settings className="w-3.5 h-3.5 text-slate-700"/>
+                  </button>)}
 
                 {/* Standard Full Print */}
-                <button type="button" onClick={() => handlePrint(false)} disabled={isPrinting} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all" title={'Print complete document with header and footer'}>
-                  <Printer className="w-4 h-4 text-amber-400"/>
+                <button type="button" onClick={() => { setIsPadMode(false); handlePrint(false); }} disabled={isPrinting} className="px-2 py-1 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-400 text-white rounded-lg text-[10.5px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-all whitespace-nowrap" title={'Print complete document with header and footer'}>
+                  <Printer className="w-3.5 h-3.5 text-amber-400"/>
                   <span>{isPrinting ? ('Printing...') : ('Print Document')}</span>
                 </button>
 
                 {/* Pad Print Button */}
-                {template !== 'POS' && (<button type="button" onClick={handlePadPrint} disabled={isPrinting} className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all ring-2 ring-indigo-300" title={'Print for pre-printed letterhead pad without header & footer'}>
-                    <FileSpreadsheet className="w-4 h-4 text-indigo-200"/>
+                {template !== 'POS' && (<button type="button" onClick={handlePadPrint} disabled={isPrinting} className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-400 text-white rounded-lg text-[10.5px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-all ring-1 ring-indigo-300 whitespace-nowrap" title={'Print for pre-printed letterhead pad without header & footer'}>
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-indigo-200"/>
                     <span>{'Pad Print'}</span>
                   </button>)}
 
                 {/* Open in New Tab */}
-                <button type="button" onClick={handleOpenInNewTab} className="px-3 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-2xs cursor-pointer transition-all" title={'Open document in a new browser tab to print'}>
-                  <ExternalLink className="w-4 h-4 text-slate-950"/>
-                  <span>{'Open in New Tab'}</span>
+                <button type="button" onClick={handleOpenInNewTab} className="px-2 py-1 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-lg text-[10.5px] font-bold flex items-center gap-1 shadow-2xs cursor-pointer transition-all whitespace-nowrap" title={'Open document in a new browser tab to print'}>
+                  <ExternalLink className="w-3.5 h-3.5 text-slate-950"/>
+                  <span>{'New Tab'}</span>
                 </button>
 
                 {/* Direct PDF Download Button */}
-                <button type="button" onClick={handleDownloadPDF} disabled={isDownloadingPdf} className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-slate-950 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer transition-all" title={'Download PDF file (.pdf)'}>
-                  {isDownloadingPdf ? (<div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"/>) : (<Download className="w-4 h-4"/>)}
+                <button type="button" onClick={handleDownloadPDF} disabled={isDownloadingPdf} className="px-2 py-1 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-slate-950 rounded-lg text-[10.5px] font-bold flex items-center gap-1 shadow-xs cursor-pointer transition-all whitespace-nowrap" title={'Download PDF file (.pdf)'}>
+                  {isDownloadingPdf ? (<div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"/>) : (<Download className="w-3.5 h-3.5"/>)}
                   <span>{isDownloadingPdf ? "..." : "PDF Download"}</span>
                 </button>
 
-                <button type="button" onClick={onClose} className="p-2 text-slate-400 hover:text-slate-700 rounded-xl hover:bg-slate-200 cursor-pointer">
-                  <X className="w-5 h-5"/>
+                <button type="button" onClick={onClose} className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-200 cursor-pointer" title="Close">
+                  <X className="w-4 h-4"/>
                 </button>
               </div>
             </>)}
@@ -1600,68 +1675,70 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
           </div>)}
 
         {/* Printable Document Body */}
-        <div id="printable-invoice-content" className={`flex-1 ${isMobile && isMobileFit ? 'overflow-x-hidden' : 'overflow-x-auto'} overflow-y-auto p-1 sm:p-6 bg-slate-200/50 print:bg-white print:p-0 print:overflow-visible print:max-h-none print:block print:w-full print:max-w-full flex justify-center`}>
+        <div id="printable-invoice-content" className={`flex-1 ${isMobile && isMobileFit ? 'overflow-x-hidden' : 'overflow-x-auto'} overflow-y-auto p-1 sm:px-2.5 sm:py-4 bg-slate-200/50 print:bg-white print:p-0 print:overflow-visible print:max-h-none print:block print:w-full print:max-w-full flex justify-center`}>
           
           {/* ============================================================== */}
           {/* 1. STANDARD A4 TAX / SALES INVOICE (Paginated) */}
           {/* ============================================================== */}
-          {template === 'A4' && (<div className="w-full flex flex-col items-center gap-6 print:gap-0 print:block print:w-full print:max-w-full print:m-0 print:p-0">
-              {invoicePages.map((page, pIdx) => {
-                const naturalWidth = isPadMode ? 782 : 794;
-                const naturalHeight = isPadMode ? 1070 : 1123;
-                const scaledWidth = Math.round(naturalWidth * scale);
-                const scaledHeight = Math.round(naturalHeight * scale);
-
-                const sheetNode = (
+          {template === 'A4' && (<div className="w-full flex flex-col items-center gap-4 print:gap-0 print:block print:w-full print:max-w-full print:m-0 print:p-0">
+              {invoicePages.map((page, pIdx) => (
                 <div
                   key={page.pageNumber}
-                  ref={pIdx === 0 ? sheetRef : undefined}
-                  id={pIdx === 0 ? "a4-document-sheet" : undefined}
-                  style={
-                    isPadMode
-                      ? {
-                          width: '782px',
-                          minWidth: '782px',
-                          maxWidth: '782px',
-                          height: '1070px',
-                          minHeight: '1070px',
-                          maxHeight: '1070px',
-                          paddingTop: `${padTopMarginMm}mm`,
-                          paddingBottom: '25.4mm',
-                          paddingLeft: '12.7mm',
-                          paddingRight: '12.7mm',
-                          ...(isMobile && isMobileFit
-                            ? {
-                                transform: `scale(${scale})`,
-                                transformOrigin: 'top left',
-                                position: 'absolute',
-                                top: 0,
-                                left: 0,
-                              }
-                            : {}),
-                        }
-                      : isMobile && isMobileFit
-                      ? {
-                          width: '794px',
-                          minWidth: '794px',
-                          maxWidth: '794px',
-                          height: '1123px',
-                          minHeight: '1123px',
-                          maxHeight: '1123px',
-                          transform: `scale(${scale})`,
-                          transformOrigin: 'top left',
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                        }
-                      : undefined
-                  }
-                  className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border print:static print:transform-none ${
-                    isPadMode
-                      ? 'w-[782px] min-w-[782px] max-w-[782px] h-[1070px] min-h-[1070px] max-h-[1070px]'
-                      : 'w-[794px] min-w-[794px] max-w-[794px] h-[1123px] min-h-[1123px] max-h-[1123px] p-8'
-                  }`}
+                  className="w-full flex justify-center print:block print:w-full print:m-0 print:p-0"
+                  style={isMobile && isMobileFit ? {
+                    width: '100%',
+                    display: 'flex',
+                    justifyContent: 'center',
+                    marginBottom: pIdx < invoicePages.length - 1 ? '16px' : 0,
+                  } : undefined}
                 >
+                  <div
+                    className="mobile-scale-wrapper print:w-full print:m-0"
+                    style={isMobile && isMobileFit ? {
+                      width: `${scaledWidth}px`,
+                      height: `${scaledHeight}px`,
+                      position: 'relative',
+                      overflow: 'hidden',
+                      flexShrink: 0,
+                      margin: '0 auto',
+                    } : undefined}
+                  >
+                    <div
+                      ref={pIdx === 0 ? sheetRef : undefined}
+                      id={pIdx === 0 ? "a4-document-sheet" : undefined}
+                      style={
+                        isPadMode
+                          ? {
+                              width: '782px',
+                              minWidth: '782px',
+                              maxWidth: '782px',
+                              height: '1070px',
+                              minHeight: '1070px',
+                              maxHeight: '1070px',
+                              paddingTop: `${padTopMarginMm}mm`,
+                              paddingBottom: '25.4mm',
+                              paddingLeft: '12.7mm',
+                              paddingRight: '12.7mm',
+                              ...(isMobile && isMobileFit
+                                ? {
+                                    transform: `scale(${scale})`,
+                                    transformOrigin: 'top left',
+                                  }
+                                : {}),
+                            }
+                          : isMobile && isMobileFit
+                          ? {
+                              transform: `scale(${scale})`,
+                              transformOrigin: 'top left',
+                            }
+                          : undefined
+                      }
+                      className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border ${
+                        isPadMode
+                          ? 'w-[782px] min-w-[782px] max-w-[782px] h-[1070px] min-h-[1070px] max-h-[1070px]'
+                          : 'w-[794px] min-w-[794px] max-w-[794px] h-[1123px] min-h-[1123px] max-h-[1123px] p-8'
+                      }`}
+                    >
                   <div className="a4-page-content space-y-4 flex-1">
                     {page.isFirstPage ? (
                       /* Page 1: Full Document Header & BILL TO box */
@@ -1917,26 +1994,16 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
 
                           {!(invoice as any).isQuote && (
                             <>
-                              {invoice.splitPayments && Object.keys(invoice.splitPayments).length > 0 ? (
+                              {itemizedPayments.length > 0 ? (
                                 <div className="space-y-1 text-[11px] pt-1 border-t-2 border-double border-black text-black">
-                                  {Object.entries(invoice.splitPayments)
-                                    .filter(([channel, amt]) => channel.toLowerCase() !== 'due' && (Number(amt) || 0) > 0)
-                                    .map(([channel, amt]) => {
-                                      const cl = channel.toLowerCase().replace(/[\s_-]/g, '');
-                                      const label = cl === 'cash' || cl === 'cashinhand' ? 'Paid Cash:'
-                                        : cl === 'card' || cl === 'bank' || cl.includes('bank') ? 'Paid Card / Bank:'
-                                        : cl === 'bkash' ? 'Paid bKash:'
-                                        : cl === 'nagad' ? 'Paid Nagad:'
-                                        : `Paid (${channel}):`;
-                                      return (
-                                        <div key={channel} className="flex justify-between text-black">
-                                          <span>{label}</span>
-                                          <span className="font-bold text-black">
-                                            {profile.currencySymbol}{(Number(amt) || 0).toLocaleString()}
-                                          </span>
-                                        </div>
-                                      );
-                                    })}
+                                  {itemizedPayments.map((item) => (
+                                    <div key={item.key} className="flex justify-between text-black">
+                                      <span>{item.label}</span>
+                                      <span className="font-bold text-black">
+                                        {profile.currencySymbol}{item.amount.toLocaleString()}
+                                      </span>
+                                    </div>
+                                  ))}
                                   <div className="flex justify-between text-xs py-1 border-t border-black text-black">
                                     <span className="font-bold text-black">Total Paid:</span>
                                     <span className="font-bold text-black">
@@ -2008,79 +2075,56 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                     </div>
                   </div>
                 </div>
-                );
-
-                return isMobile && isMobileFit ? (
-                  <div
-                    key={`scaled-wrap-${page.pageNumber}`}
-                    style={{
-                      width: `${scaledWidth}px`,
-                      height: `${scaledHeight}px`,
-                      position: 'relative',
-                      overflow: 'hidden',
-                      margin: '0 auto',
-                      flexShrink: 0,
-                    }}
-                    className="print:w-auto print:h-auto print:overflow-visible print:static"
-                  >
-                    {sheetNode}
                   </div>
-                ) : sheetNode;
-              })}
+                </div>
+              ))}
             </div>)}
 
         {/* ============================================================== */}
         {/* 2. FACTORY WORK ORDER / JOB CARD */}
         {/* ============================================================== */}
-        {template === 'WORK_ORDER' && (() => {
-            const naturalWidth = isPadMode ? 782 : 794;
-            const naturalHeight = isPadMode ? 1070 : 1123;
-            const scaledWidth = Math.round(naturalWidth * scale);
-            const scaledHeight = Math.round(naturalHeight * scale);
-
-            const woNode = (
-            <div ref={sheetRef} id="a4-document-sheet" style={
-              isPadMode
-                ? {
-                    width: '782px',
-                    minWidth: '782px',
-                    maxWidth: '782px',
-                    height: '1070px',
-                    minHeight: '1070px',
-                    maxHeight: '1070px',
-                    paddingTop: `${padTopMarginMm}mm`,
-                    paddingBottom: '25.4mm',
-                    paddingLeft: '12.7mm',
-                    paddingRight: '12.7mm',
-                    ...(isMobile && isMobileFit
-                      ? {
-                          transform: `scale(${scale})`,
-                          transformOrigin: 'top left',
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                        }
-                      : {}),
+        {template === 'WORK_ORDER' && (<div className="w-full flex justify-center print:block print:w-full print:max-w-full print:m-0 print:p-0">
+            <div
+              className="mobile-scale-wrapper print:w-full print:m-0"
+              style={isMobile && isMobileFit ? {
+                width: `${scaledWidth}px`,
+                height: `${scaledHeight}px`,
+                position: 'relative',
+                overflow: 'hidden',
+                flexShrink: 0,
+                margin: '0 auto',
+              } : undefined}
+            >
+              <div ref={sheetRef} id="a4-document-sheet" style={
+                isPadMode
+                  ? {
+                      width: '782px',
+                      minWidth: '782px',
+                      maxWidth: '782px',
+                      height: '1070px',
+                      minHeight: '1070px',
+                      maxHeight: '1070px',
+                      paddingTop: `${padTopMarginMm}mm`,
+                      paddingBottom: '25.4mm',
+                      paddingLeft: '12.7mm',
+                      paddingRight: '12.7mm',
+                      ...(isMobile && isMobileFit
+                        ? {
+                            transform: `scale(${scale})`,
+                            transformOrigin: 'top left',
+                          }
+                        : {}),
+                    }
+                  : isMobile && isMobileFit
+                  ? {
+                      transform: `scale(${scale})`,
+                      transformOrigin: 'top left',
                   }
-                : isMobile && isMobileFit
-                ? {
-                    width: '794px',
-                    minWidth: '794px',
-                    maxWidth: '794px',
-                    height: '1123px',
-                    minHeight: '1123px',
-                    maxHeight: '1123px',
-                    transform: `scale(${scale})`,
-                    transformOrigin: 'top left',
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                }
-                : undefined} className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-xs text-slate-900 shrink-0 box-border print:static print:transform-none ${
-                  isPadMode
-                    ? 'w-[782px] min-w-[782px] max-w-[782px] h-[1070px] min-h-[1070px] max-h-[1070px]'
-                    : 'w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 p-8'
-                }`}>
+                  : undefined} className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-xs text-slate-900 shrink-0 box-border ${
+                    isPadMode
+                      ? 'w-[782px] min-w-[782px] max-w-[782px] h-[1070px] min-h-[1070px] max-h-[1070px]'
+                      : 'w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 p-8'
+                  }`}>
               <div className="a4-page-content space-y-6 flex-1">
               {/* Header with Brand Logo on Left, QR Banner on Right */}
               <DocumentHeader documentTitle="PRODUCTION WORK ORDER" documentSubtitle={`${profile.name || 'DotColorCommunication'} • Technical Work Order & Service Unit`} documentNo={`WO-${invoice.invoiceNo}`} documentDate={invoice.date} referenceNo={invoice.referenceNo} isPadMode={isPadMode} padTopMarginMm={padTopMarginMm}/>
@@ -2198,39 +2242,24 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 </div>
               </div>
             </div>
-            );
-
-            return (
-              <div className="w-full flex justify-center print:block print:w-full print:max-w-full print:m-0 print:p-0">
-                {isMobile && isMobileFit ? (
-                  <div
-                    style={{
-                      width: `${scaledWidth}px`,
-                      height: `${scaledHeight}px`,
-                      position: 'relative',
-                      overflow: 'hidden',
-                      margin: '0 auto',
-                      flexShrink: 0,
-                    }}
-                    className="print:w-auto print:h-auto print:overflow-visible print:static"
-                  >
-                    {woNode}
-                  </div>
-                ) : woNode}
-              </div>
-            );
-          })()}
+            </div>
+          </div>)}
 
           {/* ============================================================== */}
           {/* 3. DELIVERY CHALLAN */}
           {/* ============================================================== */}
-          {template === 'CHALLAN' && (() => {
-            const naturalWidth = isPadMode ? 782 : 794;
-            const naturalHeight = isPadMode ? 1070 : 1123;
-            const scaledWidth = Math.round(naturalWidth * scale);
-            const scaledHeight = Math.round(naturalHeight * scale);
-
-            const challanNode = (
+          {template === 'CHALLAN' && (<div className="w-full flex justify-center print:block print:w-full print:max-w-full print:m-0 print:p-0">
+            <div
+              className="mobile-scale-wrapper print:w-full print:m-0"
+              style={isMobile && isMobileFit ? {
+                width: `${scaledWidth}px`,
+                height: `${scaledHeight}px`,
+                position: 'relative',
+                overflow: 'hidden',
+                flexShrink: 0,
+                margin: '0 auto',
+              } : undefined}
+            >
               <div ref={sheetRef} id="a4-document-sheet" style={
                 isPadMode
                   ? {
@@ -2248,27 +2277,15 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                         ? {
                             transform: `scale(${scale})`,
                             transformOrigin: 'top left',
-                            position: 'absolute',
-                            top: 0,
-                            left: 0,
                           }
                         : {}),
                     }
                   : isMobile && isMobileFit
                 ? {
-                    width: '794px',
-                    minWidth: '794px',
-                    maxWidth: '794px',
-                    height: '1123px',
-                    minHeight: '1123px',
-                    maxHeight: '1123px',
                     transform: `scale(${scale})`,
                     transformOrigin: 'top left',
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
                 }
-                : undefined} className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border print:static print:transform-none ${
+                : undefined} className={`a4-page-sheet relative bg-white overflow-hidden mx-auto print:mx-0 rounded-none shadow-xl print:shadow-none border-0 border-transparent print:border-none flex flex-col justify-between text-black text-xs shrink-0 box-border ${
                   isPadMode
                     ? 'w-[782px] min-w-[782px] max-w-[782px] h-[1070px] min-h-[1070px] max-h-[1070px]'
                     : 'w-[794px] min-w-[794px] print:w-full print:min-w-0 print:max-w-full print:shrink min-h-[1123px] print:min-h-0 p-8'
@@ -2402,28 +2419,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoiceId,
                 </div>
               </div>
             </div>
-            );
-
-            return (
-              <div className="w-full flex justify-center print:block print:w-full print:max-w-full print:m-0 print:p-0">
-                {isMobile && isMobileFit ? (
-                  <div
-                    style={{
-                      width: `${scaledWidth}px`,
-                      height: `${scaledHeight}px`,
-                      position: 'relative',
-                      overflow: 'hidden',
-                      margin: '0 auto',
-                      flexShrink: 0,
-                    }}
-                    className="print:w-auto print:h-auto print:overflow-visible print:static"
-                  >
-                    {challanNode}
-                  </div>
-                ) : challanNode}
-              </div>
-            );
-          })()}
+            </div>
+          </div>)}
 
           {/* ============================================================== */}
           {/* 4. POS THERMAL 80MM SLIP */}

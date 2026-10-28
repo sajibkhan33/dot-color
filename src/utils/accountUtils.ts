@@ -1,4 +1,4 @@
-import { ChartOfAccount, AccountingTransaction, SalesInvoice, PaymentMethodConfig, AccountBalances, Supplier, PurchaseOrder, ProductItem, JournalEntry, Project } from '../types';
+import { ChartOfAccount, AccountingTransaction, SalesInvoice, PaymentMethodConfig, AccountBalances, Supplier, PurchaseOrder, ProductItem, JournalEntry, Project, ExpenseHead } from '../types';
 
 /**
  * Normalizes account or channel string for fuzzy matching
@@ -23,7 +23,11 @@ export const matchChannelToAccount = (
     let found = chartOfAccounts.find(a => a.id === raw || a.code === raw);
     if (found) return found;
 
-    // 2. Check if channelNameOrId corresponds to a PaymentMethodConfig
+    // 2. Match by exact account name or Bengali name
+    found = chartOfAccounts.find(a => a.name.toLowerCase() === lower || (a.nameBn && a.nameBn.toLowerCase() === lower));
+    if (found) return found;
+
+    // 3. Check if channelNameOrId corresponds to a PaymentMethodConfig
     const pm = paymentMethods?.find(p => p.id === raw || p.name.toLowerCase() === lower);
     if (pm?.linkedAccountId) {
         const byLink = chartOfAccounts.find(a => 
@@ -34,10 +38,6 @@ export const matchChannelToAccount = (
         );
         if (byLink) return byLink;
     }
-
-    // 3. Match by exact account name or Bengali name
-    found = chartOfAccounts.find(a => a.name.toLowerCase() === lower || (a.nameBn && a.nameBn.toLowerCase() === lower));
-    if (found) return found;
 
     // 4. Specific MFS matching (strictly distinguish bKash vs Nagad vs Rocket vs Upay)
     if (lower.includes('bkash') || lower.includes('বিকাশ')) {
@@ -204,7 +204,8 @@ export const calculateSingleAccountBalance = (
     acc: ChartOfAccount,
     transactions: AccountingTransaction[],
     invoices: SalesInvoice[] = [],
-    projects: any[] = []
+    projects: any[] = [],
+    journalEntries: JournalEntry[] = []
 ): number => {
     let balance = Number(acc.openingBalance) || 0;
 
@@ -217,10 +218,32 @@ export const calculateSingleAccountBalance = (
     const isBrac = accNameLower.includes('brac');
     const isCash = (accNameLower.includes('cash') || accCode === '1001' || accCode === '1010' || (acc.nameBn && acc.nameBn.includes('ক্যাশ'))) && !isBkash && !isNagad;
 
-    // 1. Sum up all matched ledger transactions
+    // 1. Sum up all matched ledger transactions with safeguard against duplicate invoice payments
+    const seenInvoiceChannelSums = new Map<string, number>();
+    const invRecordedForThisAcc = new Map<string, number>();
+
     (transactions || []).forEach((tx) => {
         if (doesTransactionMatchAccount(tx, acc)) {
             if (tx.type === 'INCOME') {
+                const ref = (tx.refNo || '').toLowerCase().trim();
+                const amt = Number(tx.amount) || 0;
+                if (ref) {
+                    const invoiceKey = `${ref}_${acc.id || acc.code || acc.name}`;
+                    const linkedInv = (invoices || []).find(i => (i.invoiceNo || '').toLowerCase().trim() === ref);
+                    if (linkedInv) {
+                        const currentSum = seenInvoiceChannelSums.get(invoiceKey) || 0;
+                        const maxAllowed = Number(linkedInv.paidAmount) || 0;
+                        if (currentSum + amt > maxAllowed && currentSum > 0) {
+                            return; // skip duplicate transaction contribution!
+                        }
+                        seenInvoiceChannelSums.set(invoiceKey, currentSum + amt);
+                    }
+                    invRecordedForThisAcc.set(ref, (invRecordedForThisAcc.get(ref) || 0) + amt);
+                    const numPart = ref.replace(/\D/g, '');
+                    if (numPart && numPart.length >= 4) {
+                        invRecordedForThisAcc.set(numPart, (invRecordedForThisAcc.get(numPart) || 0) + amt);
+                    }
+                }
                 balance += tx.amount;
             } else if (tx.type === 'EXPENSE') {
                 balance -= tx.amount;
@@ -229,11 +252,21 @@ export const calculateSingleAccountBalance = (
     });
 
     // 2. Reconcile sales invoices with splitPayments or paymentMethod that might not have a ledger tx record
-    const recordedInvoiceRefs = new Set(
-        (transactions || [])
-            .filter((t) => t.type === 'INCOME' && t.refNo)
-            .map((t) => (t.refNo || '').toLowerCase().trim())
-    );
+    const getRecordedAmtForThisAcc = (invNo: string): number => {
+        if (!invNo) return 0;
+        const r = invNo.toLowerCase().trim();
+        if (invRecordedForThisAcc.has(r)) return invRecordedForThisAcc.get(r)!;
+        const num = r.replace(/\D/g, '');
+        if (num && num.length >= 4) {
+            if (invRecordedForThisAcc.has(num)) return invRecordedForThisAcc.get(num)!;
+            for (const [k, v] of invRecordedForThisAcc.entries()) {
+                if (k.length >= 4 && (num.endsWith(k) || k.endsWith(num))) {
+                    return v;
+                }
+            }
+        }
+        return 0;
+    };
 
     // Build set of invoice numbers / IDs linked to projects to prevent double-counting
     const projectLinkedInvoiceNos = new Set<string>();
@@ -254,35 +287,57 @@ export const calculateSingleAccountBalance = (
             return;
         }
 
-        if (invRef && recordedInvoiceRefs.has(invRef)) {
-            return; // Already accounted for in transactions
-        }
+        const alreadyRecorded = getRecordedAmtForThisAcc(invRef);
 
-        if (inv.splitPayments) {
-            Object.entries(inv.splitPayments).forEach(([key, val]) => {
-                const kLower = key.toLowerCase();
-                const amt = Number(val) || 0;
-                if (amt <= 0 || kLower === 'due') return;
+        if (inv.splitPayments && Object.keys(inv.splitPayments).length > 0) {
+            // Deduplicate split payment channels so alias keys (e.g. 'bKash' and 'bkash') are NEVER summed together
+            const channelSplitMap = new Map();
+            Object.entries(inv.splitPayments).forEach(([k, v]) => {
+                const lk = k.toLowerCase().trim();
+                const amt = Number(v) || 0;
+                if (lk === 'due' || lk.startsWith('pm-') || amt <= 0) return;
 
+                // Canonical channel key
+                const normChannel = (lk === 'cash' || lk === 'cash in hand' || lk === 'cashinhand') ? 'cash'
+                    : (lk === 'card' || lk === 'bank' || lk.includes('bank')) ? 'bank'
+                    : lk === 'bkash' ? 'bkash'
+                    : lk === 'nagad' ? 'nagad'
+                    : lk === 'rocket' ? 'rocket'
+                    : lk;
+
+                // Take maximum if duplicate alias keys exist for the same channel
+                channelSplitMap.set(normChannel, Math.max(channelSplitMap.get(normChannel) || 0, amt));
+            });
+
+            let targetAccSplitAmt = 0;
+            let isMatched = false;
+
+            channelSplitMap.forEach((amt, normChannel) => {
                 let matchesKey = false;
-                if (kLower === accNameLower || (accCode && kLower.includes(accCode))) {
+                if (normChannel === accNameLower || (accCode && normChannel.includes(accCode))) {
                     matchesKey = true;
-                } else if (isBkash && (kLower.includes('bkash') || kLower === 'pm-bkash')) {
+                } else if (isBkash && normChannel === 'bkash') {
                     matchesKey = true;
-                } else if (isNagad && (kLower.includes('nagad') || kLower === 'pm-nagad')) {
+                } else if (isNagad && normChannel === 'nagad') {
                     matchesKey = true;
-                } else if (isCity && kLower.includes('city')) {
+                } else if (isCity && normChannel.includes('city')) {
                     matchesKey = true;
-                } else if (isSoutheast && kLower.includes('southeast')) {
+                } else if (isSoutheast && normChannel.includes('southeast')) {
                     matchesKey = true;
-                } else if (isCash && (kLower.includes('cash') || kLower === 'pm-cash')) {
+                } else if (isCash && normChannel === 'cash') {
                     matchesKey = true;
                 }
 
                 if (matchesKey) {
-                    balance += amt;
+                    targetAccSplitAmt += amt;
+                    isMatched = true;
                 }
             });
+
+            if (isMatched) {
+                const unrecordedAmt = Math.max(0, targetAccSplitAmt - alreadyRecorded);
+                balance += unrecordedAmt;
+            }
         } else if ((inv.paidAmount || 0) > 0) {
             const pmLower = (inv.paymentMethod || '').toLowerCase();
             let matchesPm = false;
@@ -301,8 +356,53 @@ export const calculateSingleAccountBalance = (
             }
 
             if (matchesPm) {
-                balance += Number(inv.paidAmount) || 0;
+                const unrecordedAmt = Math.max(0, Number(inv.paidAmount) - alreadyRecorded);
+                balance += unrecordedAmt;
             }
+        }
+    });
+
+    // 3. Reconcile manual journal entries (source === 'MANUAL' or non-synced journal vouchers)
+    const recordedInvoiceRefs = new Set(
+        (transactions || [])
+            .filter((t) => t.type === 'INCOME' && t.refNo)
+            .map((t) => (t.refNo || '').toLowerCase().trim())
+    );
+    const recordedTxRefs = new Set(
+        (transactions || [])
+            .filter((t) => t.refNo)
+            .map((t) => (t.refNo || '').toLowerCase().trim())
+    );
+
+    (journalEntries || []).forEach((j) => {
+        // Exclude system auto-generated journals that mirror existing transactions to avoid double-counting
+        if (
+            j.source === 'LEDGER_SYNC' || 
+            j.source === 'PROJECT_SALES' || 
+            j.source === 'PROJECT_EXPENSE' || 
+            j.source === 'EXPENSE' || 
+            j.source === 'SALES' || 
+            j.source === 'PURCHASE'
+        ) return;
+        const jRef = (j.refNo || '').toLowerCase().trim();
+        if (jRef && (recordedInvoiceRefs.has(jRef) || recordedTxRefs.has(jRef))) return;
+
+        const isDebit = (
+            j.debitAccountId === acc.id ||
+            j.debitAccountId === acc.code ||
+            (j.debitAccountName && j.debitAccountName.toLowerCase().trim() === accNameLower)
+        );
+        const isCredit = (
+            j.creditAccountId === acc.id ||
+            j.creditAccountId === acc.code ||
+            (j.creditAccountName && j.creditAccountName.toLowerCase().trim() === accNameLower)
+        );
+
+        const amt = Number(j.amount) || 0;
+        if (isDebit && !isCredit) {
+            balance += amt;
+        } else if (isCredit && !isDebit) {
+            balance -= amt;
         }
     });
 
@@ -318,7 +418,8 @@ export const getPaymentMethodLiveBalance = (
     transactions: AccountingTransaction[] = [],
     invoices: SalesInvoice[] = [],
     accountBalances?: AccountBalances,
-    projects: any[] = []
+    projects: any[] = [],
+    journalEntries: JournalEntry[] = []
 ): number => {
     if (!pm) return 0;
     const pmName = (pm.name || '').toLowerCase().trim();
@@ -329,19 +430,32 @@ export const getPaymentMethodLiveBalance = (
     // 1. If it's a specific cash method, calculate cash
     if (pm.type === 'cash') {
         if (pmName.includes('factory')) {
+            const factoryAcc = (chartOfAccounts || []).find(a => a.classification === 'Asset' && (a.code === '1020' || a.name.toLowerCase().includes('factory')));
+            if (factoryAcc) {
+                const fBal = calculateSingleAccountBalance(factoryAcc, transactions, invoices, projects, journalEntries);
+                if (fBal > 0) return fBal;
+                if (factoryAcc.currentBalance !== undefined && factoryAcc.currentBalance !== null && Number(factoryAcc.currentBalance) > 0) {
+                    return Number(factoryAcc.currentBalance);
+                }
+            }
             return accountBalances?.factoryCash || 0;
         }
-        let cashAmt = 0;
-        let hasDirectTx = false;
-        (transactions || []).forEach((tx) => {
-            const pAcc = (tx.paymentAccount || tx.account || tx.accountHead || tx.paymentMethod || '').toLowerCase().trim();
-            if (pAcc === 'cash' || pAcc === pmName || pAcc.includes('cash counter') || pAcc.includes('in hand')) {
-                hasDirectTx = true;
-                if (tx.type === 'INCOME') cashAmt += tx.amount;
-                else if (tx.type === 'EXPENSE') cashAmt -= tx.amount;
+        const cashAcc = (chartOfAccounts || []).find(a => 
+            a.classification === 'Asset' && 
+            (a.code === '1001' || a.code === '1010' || a.name.toLowerCase().includes('cash in hand') || a.name.toLowerCase() === 'cash' || (a.nameBn && a.nameBn.includes('ক্যাশ')))
+        );
+        if (cashAcc) {
+            const liveCash = calculateSingleAccountBalance(cashAcc, transactions, invoices, projects, journalEntries);
+            if (liveCash > 0) {
+                return liveCash;
             }
-        });
-        if (hasDirectTx) return Math.max(0, cashAmt);
+            if (cashAcc.currentBalance !== undefined && cashAcc.currentBalance !== null && Number(cashAcc.currentBalance) > 0) {
+                return Number(cashAcc.currentBalance);
+            }
+        }
+        if (accountBalances?.cash && Number(accountBalances.cash) > 0) {
+            return accountBalances.cash;
+        }
         return Math.max(0, (accountBalances?.cash || 0) + (accountBalances?.factoryCash || 0));
     }
 
@@ -387,7 +501,12 @@ export const getPaymentMethodLiveBalance = (
     });
 
     if (matchingAcc) {
-        return calculateSingleAccountBalance(matchingAcc, transactions, invoices, projects);
+        const bal = calculateSingleAccountBalance(matchingAcc, transactions, invoices, projects, journalEntries);
+        if (bal > 0) return bal;
+        if (matchingAcc.currentBalance !== undefined && matchingAcc.currentBalance !== null && Number(matchingAcc.currentBalance) > 0) {
+            return Number(matchingAcc.currentBalance);
+        }
+        return bal;
     }
 
     // 3. Compute directly from transactions specifically matching this payment method
@@ -484,7 +603,8 @@ export const getBankAccountsBreakdown = (
     chartOfAccounts: ChartOfAccount[] = [],
     transactions: AccountingTransaction[] = [],
     invoices: SalesInvoice[] = [],
-    projects: any[] = []
+    projects: any[] = [],
+    journalEntries: JournalEntry[] = []
 ): Array<{ id: string; code: string; name: string; balance: number }> => {
     const isMobile = (name: string) => {
         const n = name.toLowerCase();
@@ -503,7 +623,7 @@ export const getBankAccountsBreakdown = (
         id: acc.id,
         code: acc.code,
         name: acc.name,
-        balance: calculateSingleAccountBalance(acc, transactions, invoices, projects),
+        balance: calculateSingleAccountBalance(acc, transactions, invoices, projects, journalEntries),
     }));
 };
 
@@ -514,7 +634,8 @@ export const getMfsAccountsBreakdown = (
     chartOfAccounts: ChartOfAccount[] = [],
     transactions: AccountingTransaction[] = [],
     invoices: SalesInvoice[] = [],
-    projects: any[] = []
+    projects: any[] = [],
+    journalEntries: JournalEntry[] = []
 ): {
     bkash: number;
     nagad: number;
@@ -531,7 +652,7 @@ export const getMfsAccountsBreakdown = (
     let bkash = 0;
     let nagad = 0;
     const accounts = mfsAccs.map((acc) => {
-        const bal = calculateSingleAccountBalance(acc, transactions, invoices, projects);
+        const bal = calculateSingleAccountBalance(acc, transactions, invoices, projects, journalEntries);
         const n = acc.name.toLowerCase();
         if (n.includes('bkash') || (acc.nameBn && acc.nameBn.includes('বিকাশ'))) {
             bkash += bal;
@@ -561,7 +682,8 @@ export const getCashAccountsBreakdown = (
     chartOfAccounts: ChartOfAccount[] = [],
     transactions: AccountingTransaction[] = [],
     invoices: SalesInvoice[] = [],
-    projects: any[] = []
+    projects: any[] = [],
+    journalEntries: JournalEntry[] = []
 ): {
     total: number;
     officeCash: number;
@@ -588,7 +710,7 @@ export const getCashAccountsBreakdown = (
     let factoryCash = 0;
     let total = 0;
     const accounts = cashAccs.map((acc) => {
-        const bal = calculateSingleAccountBalance(acc, transactions, invoices, projects);
+        const bal = calculateSingleAccountBalance(acc, transactions, invoices, projects, journalEntries);
         total += bal;
         const n = acc.name.toLowerCase();
         if (n.includes('factory') || acc.code === '1020') {
@@ -628,13 +750,15 @@ export const isInvoiceTransaction = (tx: Partial<AccountingTransaction>): boolea
     const desc = (tx.description || '').toLowerCase();
     const id = (tx.id || '').toLowerCase();
 
+    // Direct Operating Incomes recorded via INC- voucher are NEVER invoice transactions!
+    if (ref.startsWith('INC-') || id.startsWith('tx-inc-')) return false;
+
     if (id.startsWith('tx-prj-')) return false;
     if (ref.startsWith('COL-') || ref.startsWith('PRJ-')) return false;
     if (desc.includes('project due') || desc.includes('project sales') || desc.includes('project expense')) return false;
 
     if (id.startsWith('tx-auto-inv')) return true;
     if (ref.startsWith('DCC-INV-') || ref.startsWith('INV-')) return true;
-    if (cat === 'sales revenue') return true;
     if (cat.includes('due collection') || cat.includes('pos payment') || cat.includes('invoice payment')) return true;
     if (desc.includes('sales invoice payment') || desc.includes('due collection against invoice') || desc.includes('pos payment') || desc.includes('invoice payment')) return true;
     return false;
@@ -653,7 +777,8 @@ export const isProjectTransaction = (tx: Partial<AccountingTransaction>): boolea
     if (id.startsWith('tx-prj-')) return true;
     if (ref.startsWith('PRJ-') || ref.startsWith('COL-')) return true;
     if (cat.includes('project')) return true;
-    if (desc.includes('project income') || desc.includes('project sales') || desc.includes('project expense') || desc.includes('project due')) return true;
+    if (desc.includes('project income') || desc.includes('project sales') || desc.includes('project expense') || desc.includes('project due') || desc.includes('project cost')) return true;
+    if (Boolean(tx.projectId) || Boolean(tx.projectCode)) return true;
     return false;
 };
 
@@ -818,6 +943,26 @@ export const getInvoicePayments = (
     if (!inv) return [];
     const invNo = (inv.invoiceNo || '').toLowerCase().trim();
 
+    const normChannel = (raw?: string): string => {
+        const l = (raw || '').toLowerCase().trim();
+        if (l === 'cash' || l === 'cash in hand' || l === 'counter cash' || l === 'pm-cash' || l.includes('cash in hand') || (l.includes('cash') && !l.includes('bkash') && !l.includes('nagad'))) {
+            return 'Cash in Hand';
+        }
+        if (l.includes('bkash')) return 'bKash';
+        if (l.includes('nagad')) return 'Nagad';
+        if (l.includes('rocket')) return 'Rocket';
+        if (l.includes('city')) return 'City Bank PLC';
+        if (l.includes('southeast')) return 'Southeast Bank';
+        if (l.includes('brac')) return 'BRAC Bank';
+        if (l.includes('bank') || l.includes('card')) return 'Bank Account';
+        return raw || 'Cash in Hand';
+    };
+
+    const resultList: InvoicePaymentItem[] = [];
+    const seenChannels = new Set<string>();
+    let accumulatedPaid = 0;
+    const maxPaid = Number(inv.paidAmount) || 0;
+
     // 1. Check matching income ledger transactions
     const txMatches = (allTransactions || []).filter(t =>
         t.type === 'INCOME' &&
@@ -827,78 +972,196 @@ export const getInvoicePayments = (
     );
 
     if (txMatches.length > 0) {
-        return txMatches.map(t => ({
-            id: t.id,
-            date: t.date,
-            channel: t.paymentAccount || t.accountHead || 'Cash',
-            amount: Number(t.amount) || 0,
-            description: t.description || t.category || 'Payment',
-            category: t.category,
-        }));
+        txMatches.forEach(t => {
+            const ch = normChannel(t.paymentAccount || t.accountHead);
+            const amt = Number(t.amount) || 0;
+            const normKey = ch.toLowerCase();
+            if (seenChannels.has(normKey)) return; // duplicate channel
+            if (maxPaid > 0 && accumulatedPaid + amt > maxPaid && accumulatedPaid > 0) return;
+            seenChannels.add(normKey);
+            accumulatedPaid += amt;
+            resultList.push({
+                id: t.id,
+                date: t.date,
+                channel: ch,
+                amount: amt,
+                description: t.description || t.category || 'Payment',
+                category: t.category,
+            });
+        });
     }
 
-    // 2. Check splitPayments on invoice
+    // 2. Check splitPayments on invoice for any channels not already covered by transactions
     if (inv.splitPayments && Object.keys(inv.splitPayments).length > 0) {
-        const list: InvoicePaymentItem[] = [];
-        const seen = new Set<string>();
-
-        const keys = Object.keys(inv.splitPayments).filter(k => {
+        const splitKeys = Object.keys(inv.splitPayments).filter(k => {
             const lk = k.toLowerCase();
             return lk !== 'due' && (Number(inv.splitPayments?.[k]) || 0) > 0;
         });
 
-        // Pass 1: Named accounts
-        keys.forEach(k => {
+        // Pass 1: Named accounts (skip alias keys like 'cash', 'card', 'bkash', 'nagad' if specific names exist)
+        const hasNamedAccounts = splitKeys.some(k => !['cash', 'card', 'bkash', 'nagad'].includes(k.toLowerCase()));
+        const effectiveKeys = hasNamedAccounts
+            ? splitKeys.filter(k => !['cash', 'card', 'bkash', 'nagad'].includes(k.toLowerCase()))
+            : splitKeys;
+
+        effectiveKeys.forEach(k => {
             const amt = Number(inv.splitPayments?.[k]) || 0;
-            const lk = k.toLowerCase();
-            if (['cash', 'card', 'bkash', 'nagad'].includes(lk)) return;
+            if (amt <= 0) return;
+
             const pm = paymentMethods?.find(p => p.id === k);
-            const channelName = pm ? pm.name : k;
-            if (!seen.has(channelName.toLowerCase())) {
-                seen.add(channelName.toLowerCase());
-                list.push({
-                    id: `split-${channelName}`,
+            const rawChannel = pm ? pm.name : (k.charAt(0).toUpperCase() + k.slice(1));
+            const ch = normChannel(rawChannel);
+            const normKey = ch.toLowerCase();
+
+            if (!seenChannels.has(normKey)) {
+                if (maxPaid > 0 && accumulatedPaid + amt > maxPaid && accumulatedPaid > 0) return;
+                seenChannels.add(normKey);
+                accumulatedPaid += amt;
+                resultList.push({
+                    id: `split-${k}`,
                     date: inv.date,
-                    channel: channelName,
+                    channel: ch,
                     amount: amt,
-                    description: `POS Payment via ${channelName}`,
+                    description: `POS Payment via ${ch}`,
                 });
             }
         });
-
-        // Pass 2: Aliases if list is empty
-        if (list.length === 0) {
-            keys.forEach(k => {
-                const amt = Number(inv.splitPayments?.[k]) || 0;
-                const channelName = k.charAt(0).toUpperCase() + k.slice(1);
-                if (!seen.has(channelName.toLowerCase())) {
-                    seen.add(channelName.toLowerCase());
-                    list.push({
-                        id: `split-${channelName}`,
-                        date: inv.date,
-                        channel: channelName,
-                        amount: amt,
-                        description: `POS Payment via ${channelName}`,
-                    });
-                }
-            });
-        }
-
-        if (list.length > 0) return list;
     }
 
-    // 3. Fallback to single paymentMethod if paidAmount > 0
-    if ((inv.paidAmount || 0) > 0) {
+    // 3. Fallback to single paymentMethod if resultList is still empty and paidAmount > 0
+    if (resultList.length === 0 && (inv.paidAmount || 0) > 0) {
+        const ch = normChannel(inv.paymentMethod || 'Cash');
         return [{
             id: `pm-${inv.id}`,
             date: inv.date,
-            channel: inv.paymentMethod || 'Cash',
+            channel: ch,
             amount: inv.paidAmount,
-            description: `Payment via ${inv.paymentMethod || 'Cash'}`,
+            description: `Payment via ${ch}`,
         }];
     }
 
-    return [];
+    return resultList;
+};
+
+export interface PurchaseOrderPaymentItem {
+    id: string;
+    date: string;
+    channel: string;
+    amount: number;
+    description: string;
+    category?: string;
+    refNo?: string;
+}
+
+/**
+ * Extracts all itemized payment records for a given purchase order from accounting transactions,
+ * journal entries, and purchase order payment method configuration.
+ */
+export const getPurchaseOrderPayments = (
+    po: PurchaseOrder,
+    allTransactions: AccountingTransaction[] = [],
+    journalEntries: JournalEntry[] = [],
+    paymentMethods?: PaymentMethodConfig[]
+): PurchaseOrderPaymentItem[] => {
+    if (!po) return [];
+    const poNo = (po.poNo || po.poNumber || '').toLowerCase().trim();
+    const poId = (po.id || '').toLowerCase().trim();
+    if (!poNo && !poId) return [];
+
+    const normChannel = (raw?: string): string => {
+        const l = (raw || '').toLowerCase().trim();
+        if (l === 'cash' || l === 'cash in hand' || l === 'counter cash' || l === 'pm-cash' || l.includes('cash in hand') || (l.includes('cash') && !l.includes('bkash') && !l.includes('nagad'))) {
+            return 'Cash in Hand';
+        }
+        if (l.includes('bkash')) return 'bKash';
+        if (l.includes('nagad')) return 'Nagad';
+        if (l.includes('rocket')) return 'Rocket';
+        if (l.includes('city')) return 'City Bank PLC';
+        if (l.includes('southeast')) return 'Southeast Bank';
+        if (l.includes('brac')) return 'BRAC Bank';
+        if (l.includes('bank') || l.includes('card')) return 'Bank Account';
+        return raw || 'Cash in Hand';
+    };
+
+    const resultList: PurchaseOrderPaymentItem[] = [];
+    const seenTxIds = new Set<string>();
+    let accumulatedPaid = 0;
+    const maxPaid = Number(po.paidAmount) || 0;
+
+    // 1. Check matching expense transactions
+    const txMatches = (allTransactions || []).filter(t => {
+        if (t.type !== 'EXPENSE' || !(Number(t.amount) > 0)) return false;
+        const ref = (t.refNo || '').toLowerCase().trim();
+        const desc = (t.description || '').toLowerCase().trim();
+        const matchesRef = Boolean((poNo && (ref === poNo || ref.includes(poNo) || poNo.includes(ref))) ||
+                                   (poId && ref === poId));
+        const matchesDesc = Boolean((poNo && desc.includes(poNo)) || (poId && desc.includes(poId)));
+        return matchesRef || matchesDesc;
+    });
+
+    if (txMatches.length > 0) {
+        txMatches.forEach(t => {
+            if (seenTxIds.has(t.id)) return;
+            const ch = normChannel(t.paymentAccount || t.accountHead);
+            const amt = Number(t.amount) || 0;
+            if (maxPaid > 0 && accumulatedPaid + amt > maxPaid && accumulatedPaid > 0) return;
+            seenTxIds.add(t.id);
+            accumulatedPaid += amt;
+            resultList.push({
+                id: t.id,
+                date: t.date,
+                channel: ch,
+                amount: amt,
+                description: t.description || t.category || 'Purchase Payment',
+                category: t.category,
+                refNo: t.refNo,
+            });
+        });
+    }
+
+    // 2. Check journal entries if transactions didn't cover the full paidAmount or no transactions found
+    if (resultList.length === 0 || (maxPaid > 0 && accumulatedPaid < maxPaid)) {
+        const jnlMatches = (journalEntries || []).filter(j => {
+            if (Number(j.amount) <= 0) return false;
+            const ref = (j.refNo || '').toLowerCase().trim();
+            const narr = (j.narration || '').toLowerCase().trim();
+            const matchesRef = Boolean((poNo && (ref === poNo || ref.includes(poNo) || poNo.includes(ref))) ||
+                                       (poId && ref === poId));
+            const matchesNarr = Boolean((poNo && narr.includes(poNo)) || (poId && narr.includes(poId)));
+            return matchesRef || matchesNarr;
+        });
+
+        jnlMatches.forEach(j => {
+            const amt = Number(j.amount) || 0;
+            const alreadyInResult = resultList.some(r => Math.abs(r.amount - amt) < 0.01 && r.date === j.date);
+            if (alreadyInResult) return;
+            if (maxPaid > 0 && accumulatedPaid + amt > maxPaid && accumulatedPaid > 0) return;
+            const ch = normChannel(j.creditAccountName);
+            accumulatedPaid += amt;
+            resultList.push({
+                id: j.id,
+                date: j.date,
+                channel: ch,
+                amount: amt,
+                description: j.narration || 'Journal Payment',
+                refNo: j.refNo,
+            });
+        });
+    }
+
+    // 3. Fallback to single paymentMethod if resultList is still empty and paidAmount > 0
+    if (resultList.length === 0 && (po.paidAmount || 0) > 0) {
+        const ch = normChannel(po.paymentMethod || 'Cash in Hand');
+        return [{
+            id: `po-pm-${po.id || po.poNo}`,
+            date: po.date || new Date().toISOString().slice(0, 10),
+            channel: ch,
+            amount: Number(po.paidAmount) || 0,
+            description: `Payment via ${ch}`,
+        }];
+    }
+
+    return resultList;
 };
 
 /**
@@ -994,6 +1257,28 @@ export const calculateTotalCustomerReceivables = (
 };
 
 /**
+ * Checks if a transaction represents a debt repayment/payment to a supplier against a Purchase Order or supplier due
+ */
+export const isSupplierPaymentTransaction = (t: AccountingTransaction): boolean => {
+    if (!t) return false;
+    const cat = (t.category || '').toLowerCase();
+    const desc = (t.description || '').toLowerCase();
+    const ref = (t.refNo || '').toLowerCase();
+    return (
+        cat.includes('supplier due') ||
+        cat.includes('po payment') ||
+        cat.includes('procurement') ||
+        desc.includes('payment for purchase order') ||
+        desc.includes('payment for po') ||
+        desc.includes('payment to supplier') ||
+        desc.includes('supplier due payment') ||
+        desc.includes('po payment') ||
+        ref.startsWith('sup-pay-') ||
+        ((ref.includes('po-') || desc.includes('po-')) && (ref.includes('pay') || desc.includes('pay') || cat.includes('procurement')))
+    );
+};
+
+/**
  * Calculates dynamic real-time Accounts Payable (Suppliers) due from Suppliers and Purchase Orders
  */
 export const calculateTotalSupplierPayables = (
@@ -1003,7 +1288,12 @@ export const calculateTotalSupplierPayables = (
     // If purchase orders exist in system, active supplier payables are strictly the dues from Received POs
     if (purchaseOrders && purchaseOrders.length > 0) {
         return purchaseOrders
-            .filter((p) => p.status === 'Received')
+            .filter((p) => 
+                p.status === 'Received' || 
+                (p as any).status === 'Received (Partial)' || 
+                (p as any).challanStatus === 'Received' || 
+                (p as any).challanStatus === 'Received (Partial)'
+            )
             .reduce((sum, p) => {
                 const due = p.dueAmount !== undefined
                     ? Number(p.dueAmount)
@@ -1025,26 +1315,45 @@ export const calculateInventoryValuation = (
     account?: ChartOfAccount,
     journalEntries: JournalEntry[] = []
 ): number => {
+    // Helper to resolve effective unit cost: if product has costPrice <= 1 but was received via a PO with unitCost > 0, use PO unitCost
+    const getEffectiveCostPrice = (p: ProductItem): number => {
+        const cp = Number(p.costPrice) || 0;
+        if (cp > 1) return cp;
+        for (const po of purchaseOrders || []) {
+            if (po.status === 'Received' || (po as any).challanStatus === 'Received') {
+                const match = (po.items || []).find((it: any) => it.productId === p.id || (it.name && it.name.trim() === (p.name || '').trim()));
+                const uCost = Number(match?.unitCost ?? (match as any)?.unitPrice ?? (match as any)?.rate) || 0;
+                if (uCost > 0) return uCost;
+            }
+        }
+        return cp;
+    };
+
     const totalStockValuation = (products || []).reduce(
-        (acc, p) => acc + ((Number(p.stockFactory) || 0) + (Number(p.stockOffice) || 0)) * (Number(p.costPrice) || 0),
+        (acc, p) => acc + ((Number(p.stockFactory) || 0) + (Number(p.stockOffice) || 0)) * getEffectiveCostPrice(p),
         0
     );
     const rawStockValuation = (products || [])
         .filter((p) => p.isRawMaterial)
         .reduce(
-            (acc, p) => acc + ((Number(p.stockFactory) || 0) + (Number(p.stockOffice) || 0)) * (Number(p.costPrice) || 0),
+            (acc, p) => acc + ((Number(p.stockFactory) || 0) + (Number(p.stockOffice) || 0)) * getEffectiveCostPrice(p),
             0
         );
     const finishedStockValuation = (products || [])
         .filter((p) => !p.isRawMaterial)
         .reduce(
-            (acc, p) => acc + ((Number(p.stockFactory) || 0) + (Number(p.stockOffice) || 0)) * (Number(p.costPrice) || 0),
+            (acc, p) => acc + ((Number(p.stockFactory) || 0) + (Number(p.stockOffice) || 0)) * getEffectiveCostPrice(p),
             0
         );
 
     // Total purchase value of received POs
     const totalReceivedPurchases = (purchaseOrders || [])
-        .filter((p) => p.status === 'Received')
+        .filter((p) => 
+            p.status === 'Received' || 
+            (p as any).status === 'Received (Partial)' || 
+            (p as any).challanStatus === 'Received' || 
+            (p as any).challanStatus === 'Received (Partial)'
+        )
         .reduce((acc, po) => acc + Number(po.grandTotal ?? po.totalAmount ?? 0), 0);
 
     const nameLower = (account?.name || '').toLowerCase();
@@ -1064,6 +1373,12 @@ export const calculateInventoryValuation = (
     (journalEntries || []).forEach((j) => {
         // Exclude project revenue/expense journals
         if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE') return;
+
+        // Purchase order goods receipt / procurement journals do NOT deduct warehouse inventory stock!
+        const refUpper = `${j.refNo || ''} ${(j as any).reference || ''} ${j.narration || ''}`.toUpperCase();
+        if (refUpper.includes('PO-') || refUpper.includes('DCC-PO-') || j.source === 'PURCHASE') {
+            return;
+        }
 
         const dName = (j.debitAccountName || '').toLowerCase().trim();
         const cName = (j.creditAccountName || '').toLowerCase().trim();
@@ -1114,14 +1429,324 @@ export const calculateInventoryValuation = (
         return Math.max(0, finishedStockValuation + (account?.openingBalance || 0) + journalDelta);
     }
 
-    // For Raw Materials or unified Raw Materials & Inventory account (like 1002 / 1060):
-    const effectiveStockVal = rawStockValuation > 0 ? rawStockValuation : totalStockValuation;
-    const baseVal = Math.max(
-        effectiveStockVal,
-        totalReceivedPurchases,
-        totalStockValuation,
-        account?.openingBalance || 0
+    // For Raw Materials (1060 / raw material) or unified Inventory account:
+    // Account 1002 is the unified inventory asset account (covering both Raw Materials and Finished Inventory)
+    const isUnifiedInventory = account?.code === '1002' || (
+        account?.code !== '1060' && 
+        account?.code !== '1070' && 
+        nameLower.includes('inventory') && 
+        (nameLower.includes('raw') || nameLower.includes('&'))
+    );
+    const isRawOnly = account?.code === '1060' || (
+        !isUnifiedInventory && 
+        (nameLower.includes('raw material') || nameBn.includes('কাঁচামাল'))
     );
 
-    return Math.max(0, baseVal + journalDelta);
+    // When products exist with tracked physical stock, valuation derives strictly from physical stock.
+    // If physical product stock is not yet populated, fallback to total received purchases.
+    const baseStockVal = isRawOnly ? rawStockValuation : totalStockValuation;
+    const baseVal = baseStockVal > 0 ? baseStockVal : totalReceivedPurchases;
+    const closingVal = baseVal + (account?.openingBalance || 0);
+
+    return Math.max(0, closingVal + journalDelta);
+};
+
+/**
+ * Resolves the appropriate Expense account from Chart of Accounts
+ * based on an Expense Head, category name, or description/note.
+ */
+export const resolveExpenseAccount = (
+    categoryOrHeadName: string,
+    noteOrTitle: string = '',
+    chartOfAccounts: ChartOfAccount[] = [],
+    expenseHeads: ExpenseHead[] = [],
+    allowFallback: boolean = false
+): ChartOfAccount | undefined => {
+    if (!chartOfAccounts || chartOfAccounts.length === 0) return undefined;
+
+    const catRaw = (categoryOrHeadName || '').trim();
+    const catLower = catRaw.toLowerCase();
+    const noteLower = (noteOrTitle || '').toLowerCase().trim();
+    const combined = `${catLower} ${noteLower}`.trim();
+
+    // 1. If category matches an active Expense Head with a linkedAccountId
+    const matchedHead = (expenseHeads || []).find(h => 
+        h.isActive && (
+            h.id === catRaw ||
+            h.code.toLowerCase() === catLower ||
+            h.name.toLowerCase().trim() === catLower ||
+            (h.nameBn && h.nameBn.trim() === catRaw)
+        )
+    );
+
+    if (matchedHead && matchedHead.linkedAccountId) {
+        const link = matchedHead.linkedAccountId.toLowerCase().trim();
+        const linkedCoa = chartOfAccounts.find(a => 
+            a.id.toLowerCase() === link || 
+            a.code.toLowerCase() === link ||
+            a.id.toLowerCase() === `coa-${link}` ||
+            a.code.toLowerCase() === link.replace('coa-', '')
+        );
+        if (linkedCoa) return linkedCoa;
+    }
+
+    // 2. Direct exact ID or Name match in Chart of Accounts (classification === 'Expense')
+    const exactCoa = chartOfAccounts.find(a => 
+        a.classification === 'Expense' && (
+            a.id === catRaw ||
+            a.name.toLowerCase().trim() === catLower ||
+            (a.nameBn && a.nameBn.trim() === catRaw)
+        )
+    );
+    if (exactCoa) return exactCoa;
+
+    // 3. Keyword / Semantic matching across standard business expense categories
+    // 3a. Tea, Refreshment, Food, Snacks, Hospitality
+    if (combined.includes('tea') || combined.includes('refreshment') || combined.includes('snack') || combined.includes('food') || combined.includes('lunch') || combined.includes('hospitality') || combined.includes('entertainment') || combined.includes('নাস্তা') || combined.includes('আপ্যায়ন')) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.name.toLowerCase().includes('hospitality') || 
+            a.name.toLowerCase().includes('tea') || 
+            a.name.toLowerCase().includes('refreshment') || 
+            a.name.toLowerCase().includes('snack') ||
+            (a.nameBn && (a.nameBn.includes('আপ্যায়ন') || a.nameBn.includes('চা'))) ||
+            a.code === '5090' || 
+            a.code === '5204'
+        ));
+        if (acc) return acc;
+    }
+
+    // 3b. Rent & Facility Lease
+    if (combined.includes('rent') || combined.includes('lease') || combined.includes('facility') || combined.includes('ভাড়া')) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.name.toLowerCase().includes('rent') || 
+            a.name.toLowerCase().includes('lease') ||
+            (a.nameBn && a.nameBn.includes('ভাড়া')) ||
+            a.code === '5200' || 
+            a.code === '5050'
+        ));
+        if (acc) return acc;
+    }
+
+    // 3c. Electricity, Generator, Fuel, Power & Utilities
+    if (combined.includes('electric') || combined.includes('power') || combined.includes('generator') || combined.includes('diesel') || combined.includes('বিদ্যুৎ')) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.name.toLowerCase().includes('electric') || 
+            a.name.toLowerCase().includes('power') || 
+            a.name.toLowerCase().includes('generator') ||
+            (a.nameBn && a.nameBn.includes('বিদ্যুৎ')) ||
+            a.code === '5203' || 
+            a.code === '5040'
+        ));
+        if (acc) return acc;
+    }
+
+    // 3d. Salaries, Wages, Overtime, Labor, Payroll
+    if (combined.includes('salary') || combined.includes('salaries') || combined.includes('wage') || combined.includes('payroll') || combined.includes('overtime') || combined.includes('worker') || combined.includes('labor') || combined.includes('labour') || combined.includes('বেতন') || combined.includes('মজুরি')) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.name.toLowerCase().includes('salar') || 
+            a.name.toLowerCase().includes('wage') || 
+            a.name.toLowerCase().includes('payroll') ||
+            (a.nameBn && (a.nameBn.includes('বেতন') || a.nameBn.includes('মজুরি'))) ||
+            a.code === '5201' || 
+            a.code === '5070'
+        ));
+        if (acc) return acc;
+    }
+
+    // 3e. Internet, Telecom, Software, Mobile, IT
+    if (combined.includes('internet') || combined.includes('telecom') || combined.includes('software') || combined.includes('hosting') || combined.includes('mobile') || combined.includes('broadband') || combined.includes('ইন্টারনেট')) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.name.toLowerCase().includes('internet') || 
+            a.name.toLowerCase().includes('telecom') || 
+            a.name.toLowerCase().includes('software') ||
+            (a.nameBn && a.nameBn.includes('ইন্টারনেট')) ||
+            (a.code === '5202' && !a.name.toLowerCase().includes('hospitality')) || 
+            a.code === '5110'
+        ));
+        if (acc) return acc;
+    }
+
+    // 3f. Conveyance, Transport, Fuel, Courier, Delivery Logistics
+    if (combined.includes('conveyance') || combined.includes('courier') || combined.includes('delivery') || combined.includes('transport') || combined.includes('logistics') || combined.includes('fare') || combined.includes('যাতায়াত') || combined.includes('গাড়ি ভাড়া')) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.name.toLowerCase().includes('conveyance') || 
+            a.name.toLowerCase().includes('delivery') || 
+            a.name.toLowerCase().includes('courier') || 
+            a.name.toLowerCase().includes('transport') ||
+            (a.nameBn && a.nameBn.includes('যাতায়াত')) ||
+            a.code === '5100' || 
+            a.code === '5080'
+        ));
+        if (acc) return acc;
+    }
+
+    // 3g. Machine Maintenance, Servicing, Spare Parts
+    if (combined.includes('machine') || combined.includes('maintenance') || combined.includes('servicing') || combined.includes('spare') || combined.includes('repair') || combined.includes('মেরামত')) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.name.toLowerCase().includes('maint') || 
+            a.name.toLowerCase().includes('servicing') || 
+            a.name.toLowerCase().includes('repair') ||
+            (a.nameBn && a.nameBn.includes('মেরামত')) ||
+            a.code === '5030'
+        ));
+        if (acc) return acc;
+    }
+
+    // 3h. Marketing, Ads & Promotions
+    if (combined.includes('market') || combined.includes('ad') || combined.includes('promotion') || combined.includes('campaign') || combined.includes('বিজ্ঞাপন')) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.name.toLowerCase().includes('market') || 
+            a.name.toLowerCase().includes('promotion') || 
+            a.name.toLowerCase().includes('ad') ||
+            (a.nameBn && a.nameBn.includes('বিজ্ঞাপন')) ||
+            a.code === '5070' ||
+            a.code === '5300'
+        ));
+        if (acc) return acc;
+    }
+
+    // 3i. Municipal Tax, Trade License & Legal Fees
+    if (combined.includes('tax') || combined.includes('license') || combined.includes('municipal') || combined.includes('vat') || combined.includes('ট্যাক্স') || combined.includes('লাইসেন্স')) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.name.toLowerCase().includes('tax') || 
+            a.name.toLowerCase().includes('license') ||
+            (a.nameBn && (a.nameBn.includes('ট্যাক্স') || a.nameBn.includes('লাইসেন্স'))) ||
+            a.code === '5120'
+        ));
+        if (acc) return acc;
+    }
+
+    // 3j. Raw Materials, Factory Consumables, COGS
+    if (combined.includes('raw') || combined.includes('cogs') || combined.includes('cost of good') || combined.includes('material') || combined.includes('solvent') || combined.includes('packaging') || combined.includes('বক্স') || combined.includes('কাঁচামাল')) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.name.toLowerCase().includes('cost of goods') || 
+            a.name.toLowerCase().includes('raw') || 
+            a.name.toLowerCase().includes('cogs') ||
+            (a.nameBn && a.nameBn.includes('কাঁচামাল')) ||
+            a.code === '5001' || 
+            a.code === '5010'
+        ));
+        if (acc) return acc;
+    }
+
+    // 3k. Project Expenses (ONLY if category or note specifically indicates Project)
+    const isExplicitProject = catLower.includes('project') || noteLower.includes('project') || combined.includes('প্রজেক্ট');
+    if (isExplicitProject) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.code === '5206' || 
+            a.id === 'coa-5206' || 
+            a.name.toLowerCase().includes('project') ||
+            (a.nameBn && a.nameBn.includes('প্রজেক্ট'))
+        ));
+        if (acc) return acc;
+    }
+
+    // 3l. Miscellaneous & Petty Expenses
+    if (combined.includes('misc') || combined.includes('petty') || combined.includes('other') || combined.includes('অন্যান্য')) {
+        const acc = chartOfAccounts.find(a => a.classification === 'Expense' && (
+            a.name.toLowerCase().includes('misc') || 
+            a.name.toLowerCase().includes('petty') ||
+            (a.nameBn && a.nameBn.includes('অন্যান্য')) ||
+            a.code === '5130'
+        ));
+        if (acc) return acc;
+    }
+
+    // 4. Fallback (only if allowFallback is enabled, e.g. when recording a new expense)
+    if (allowFallback) {
+        const fallbackGeneral = chartOfAccounts.find(a => 
+            a.classification === 'Expense' && 
+            !a.name.toLowerCase().includes('project') && 
+            a.code !== '5206' &&
+            a.id !== 'coa-5206'
+        );
+        if (fallbackGeneral) return fallbackGeneral;
+        return chartOfAccounts.find(a => a.classification === 'Expense') || chartOfAccounts[0];
+    }
+
+    return undefined;
+};
+
+/**
+ * Checks if an accounting transaction belongs to a specific Chart of Accounts expense account
+ */
+export const doesTransactionMatchExpenseAccount = (
+    t: AccountingTransaction,
+    acc: ChartOfAccount,
+    expenseHeads: ExpenseHead[] = [],
+    chartOfAccounts: ChartOfAccount[] = [],
+    journalEntries: JournalEntry[] = []
+): boolean => {
+    if (!t || t.type !== 'EXPENSE' || !acc) return false;
+
+    const accNameLower = (acc.name || '').toLowerCase().trim();
+    const accCode = (acc.code || '').trim();
+    const accId = (acc.id || '').trim();
+    const isProjectExpAcc = accCode === '5206' || accId === 'coa-5206' || accNameLower.includes('project');
+
+    // Project Transactions must only match Project Expense account (5206)
+    const isPrj = isProjectTransaction(t) || Boolean(t.projectId || t.projectCode || (t.refNo && t.refNo.startsWith('PRJ-')));
+    if (isPrj) {
+        return isProjectExpAcc;
+    }
+    if (isProjectExpAcc && !isPrj) {
+        // Non-project operating expense must NEVER match Project Expense
+        return false;
+    }
+
+    // 1. Transaction accountHead direct match (by exact name or ID)
+    if (t.accountHead) {
+        const hLower = t.accountHead.toLowerCase().trim();
+        if (hLower === accNameLower || hLower === accId.toLowerCase()) {
+            return true;
+        }
+    }
+
+    // 2. Check if a Journal Voucher exists for this transaction and debits this account specifically (by ID or exact Name)
+    if (t.refNo && journalEntries && journalEntries.length > 0) {
+        const matchedJournal = journalEntries.find(j => 
+            j.refNo && j.refNo.toLowerCase().trim() === t.refNo.toLowerCase().trim()
+        );
+        if (matchedJournal) {
+            const jDebitName = (matchedJournal.debitAccountName || '').toLowerCase().trim();
+            if (
+                matchedJournal.debitAccountId === accId ||
+                (jDebitName && jDebitName === accNameLower)
+            ) {
+                return true;
+            }
+        }
+    }
+
+    // 3. Check if t.category matches an ExpenseHead linked to this COA account
+    const categoryLower = (t.category || '').toLowerCase().trim();
+    if (categoryLower) {
+        const matchingHead = (expenseHeads || []).find(h => 
+            h.name.toLowerCase().trim() === categoryLower || 
+            (h.nameBn && h.nameBn.trim() === categoryLower) ||
+            h.code.toLowerCase() === categoryLower
+        );
+        if (matchingHead && matchingHead.linkedAccountId) {
+            const link = matchingHead.linkedAccountId.toLowerCase().trim();
+            if (
+                link === accId.toLowerCase() ||
+                accId.toLowerCase() === `coa-${link}`
+            ) {
+                return true;
+            }
+        }
+    }
+
+    // 4. Direct exact match with category
+    if (categoryLower && categoryLower === accNameLower) {
+        return true;
+    }
+
+    // 5. Semantic resolver match (by unique ID or exact name)
+    const resolved = resolveExpenseAccount(t.category || '', t.description || '', chartOfAccounts, expenseHeads, false);
+    if (resolved && (resolved.id === accId || resolved.name.toLowerCase().trim() === accNameLower)) {
+        return true;
+    }
+
+    return false;
 };

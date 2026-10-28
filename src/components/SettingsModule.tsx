@@ -1,8 +1,9 @@
+import { isPinHashed, maskPin } from '../utils/securityUtils';
 import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { StaffMember, UserRole, StaffRole, PaymentMethodConfig, PaymentMethodType } from '../types';
 import { ALL_SYSTEM_PERMISSIONS, ALL_SYSTEM_PERMISSIONS as SYSTEM_PERMISSIONS } from '../data/accountingAndConfigData';
-import { Users, Shield, KeyRound, Trash2, Plus, Edit2, CheckCircle2, AlertTriangle, AlertCircle, RotateCcw, Building2, Factory, Mail, Phone, Search, Lock, Eye, EyeOff, SlidersHorizontal, FolderSync, FileSpreadsheet, AlertOctagon, CheckSquare, Square, Sparkles, Server, Globe, ExternalLink, Cpu, HardDrive, ShieldCheck, Zap, CreditCard, Landmark, Smartphone, Save, Copy, Check, Star, Banknote, X, Wallet, Database, Printer, Cloud, RefreshCw, Upload, Download, ArrowRight, MapPin, } from 'lucide-react';
+import { Users, Shield, KeyRound, Trash2, Plus, Edit2, CheckCircle2, AlertTriangle, AlertCircle, RotateCcw, Building2, Factory, Mail, Phone, Search, Lock, Eye, EyeOff, SlidersHorizontal, FolderSync, FileSpreadsheet, AlertOctagon, CheckSquare, Square, Sparkles, Server, Globe, ExternalLink, Cpu, HardDrive, ShieldCheck, Zap, CreditCard, Landmark, Smartphone, Save, Copy, Check, Star, Banknote, X, Wallet, Database, Printer, Cloud, RefreshCw, Upload, Download, ArrowRight, MapPin, Loader2, } from 'lucide-react';
 import { getPaymentMethodLiveBalance, getBankAccountsBreakdown } from '../utils/accountUtils';
 import { BrandLogo } from './BrandLogo';
 import { PrinterBridgeModal } from './PrinterBridgeModal';
@@ -11,7 +12,7 @@ interface SettingsModuleProps {
     onNavigateTab?: (tab: string) => void;
 }
 export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab }) => {
-    const { staffMembers = [], userRoles = [], activeStaff, setActiveStaff, language, profile, updateProfile, paymentMethods = [], accountBalances, chartOfAccounts = [], transactions = [], invoices = [], products = [], addPaymentMethod, updatePaymentMethod, deletePaymentMethod, togglePaymentMethod, setDefaultPaymentMethod, addAuditLog, addStaffMember, updateStaffMember, deleteStaffMember, addUserRole, updateUserRole, deleteUserRole, cleanModuleData, resetToDefaultData, checkPermission, exportDatabase, importDatabase, syncWithCloud, cloudSyncStatus, isCloudConnected, lastSyncedAt, } = useApp();
+    const { staffMembers = [], userRoles = [], activeStaff, setActiveStaff, language, profile, updateProfile, paymentMethods = [], accountBalances, chartOfAccounts = [], transactions = [], invoices = [], products = [], journalEntries = [], projects = [], addPaymentMethod, updatePaymentMethod, deletePaymentMethod, togglePaymentMethod, setDefaultPaymentMethod, addAuditLog, addStaffMember, updateStaffMember, deleteStaffMember, addUserRole, updateUserRole, deleteUserRole, cleanModuleData, resetToDefaultData, checkPermission, exportDatabase, importDatabase, syncWithCloud, cloudSyncStatus, isCloudConnected, lastSyncedAt, } = useApp();
     const [activeTab, setActiveTab] = useState<'users' | 'roles' | 'payment-gateways' | 'system-tools' | 'data-clean' | 'system'>('users');
     const [searchQuery, setSearchQuery] = useState('');
     const [printerStatus, setPrinterStatus] = useState<HardwareAgentStatus>({ isOnline: false });
@@ -102,7 +103,10 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
     // Data cleanup modal state
     const [cleanConfirmModule, setCleanConfirmModule] = useState<string | null>(null);
     const [cleanFeedback, setCleanFeedback] = useState<string | null>(null);
+    const [isPurging, setIsPurging] = useState<boolean>(false);
     const isSuperUser = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
         (activeStaff?.name || '').toLowerCase().includes('super admin');
     const canManageUsers = isSuperUser || checkPermission('settings.manage_users') ||
         checkPermission('SETTINGS_MANAGE_USERS');
@@ -341,9 +345,13 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
     const isSuperAdminStaff = (staff?: StaffMember | null): boolean => {
         if (!staff)
             return false;
-        return (staff.role === 'Super Admin' ||
-            (staff.name || '').toLowerCase() === 'super admin' ||
-            staff.id === 'staff-superadmin');
+        const r = (staff.role || '').toLowerCase().trim();
+        const n = (staff.name || '').toLowerCase().trim();
+        const cid = (staff.customRoleId || '').toLowerCase().trim();
+        return (r === 'super admin' || r === 'superadmin' ||
+            n === 'super admin' ||
+            staff.id === 'staff-superadmin' ||
+            cid === 'role-superadmin');
     };
     // User Handlers
     const handleOpenAddUser = () => {
@@ -375,7 +383,7 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
             location: staff.location || 'Both',
             phone: staff.phone || '',
             email: staff.email || '',
-            password: staff.password || '1234',
+            password: isPinHashed(staff.password) ? '' : (staff.password || '1234'),
             customRoleId: matchedRole?.id || staff.customRoleId || userRoles[0]?.id || '',
             isActive: staff.isActive !== false,
         });
@@ -393,17 +401,20 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
         const finalRoleName = (selectedRole ? selectedRole.name : userFormData.role) as StaffRole;
         const finalRoleBn = selectedRole?.nameBn || userFormData.roleBn;
         if (editingStaff) {
-            updateStaffMember(editingStaff.id, {
+            const updates: any = {
                 name: userFormData.name.trim(),
                 role: isSuperAdminStaff(editingStaff) ? 'Super Admin' : finalRoleName,
                 roleBn: isSuperAdminStaff(editingStaff) ? "" : finalRoleBn,
                 location: 'Both',
                 phone: userFormData.phone.trim(),
                 email: userFormData.email.trim(),
-                password: userFormData.password.trim() || '1234',
                 customRoleId: userFormData.customRoleId || undefined,
                 isActive: userFormData.isActive,
-            });
+            };
+            if (userFormData.password.trim()) {
+                updates.password = userFormData.password.trim();
+            }
+            updateStaffMember(editingStaff.id, updates);
         }
         else {
             addStaffMember({
@@ -457,9 +468,8 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
     const isSuperAdminRole = (role?: UserRole | null): boolean => {
         if (!role)
             return false;
-        return (role.name === 'Super Admin' ||
-            role.name.toLowerCase() === 'superadmin' ||
-            role.id === 'role-superadmin');
+        const rName = (role.name || '').toLowerCase().trim();
+        return (rName === 'super admin' || rName === 'superadmin' || role.id === 'role-superadmin');
     };
     const handleOpenEditRole = (role: UserRole) => {
         if (isSuperAdminRole(role)) {
@@ -530,7 +540,8 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
         setShowRoleModal(false);
     };
     // Module Cleanup
-    const handleExecuteClean = (moduleKey: any) => {
+    const handleExecuteClean = async (moduleKey: any) => {
+        setIsPurging(true);
         let mappedKey = moduleKey;
         if (moduleKey === 'invoices' || moduleKey === 'SALES_RESET' || moduleKey === 'SALES') {
             mappedKey = 'SALES';
@@ -543,8 +554,6 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
         }
         else if (moduleKey === 'transactions') {
             mappedKey = 'TRANSACTIONS';
-            // Clear journals too for a complete accounting ledger wipe
-            cleanModuleData('JOURNALS');
         }
         else if (moduleKey === 'projects') {
             mappedKey = 'PROJECTS';
@@ -552,18 +561,24 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
         else if (moduleKey === 'WIPE_ALL_EXCEPT_PRODUCTS' || moduleKey === 'RESET_ALL_TRANSACTIONS') {
             mappedKey = 'RESET_ALL_TRANSACTIONS';
         }
-        cleanModuleData(mappedKey);
-        setCleanConfirmModule(null);
-        if (moduleKey === 'WIPE_ALL_EXCEPT_PRODUCTS' || moduleKey === 'RESET_ALL_TRANSACTIONS') {
-            setCleanFeedback('All transactional data (sales, purchases, cash txns, journals, projects, stock, dues & advances) reset successfully.');
+        try {
+            await cleanModuleData(mappedKey);
+            setCleanConfirmModule(null);
+            if (moduleKey === 'WIPE_ALL_EXCEPT_PRODUCTS' || moduleKey === 'RESET_ALL_TRANSACTIONS') {
+                setCleanFeedback('All transactional data (sales, purchases, cash txns, journals, projects, stock, dues & advances) reset successfully across all devices.');
+            }
+            else if (moduleKey === 'invoices' || moduleKey === 'SALES_RESET' || moduleKey === 'SALES') {
+                setCleanFeedback('All sales data (invoices, POS orders, quotes, customer dues & sales revenue) reset successfully across all devices.');
+            }
+            else {
+                setCleanFeedback(`Module '${moduleKey}' data purged successfully across all devices.`);
+            }
+        } catch {
+            setCleanFeedback(`Failed to purge module '${moduleKey}'. Please check connection.`);
+        } finally {
+            setIsPurging(false);
+            setTimeout(() => setCleanFeedback(null), 5000);
         }
-        else if (moduleKey === 'invoices' || moduleKey === 'SALES_RESET' || moduleKey === 'SALES') {
-            setCleanFeedback('All sales data (invoices, POS orders, quotes, customer dues & sales revenue) reset successfully.');
-        }
-        else {
-            setCleanFeedback(`Module '${moduleKey}' data purged successfully.`);
-        }
-        setTimeout(() => setCleanFeedback(null), 5000);
     };
     const handleFactoryReset = () => {
         if (confirm('CRITICAL WARNING: This will reset the entire ERP database to default demo records and clear cached changes. Are you sure?')) {
@@ -781,7 +796,7 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
                                 </div>)}
                               <div className="flex items-center gap-1 font-mono text-[10px] text-amber-800">
                                 <Lock className="w-3 h-3 text-amber-500"/>
-                                <span>PIN: {staff.password || '1234'}</span>
+                                <span>PIN: {isPinHashed(staff.password) ? '•••••• (Protected)' : (staff.password || '1234')}</span>
                               </div>
                             </div>
                           </td>
@@ -1127,10 +1142,15 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
                                             : isCheque
                                                 ? 'Bank Cheque'
                                                 : 'Custom';
+                    const cashCoa = (chartOfAccounts || []).find(a => a.classification === 'Asset' && (a.code === '1001' || a.code === '1010' || a.name.toLowerCase().includes('cash')) && !a.name.toLowerCase().includes('bkash') && !a.name.toLowerCase().includes('nagad'));
+                    const resolvedCashCode = cashCoa?.code || '1001';
+                    const resolvedCashName = cashCoa?.name || 'Cash In Hand';
                     const providerName = pm.provider || pm.bankName || (isCash ? 'Cash' : isCheque ? 'Cheque' : isDue ? 'Credit' : 'Direct');
-                    const accountNo = pm.accountNumber || (isCash ? '1010' : isDue ? '1030' : '—');
-                    const ledgerLink = pm.linkedAccountId || (isCash ? '1010 - Cash' : isBank ? '1030 - Bank' : isMfs ? '1040 - Mobile MFS' : isDue ? '1050 - Accounts' : '1030 - Bank');
-                    const liveBal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                    const accountNo = isCash ? (cashCoa?.code || pm.accountNumber || '1001') : (pm.accountNumber || (isDue ? '1030' : '—'));
+                    const ledgerLink = isCash 
+                        ? `${resolvedCashCode} - ${resolvedCashName}` 
+                        : (pm.linkedAccountId ? `${pm.linkedAccountId}` : (isBank ? '1030 - Bank' : isMfs ? '1040 - Mobile MFS' : isDue ? '1050 - Accounts' : '1030 - Bank'));
+                    const liveBal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, projects, journalEntries);
                     return (<tr key={pm.id} className="hover:bg-slate-50/80 transition-colors">
                             {/* Payment Method */}
                             <td className="py-3 px-4 font-bold text-slate-900 whitespace-nowrap">
@@ -1301,7 +1321,7 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
                         <div className="flex items-center justify-between text-[11px]">
                           <span className="text-slate-400 font-medium">{'Live Balance'}:</span>
                           <span className="font-bold text-slate-900 font-mono">
-                            {profile.currencySymbol || "Tk"}{getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances).toLocaleString()}
+                            {profile.currencySymbol || "Tk"}{getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, projects, journalEntries).toLocaleString()}
                           </span>
                         </div>
 
@@ -2362,18 +2382,37 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
             </div>
 
             <div className="flex gap-2.5 pt-2">
-              <button type="button" onClick={() => setCleanConfirmModule(null)} className="flex-1 py-2.5 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer transition-all">
+              <button
+                type="button"
+                disabled={isPurging}
+                onClick={() => setCleanConfirmModule(null)}
+                className="flex-1 py-2.5 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 cursor-pointer transition-all disabled:opacity-50"
+              >
                 {'Cancel'}
               </button>
-              <button type="button" onClick={() => handleExecuteClean(cleanConfirmModule)} className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-extrabold shadow-sm cursor-pointer flex items-center justify-center gap-1.5 transition-all">
-                <RotateCcw className="w-3.5 h-3.5"/>
-                <span>
-                  {cleanConfirmModule === 'invoices' || cleanConfirmModule === 'SALES_RESET' || cleanConfirmModule === 'SALES'
-                    ? 'Yes, Reset'
-                    : cleanConfirmModule === 'RESET_ALL_TRANSACTIONS' || cleanConfirmModule === 'WIPE_ALL_EXCEPT_PRODUCTS'
-                    ? 'Yes, Reset All'
-                    : 'Yes, Delete'}
-                </span>
+              <button
+                type="button"
+                disabled={isPurging}
+                onClick={() => handleExecuteClean(cleanConfirmModule)}
+                className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-extrabold shadow-sm cursor-pointer flex items-center justify-center gap-1.5 transition-all disabled:opacity-50"
+              >
+                {isPurging ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>{'Wiping & Syncing...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5"/>
+                    <span>
+                      {cleanConfirmModule === 'invoices' || cleanConfirmModule === 'SALES_RESET' || cleanConfirmModule === 'SALES'
+                        ? 'Yes, Reset'
+                        : cleanConfirmModule === 'RESET_ALL_TRANSACTIONS' || cleanConfirmModule === 'WIPE_ALL_EXCEPT_PRODUCTS'
+                        ? 'Yes, Reset All'
+                        : 'Yes, Delete'}
+                    </span>
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -2433,7 +2472,7 @@ export const SettingsModule: React.FC<SettingsModuleProps> = ({ onNavigateTab })
                     {userRoles
                     .filter((r) => r.name !== 'Super Admin' && r.name.toLowerCase() !== 'superadmin')
                     .map((r) => (<option key={r.id} value={r.id}>
-                          {r.name} {r.nameBn ? `(${r.nameBn})` : ''} — {r.permissions.length} Permissions
+                          {r.name} — {r.permissions.length} Permissions
                         </option>))}
                   </select>)}
               </div>

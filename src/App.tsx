@@ -11,14 +11,11 @@ import { ReportModule } from './components/ReportModule';
 import { CompanyProfileModule } from './components/CompanyProfileModule';
 import { SettingsModule } from './components/SettingsModule';
 import { InvoicePrintModal } from './components/InvoicePrintModal';
-import { PublicDocumentView } from './components/PublicDocumentView';
 import { Login } from './components/Login';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SlidersHorizontal } from 'lucide-react';
-
 const VALID_TABS = ['pos', 'sales', 'inventory', 'supply', 'projects', 'accounting', 'reports', 'settings', 'profile'];
 const TAB_STORAGE_KEY = 'DOT_COLOR_ERP_ACTIVE_TAB';
-
 const getInitialTab = (): string => {
     try {
         // 1. Check URL query param: ?tab=supply
@@ -40,51 +37,42 @@ const getInitialTab = (): string => {
     catch { }
     return 'pos';
 };
-
-export interface PublicDocumentParam {
+/**
+ * Extracts public document query parameters from the URL (?invoiceId=..., ?quoteId=..., ?quotationId=..., ?inv=..., ?doc=...)
+ * We preserve the URL in the address bar so user refreshes or shares will keep viewing the document,
+ * without falling back to ERP Login or revealing internal ERP pages.
+ */
+interface PublicDocParam {
     id: string;
-    type?: 'invoice' | 'quotation';
+    type: 'invoice' | 'quotation';
 }
 
-/**
- * Detects if the current URL points to a public document (QR scan, invoice verification link)
- * Supports query params (?invoiceId=..., ?invoiceNo=..., ?inv=..., ?quoteId=..., ?verify=...)
- * and hash routing (#verify/..., #invoice/..., #quotation/...)
- */
-export const getPublicDocumentParam = (): PublicDocumentParam | null => {
+const getPublicDocumentParam = (): PublicDocParam | null => {
     try {
-        if (typeof window === 'undefined') return null;
-        const search = new URLSearchParams(window.location.search);
-
-        const invoiceId = search.get('invoiceId') || search.get('invoiceNo') || search.get('inv');
-        if (invoiceId && invoiceId.trim()) {
-            return { id: invoiceId.trim(), type: 'invoice' };
-        }
-
-        const quoteId = search.get('quoteId') || search.get('quotationId') || search.get('quoteNo');
+        if (typeof window === 'undefined')
+            return null;
+        const url = new URL(window.location.href);
+        const quoteId = url.searchParams.get('quoteId') || url.searchParams.get('quotationId');
         if (quoteId && quoteId.trim()) {
             return { id: quoteId.trim(), type: 'quotation' };
         }
-
-        const verifyId = search.get('verify') || search.get('v') || search.get('id');
-        if (verifyId && verifyId.trim()) {
-            return { id: verifyId.trim() };
+        const invId = url.searchParams.get('invoiceId') || url.searchParams.get('invoiceNo') || url.searchParams.get('inv');
+        if (invId && invId.trim()) {
+            const trimmed = invId.trim();
+            const isQuote = trimmed.toLowerCase().startsWith('qt-') || trimmed.toLowerCase().startsWith('q-');
+            return { id: trimmed, type: isQuote ? 'quotation' : 'invoice' };
         }
-
-        const hash = window.location.hash.replace(/^#\/?/, '').trim();
-        if (hash.startsWith('verify/')) {
-            return { id: hash.replace(/^verify\//, '').trim() };
+        const docId = url.searchParams.get('doc') || url.searchParams.get('id');
+        const view = url.searchParams.get('view');
+        if (docId && docId.trim() && (view === 'public' || docId.startsWith('INV-') || docId.startsWith('QT-') || docId.toLowerCase().startsWith('inv-') || docId.toLowerCase().startsWith('qt-'))) {
+            const trimmed = docId.trim();
+            const isQuote = trimmed.toLowerCase().startsWith('qt-') || trimmed.toLowerCase().startsWith('q-');
+            return { id: trimmed, type: isQuote ? 'quotation' : 'invoice' };
         }
-        if (hash.startsWith('invoice/')) {
-            return { id: hash.replace(/^invoice\//, '').trim(), type: 'invoice' };
-        }
-        if (hash.startsWith('quotation/')) {
-            return { id: hash.replace(/^quotation\//, '').trim(), type: 'quotation' };
-        }
-    } catch { }
+    }
+    catch { }
     return null;
 };
-
 const MainLayout: React.FC = () => {
     const [activeTab, setActiveTab] = useState<string>(getInitialTab);
     const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
@@ -98,6 +86,8 @@ const MainLayout: React.FC = () => {
     });
     const { profile, activeStaff, language, checkPermission } = useApp();
     const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
         (activeStaff?.name || '').toLowerCase().includes('super admin');
 
     const canAccessSettings = isSuperAdmin || Boolean(
@@ -114,9 +104,9 @@ const MainLayout: React.FC = () => {
     const canAccessSales = isSuperAdmin || Boolean(checkPermission && checkPermission('sales.view'));
     const canAccessInventory = isSuperAdmin || Boolean(checkPermission && checkPermission('inventory.view'));
     const canAccessSupply = isSuperAdmin || Boolean(checkPermission && checkPermission('supply.view'));
-    const canAccessProjects = isSuperAdmin || Boolean(checkPermission && (checkPermission('sales.view') || checkPermission('pos.view')));
+    const canAccessProjects = isSuperAdmin || Boolean(checkPermission && (checkPermission('projects.view') || checkPermission('projects.manage')));
     const canAccessAccounting = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.view'));
-    const canAccessReports = isSuperAdmin || Boolean(checkPermission && (checkPermission('accounting.export_reports') || checkPermission('accounting.view') || checkPermission('sales.view')));
+    const canAccessReports = isSuperAdmin || Boolean(checkPermission && (checkPermission('reports.view') || checkPermission('accounting.export_reports')));
 
     // Determine first permitted tab for redirection if current tab is not allowed
     const isTabPermitted = (tab: string): boolean => {
@@ -152,14 +142,20 @@ const MainLayout: React.FC = () => {
             setActiveTab(nextTab);
         }
     }, [activeTab, canAccessPOS, canAccessSales, canAccessInventory, canAccessSupply, canAccessProjects, canAccessAccounting, canAccessReports, canAccessSettings]);
-
     // Sync document title with company profile name
     useEffect(() => {
         if (profile?.name) {
             document.title = profile.name;
         }
     }, [profile?.name]);
-
+    // Auto-clean any lingering invoiceId / QR scan query params from the browser address bar
+    useEffect(() => {
+        try {
+            const url = new URL(window.location.href);
+            ['invoiceId', 'invoiceNo', 'inv', 'quoteId', 'quotationId', 'doc'].forEach((p) => url.searchParams.delete(p));
+            window.history.replaceState(window.history.state || {}, '', url.pathname + (url.searchParams.toString() ? `?${url.searchParams.toString()}` : '') + url.hash);
+        } catch {}
+    }, []);
     // Sync activeTab with URL & localStorage whenever it changes
     useEffect(() => {
         try {
@@ -176,7 +172,6 @@ const MainLayout: React.FC = () => {
         }
         catch { }
     }, [activeTab]);
-
     // Handle browser Back / Forward navigation
     useEffect(() => {
         const handlePopState = () => {
@@ -212,7 +207,6 @@ const MainLayout: React.FC = () => {
             window.removeEventListener('switch-tab', handleSwitchTab);
         };
     }, []);
-
     const handleOpenInvoice = (id: string, mode: 'invoice' | 'challan' | 'pos' = 'invoice', options?: {
         autoPrint?: boolean;
         isPadMode?: boolean;
@@ -224,13 +218,11 @@ const MainLayout: React.FC = () => {
             isPadMode: Boolean(options?.isPadMode),
         });
     };
-
     const handleOpenChallan = (id: string) => {
         setSelectedInvoiceId(id);
         setModalMode('challan');
         setDirectPrintOptions({ autoPrint: false, isPadMode: false });
     };
-
     return (<div className="min-h-screen bg-slate-100/70 text-slate-900 flex flex-col font-sans antialiased selection:bg-amber-100 selection:text-amber-900">
       {/* Top Header & Navigation */}
       <Header activeTab={activeTab} setActiveTab={setActiveTab}/>
@@ -310,44 +302,36 @@ const MainLayout: React.FC = () => {
       </footer>
     </div>);
 };
-
 const AppContent: React.FC = () => {
     const { isAuthenticated } = useApp();
-    const [publicDoc, setPublicDoc] = useState<PublicDocumentParam | null>(getPublicDocumentParam);
+    const publicDoc = React.useMemo(() => getPublicDocumentParam(), []);
 
-    useEffect(() => {
-        const handleNav = () => {
-            setPublicDoc(getPublicDocumentParam());
-        };
-        window.addEventListener('popstate', handleNav);
-        window.addEventListener('hashchange', handleNav);
-        return () => {
-            window.removeEventListener('popstate', handleNav);
-            window.removeEventListener('hashchange', handleNav);
-        };
-    }, []);
-
-    // 1. Standalone Independent Public Verification View
-    // Automatically activated whenever QR code is scanned or URL contains invoice/quote param.
-    // Zero login/logout prompts, completely standalone, refresh safe, mobile responsive!
+    // 1. ISOLATED PUBLIC DOCUMENT VIEW (Sales Invoice & Quotation)
+    // If a document ID is present in the URL (from a QR scan or shared public link),
+    // render ONLY the dedicated public document viewer.
+    // Zero exposure to Login, Logout, Dashboard, Projects, or internal ERP screens.
     if (publicDoc) {
         return (
-            <PublicDocumentView
-                documentId={publicDoc.id}
-                documentType={publicDoc.type}
-            />
+            <div className="min-h-screen w-full bg-slate-900 text-slate-100 flex flex-col justify-start items-center">
+                <InvoicePrintModal
+                    invoiceId={publicDoc.id}
+                    mode="invoice"
+                    isPublicView={true}
+                    onClose={() => {
+                        // In public view, there is no modal backdrop close;
+                        // user closes their browser tab or navigates back in their browser.
+                    }}
+                />
+            </div>
         );
     }
 
-    // 2. Unauthenticated Staff -> Login Page
+    // 2. Normal ERP Flow (Login screen for unauthenticated, MainLayout for authenticated staff)
     if (!isAuthenticated) {
         return <Login />;
     }
-
-    // 3. Authenticated Staff -> Full ERP
     return <MainLayout />;
 };
-
 export default function App() {
     return (<ErrorBoundary>
       <AppProvider>

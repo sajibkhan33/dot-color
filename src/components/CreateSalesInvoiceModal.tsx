@@ -1,6 +1,7 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { InvoiceItem, PaymentMethod, ProductionStatus, UnitType, PRESET_INVOICE_ITEM_TYPES } from '../types';
+import { getPaymentMethodLiveBalance } from '../utils/accountUtils';
 import { X, FileText, Plus, Trash2, Calendar, User, Phone, Building, CheckCircle2, Percent, Hash, Truck, DollarSign, Search, UserPlus, } from 'lucide-react';
 interface CreateSalesInvoiceModalProps {
     isOpen: boolean;
@@ -8,7 +9,7 @@ interface CreateSalesInvoiceModalProps {
     onInvoiceCreated: (invoiceId: string) => void;
 }
 export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = ({ isOpen, onClose, onInvoiceCreated, }) => {
-    const { customers, products, profile, language, paymentMethods = [], addInvoice, addCustomer, } = useApp();
+    const { customers, products, profile, language, paymentMethods = [], chartOfAccounts = [], transactions = [], invoices = [], accountBalances, journalEntries = [], projects = [], addInvoice, addCustomer, } = useApp();
     const activePaymentMethods = useMemo(() => {
         const list = (paymentMethods || []).filter((p) => p.isEnabled);
         return list.length > 0 ? list : [{ id: 'pm-cash', name: 'Cash', nameBn: "Cash", type: 'cash' as const, isEnabled: true }];
@@ -67,7 +68,8 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
     const [vatAmountInput, setVatAmountInput] = useState<number>(0);
     const [vatType, setVatType] = useState<'amount' | 'percent'>('percent');
     // Payment & Settlement
-    const [paidAmount, setPaidAmount] = useState<number | ''>('');
+    const [paidAmount, setPaidAmount] = useState<number | ''>(0);
+    const [selectedPaymentPreset, setSelectedPaymentPreset] = useState<'full_paid' | 'half_advance' | 'full_due' | null>(null);
     const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Cash');
     const [productionStatus, setProductionStatus] = useState<ProductionStatus>('Queued');
     const [notes, setNotes] = useState('');
@@ -97,13 +99,80 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
         return taxableAmount > 0 ? Number(((effectiveVat / taxableAmount) * 100).toFixed(2)) : 0;
     }, [vatType, vatAmountInput, effectiveVat, taxableAmount]);
     const grandTotal = taxableAmount + effectiveVat;
-    const effectivePaid = paidAmount === '' ? grandTotal : Math.min(grandTotal, Math.max(0, Number(paidAmount)));
+    const effectivePaid = paidAmount === '' ? 0 : Math.min(grandTotal, Math.max(0, Number(paidAmount)));
     const dueAmount = Math.max(0, grandTotal - effectivePaid);
+
+    // Synchronize paid amount if an active preset is selected when grandTotal changes
+    useEffect(() => {
+        if (selectedPaymentPreset === 'full_paid') {
+            setPaidAmount(grandTotal);
+        } else if (selectedPaymentPreset === 'half_advance') {
+            setPaidAmount(Math.round(grandTotal / 2));
+        } else if (selectedPaymentPreset === 'full_due') {
+            setPaidAmount(0);
+        }
+    }, [grandTotal, selectedPaymentPreset]);
     const paymentStatus = effectivePaid >= grandTotal && grandTotal > 0
         ? 'Paid'
         : effectivePaid > 0
             ? 'Partial'
             : 'Due';
+
+    // Comprehensive form reset helper
+    const resetForm = () => {
+        setCustomerMode('existing');
+        setSelectedCustomerId('');
+        setExistingCustAddress('');
+        setCustomerSearchQuery('');
+        setIsCustomerSearchOpen(false);
+        setNewCustName('');
+        setNewCustPhone('');
+        setNewCustCompany('');
+        setNewCustAddress('');
+        setPurchaseRequisition('');
+        setReferenceNo('');
+        setInvoiceDate(new Date().toISOString().slice(0, 10));
+        setDeliveryDate('');
+        setWarehouseLocation('Factory');
+        setItems([]);
+        setShowRegionColumn(false);
+        setShowTypeColumn(false);
+        setSelectedProductId('');
+        setItemName('');
+        setItemRegion('');
+        setItemTypeStr('');
+        setIsCustomType(false);
+        setItemCategory('BRANDED PROMOTIONAL GIFTS');
+        setItemUnit('pcs');
+        setItemQty(1);
+        setItemPrice(1000);
+        setItemWidth('');
+        setItemHeight('');
+        setItemNotes('');
+        setDiscountAmount(0);
+        setDiscountType('amount');
+        setVatAmountInput(0);
+        setVatType('percent');
+        setPaidAmount(0);
+        setSelectedPaymentPreset(null);
+        setPaymentMethod('Cash');
+        setProductionStatus('Queued');
+        setNotes('');
+        setJobSpecs('');
+    };
+
+    // Auto-reset whenever modal opens
+    useEffect(() => {
+        if (isOpen) {
+            resetForm();
+        }
+    }, [isOpen]);
+
+    const handleClose = () => {
+        resetForm();
+        onClose();
+    };
+
     if (!isOpen)
         return null;
     // Add Item to List
@@ -241,6 +310,33 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
         const advanceToUse = selectedCust ? Math.min(Number(selectedCust.advanceBalance) || 0, effectivePaid) : 0;
         const channelPaid = Math.max(0, effectivePaid - advanceToUse);
 
+        // Ensure recalculation based on finalItems (even if auto-added)
+        const computedSubtotal = finalItems.reduce((acc, it) => acc + (Number(it.totalPrice) || 0), 0);
+        let computedDiscount = 0;
+        if (discountType === 'percent') {
+            const pct = Math.max(0, Math.min(100, Number(discountAmount) || 0));
+            computedDiscount = Math.round((computedSubtotal * pct) / 100);
+        } else {
+            computedDiscount = Math.min(computedSubtotal, Math.max(0, Number(discountAmount) || 0));
+        }
+        const computedTaxable = Math.max(0, computedSubtotal - computedDiscount);
+        let computedVat = 0;
+        if (vatType === 'percent') {
+            const pct = Math.max(0, Math.min(100, Number(vatAmountInput) || 0));
+            computedVat = Math.round((computedTaxable * pct) / 100);
+        } else {
+            computedVat = Math.max(0, Number(vatAmountInput) || 0);
+        }
+        const computedGrandTotal = computedTaxable + computedVat;
+        const computedPaid = paidAmount === '' ? 0 : Math.min(computedGrandTotal, Math.max(0, Number(paidAmount)));
+        const computedDue = Math.max(0, computedGrandTotal - computedPaid);
+        const computedPaymentStatus = computedPaid >= computedGrandTotal && computedGrandTotal > 0
+            ? 'Paid'
+            : computedPaid > 0
+                ? 'Partial'
+                : 'Due';
+        const finalChannelPaid = Math.max(0, computedPaid - advanceToUse);
+
         const created = addInvoice({
             date: invoiceDate,
             referenceNo: referenceNo.trim() || undefined,
@@ -252,19 +348,19 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
             customerPhone: finalCustPhone,
             customerAddress: finalCustAddress,
             items: finalItems,
-            subtotal,
-            discount: effectiveDiscount,
+            subtotal: computedSubtotal,
+            discount: computedDiscount,
             discountType,
             discountValue: Number(discountAmount) || 0,
             vatType,
             vatValue: Number(vatAmountInput) || 0,
             vatRate: Number(computedVatRate) || 0,
-            vatAmount: effectiveVat,
-            grandTotal,
-            paidAmount: effectivePaid,
-            dueAmount,
+            vatAmount: computedVat,
+            grandTotal: computedGrandTotal,
+            paidAmount: computedPaid,
+            dueAmount: computedDue,
             paymentMethod,
-            paymentStatus,
+            paymentStatus: computedPaymentStatus,
             productionStatus,
             warehouseLocation,
             notes: notes.trim() || undefined,
@@ -272,14 +368,15 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
             showRegionColumn,
             showTypeColumn,
             splitPayments: {
-                cash: paymentMethod.toLowerCase().includes('cash') ? channelPaid : 0,
-                card: paymentMethod.toLowerCase().includes('card') || paymentMethod.toLowerCase().includes('bank') ? channelPaid : 0,
-                bkash: paymentMethod.toLowerCase().includes('bkash') ? channelPaid : 0,
-                nagad: paymentMethod.toLowerCase().includes('nagad') ? channelPaid : 0,
+                cash: paymentMethod.toLowerCase().includes('cash') ? finalChannelPaid : 0,
+                card: paymentMethod.toLowerCase().includes('card') || paymentMethod.toLowerCase().includes('bank') ? finalChannelPaid : 0,
+                bkash: paymentMethod.toLowerCase().includes('bkash') ? finalChannelPaid : 0,
+                nagad: paymentMethod.toLowerCase().includes('nagad') ? finalChannelPaid : 0,
                 ...(advanceToUse > 0 ? { 'Customer Advance': advanceToUse } : {}),
-                due: dueAmount,
+                due: computedDue,
             },
         });
+        resetForm();
         onClose();
         onInvoiceCreated(created.id);
     };
@@ -303,7 +400,7 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
               </p>
             </div>
           </div>
-          <button type="button" onClick={onClose} className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors cursor-pointer">
+          <button type="button" onClick={handleClose} className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors cursor-pointer">
             <X className="w-5 h-5"/>
           </button>
         </div>
@@ -937,36 +1034,139 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
                     {'Amount Paid:'}
                   </label>
                   <div className="flex items-center gap-1.5">
-                    <input type="number" step="any" min="0" max={grandTotal} value={paidAmount} onChange={(e) => setPaidAmount(e.target.value === '' ? '' : Number(e.target.value))} placeholder={grandTotal.toString()} className="w-28 text-right px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-black text-xs focus:ring-1 focus:ring-amber-500/30"/>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      max={grandTotal}
+                      value={paidAmount}
+                      onChange={(e) => {
+                        setSelectedPaymentPreset(null);
+                        setPaidAmount(e.target.value === '' ? '' : Number(e.target.value));
+                      }}
+                      placeholder="0"
+                      className="w-28 text-right px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-black text-xs focus:ring-1 focus:ring-amber-500/30"
+                    />
                   </div>
                 </div>
 
-                {/* Quick Paid Presets */}
-                <div className="flex justify-end gap-1.5 flex-wrap">
-                  {customerMode === 'existing' && (() => {
-                    const cust = customers.find((c) => c.id === selectedCustomerId);
-                    const adv = Number(cust?.advanceBalance) || 0;
-                    if (adv <= 0) return null;
-                    return (
-                      <button
-                        type="button"
-                        onClick={() => setPaidAmount(Math.min(adv, grandTotal))}
-                        className="px-2 py-0.5 bg-indigo-100 hover:bg-indigo-200 text-indigo-800 rounded text-[10px] font-extrabold cursor-pointer flex items-center gap-1 shadow-2xs"
-                        title={`Customer has ${profile.currencySymbol}${adv.toLocaleString()} advance balance`}
+                {/* Quick Paid Presets - All Unchecked By Default */}
+                <div className="flex flex-col gap-1.5 pt-1">
+                  <div className="flex items-center justify-between gap-1 text-[10.5px]">
+                    <span className="font-bold text-slate-500 uppercase tracking-wider text-[9.5px]">
+                      {'Payment Option:'}
+                    </span>
+                    {customerMode === 'existing' && (() => {
+                      const cust = customers.find((c) => c.id === selectedCustomerId);
+                      const adv = Number(cust?.advanceBalance) || 0;
+                      if (adv <= 0) return null;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedPaymentPreset(null);
+                            setPaidAmount(Math.min(adv, grandTotal));
+                          }}
+                          className="px-2 py-0.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded text-[10px] font-bold cursor-pointer flex items-center gap-1 shadow-2xs"
+                          title={`Customer has ${profile.currencySymbol}${adv.toLocaleString()} advance balance`}
+                        >
+                          <span>Adjust Advance ({profile.currencySymbol}{Math.min(adv, grandTotal).toLocaleString()})</span>
+                        </button>
+                      );
+                    })()}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {/* Full Paid Button - Click to check/uncheck */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (selectedPaymentPreset === 'full_paid') {
+                          setSelectedPaymentPreset(null);
+                          setPaidAmount(0);
+                        } else {
+                          setSelectedPaymentPreset('full_paid');
+                          setPaidAmount(grandTotal);
+                        }
+                      }}
+                      className={`px-2 py-1.5 rounded-lg text-[10.5px] font-extrabold flex items-center justify-center gap-1.5 transition-all cursor-pointer border ${
+                        selectedPaymentPreset === 'full_paid'
+                          ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs ring-1 ring-emerald-500'
+                          : 'bg-white hover:bg-emerald-50 text-slate-700 border-slate-300 hover:border-emerald-300'
+                      }`}
+                    >
+                      <span
+                        className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[9px] font-black border transition-all ${
+                          selectedPaymentPreset === 'full_paid'
+                            ? 'bg-white text-emerald-700 border-white'
+                            : 'border-slate-400 text-transparent bg-transparent'
+                        }`}
                       >
-                        <span>Adjust Advance ({profile.currencySymbol}{Math.min(adv, grandTotal).toLocaleString()})</span>
-                      </button>
-                    );
-                  })()}
-                  <button type="button" onClick={() => setPaidAmount(grandTotal)} className="px-2 py-0.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded text-[10px] font-extrabold cursor-pointer">
-                    {'Full Paid'}
-                  </button>
-                  <button type="button" onClick={() => setPaidAmount(Math.round(grandTotal / 2))} className="px-2 py-0.5 bg-amber-100 hover:bg-amber-200 text-amber-800 rounded text-[10px] font-extrabold cursor-pointer">
-                    {'50% Advance'}
-                  </button>
-                  <button type="button" onClick={() => setPaidAmount(0)} className="px-2 py-0.5 bg-rose-100 hover:bg-rose-200 text-rose-800 rounded text-[10px] font-extrabold cursor-pointer">
-                    {'Full Due'}
-                  </button>
+                        ✓
+                      </span>
+                      <span>{'Full Paid'}</span>
+                    </button>
+
+                    {/* 50% Advance Button - Click to check/uncheck */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (selectedPaymentPreset === 'half_advance') {
+                          setSelectedPaymentPreset(null);
+                          setPaidAmount(0);
+                        } else {
+                          setSelectedPaymentPreset('half_advance');
+                          setPaidAmount(Math.round(grandTotal / 2));
+                        }
+                      }}
+                      className={`px-2 py-1.5 rounded-lg text-[10.5px] font-extrabold flex items-center justify-center gap-1.5 transition-all cursor-pointer border ${
+                        selectedPaymentPreset === 'half_advance'
+                          ? 'bg-amber-600 text-white border-amber-700 shadow-xs ring-1 ring-amber-500'
+                          : 'bg-white hover:bg-amber-50 text-slate-700 border-slate-300 hover:border-amber-300'
+                      }`}
+                    >
+                      <span
+                        className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[9px] font-black border transition-all ${
+                          selectedPaymentPreset === 'half_advance'
+                            ? 'bg-white text-amber-700 border-white'
+                            : 'border-slate-400 text-transparent bg-transparent'
+                        }`}
+                      >
+                        ✓
+                      </span>
+                      <span>{'50% Advance'}</span>
+                    </button>
+
+                    {/* Full Due Button - Click to check/uncheck */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (selectedPaymentPreset === 'full_due') {
+                          setSelectedPaymentPreset(null);
+                          setPaidAmount(0);
+                        } else {
+                          setSelectedPaymentPreset('full_due');
+                          setPaidAmount(0);
+                        }
+                      }}
+                      className={`px-2 py-1.5 rounded-lg text-[10.5px] font-extrabold flex items-center justify-center gap-1.5 transition-all cursor-pointer border ${
+                        selectedPaymentPreset === 'full_due'
+                          ? 'bg-rose-600 text-white border-rose-700 shadow-xs ring-1 ring-rose-500'
+                          : 'bg-white hover:bg-rose-50 text-slate-700 border-slate-300 hover:border-rose-300'
+                      }`}
+                    >
+                      <span
+                        className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[9px] font-black border transition-all ${
+                          selectedPaymentPreset === 'full_due'
+                            ? 'bg-white text-rose-700 border-white'
+                            : 'border-slate-400 text-transparent bg-transparent'
+                        }`}
+                      >
+                        ✓
+                      </span>
+                      <span>{'Full Due'}</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex justify-between items-center text-xs font-bold pt-1">
@@ -982,15 +1182,30 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
           {/* Section 4: Payment Method, Production Status & Notes */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200/80">
             <div>
-              <label className="font-bold text-slate-700 block mb-1">
-                {'Payment Method'}
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="font-bold text-slate-700">
+                  {'Payment Method'}
+                </label>
+                {(() => {
+                  const selectedPm = activePaymentMethods.find(p => p.name === paymentMethod || p.id === paymentMethod) || activePaymentMethods[0];
+                  if (!selectedPm) return null;
+                  const bal = getPaymentMethodLiveBalance(selectedPm, chartOfAccounts, transactions, invoices, accountBalances, projects, journalEntries);
+                  return (
+                    <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 font-mono">
+                      Live: {profile.currencySymbol}{bal.toLocaleString()}
+                    </span>
+                  );
+                })()}
+              </div>
               <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl font-bold text-xs">
-                {activePaymentMethods.map((pm) => (<option key={pm.id} value={pm.name}>
-                    {pm.name}
-                    {pm.accountNumber ? ` (${pm.accountNumber})` : ''}
-                    {''}
-                  </option>))}
+                {activePaymentMethods.map((pm) => {
+                  const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, projects, journalEntries);
+                  return (
+                    <option key={pm.id} value={pm.name}>
+                      {pm.name}{pm.accountNumber ? ` (${pm.accountNumber})` : ''} — [{profile.currencySymbol}{bal.toLocaleString()}]
+                    </option>
+                  );
+                })}
               </select>
             </div>
 
@@ -1021,7 +1236,7 @@ export const CreateSalesInvoiceModal: React.FC<CreateSalesInvoiceModalProps> = (
             {'Invoice can be printed immediately after saving'}
           </div>
           <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-            <button type="button" onClick={onClose} className="px-4 py-2 bg-white border border-slate-200 rounded-xl font-bold text-xs text-slate-700 hover:bg-slate-50 cursor-pointer">
+            <button type="button" onClick={handleClose} className="px-4 py-2 bg-white border border-slate-200 rounded-xl font-bold text-xs text-slate-700 hover:bg-slate-50 cursor-pointer">
               {'Cancel'}
             </button>
             <button type="button" onClick={handleSubmitInvoice} className="px-6 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-extrabold text-xs shadow-md flex items-center gap-1.5 cursor-pointer transition-all">

@@ -1,3 +1,4 @@
+import { isPinHashed } from '../utils/securityUtils';
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { BrandLogo } from './BrandLogo';
@@ -9,6 +10,8 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     const { language, setLanguage, activeStaff, logout, updateStaffMember, checkPermission } = useApp();
     const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
         (activeStaff?.name || '').toLowerCase().includes('super admin');
 
     const canAccessSettings = isSuperAdmin || Boolean(
@@ -25,9 +28,9 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
     const canAccessSales = isSuperAdmin || Boolean(checkPermission && checkPermission('sales.view'));
     const canAccessInventory = isSuperAdmin || Boolean(checkPermission && checkPermission('inventory.view'));
     const canAccessSupply = isSuperAdmin || Boolean(checkPermission && checkPermission('supply.view'));
-    const canAccessProjects = isSuperAdmin || Boolean(checkPermission && (checkPermission('sales.view') || checkPermission('pos.view')));
+    const canAccessProjects = isSuperAdmin || Boolean(checkPermission && (checkPermission('projects.view') || checkPermission('projects.manage')));
     const canAccessAccounting = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.view'));
-    const canAccessReports = isSuperAdmin || Boolean(checkPermission && (checkPermission('accounting.export_reports') || checkPermission('accounting.view') || checkPermission('sales.view')));
+    const canAccessReports = isSuperAdmin || Boolean(checkPermission && (checkPermission('reports.view') || checkPermission('accounting.export_reports')));
     const [showProfileModal, setShowProfileModal] = useState(false);
     const [profileFormData, setProfileFormData] = useState({
         name: '',
@@ -64,7 +67,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
                     nameBn: activeStaff.nameBn || '',
                     phone: activeStaff.phone || '',
                     email: activeStaff.email || '',
-                    password: activeStaff.password || '1234',
+                    password: isPinHashed(activeStaff.password) ? '' : (activeStaff.password || '1234'),
                 });
                 setProfileSaveSuccess(false);
                 setShowProfileModal(true);
@@ -151,13 +154,16 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
                 e.preventDefault();
                 if (!profileFormData.name.trim())
                     return;
-                updateStaffMember(activeStaff.id, {
+                const profileUpdates: any = {
                     name: profileFormData.name.trim(),
                     nameBn: profileFormData.nameBn.trim(),
                     phone: profileFormData.phone.trim(),
                     email: profileFormData.email.trim(),
-                    password: profileFormData.password.trim() || '1234',
-                });
+                };
+                if (profileFormData.password.trim()) {
+                    profileUpdates.password = profileFormData.password.trim();
+                }
+                updateStaffMember(activeStaff.id, profileUpdates);
                 setProfileSaveSuccess(true);
                 setTimeout(() => {
                     setProfileSaveSuccess(false);
@@ -205,7 +211,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
                 <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">
                   {'Login PIN / Password'}
                 </label>
-                <input type="text" value={profileFormData.password} onChange={(e) => setProfileFormData({ ...profileFormData, password: e.target.value })} placeholder=": 1234" className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-amber-500 focus:bg-white transition-all"/>
+                <input type="text" value={profileFormData.password} onChange={(e) => setProfileFormData({ ...profileFormData, password: e.target.value })} placeholder={isPinHashed(activeStaff.password) ? "Leave blank to keep current PIN" : "e.g. 1234"} className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-amber-500 focus:bg-white transition-all"/>
                 <p className="text-[10px] text-slate-400 mt-1">
                   {'Used for PIN-based login verification.'}
                 </p>

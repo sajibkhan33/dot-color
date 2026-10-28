@@ -12,8 +12,8 @@ interface ReportHeaderProps {
     language: Language;
     dateRangeText: string;
     locationFilter: string;
-    onPrint: () => void;
-    onExportExcel: () => void;
+    onPrint?: () => void;
+    onExportExcel?: () => void;
 }
 export const ReportHeader: React.FC<ReportHeaderProps> = ({ titleEn, titleBn, categoryEn, categoryBn, profile, language, dateRangeText, locationFilter, onPrint, onExportExcel, }) => {
     const isBn = language === 'bn';
@@ -47,14 +47,18 @@ export const ReportHeader: React.FC<ReportHeaderProps> = ({ titleEn, titleBn, ca
         </div>
 
         <div className="flex items-center gap-2 self-start sm:self-auto">
-          <button type="button" onClick={onExportExcel} className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-all shadow-2xs cursor-pointer" title="Export this report to Microsoft Excel (.xlsx)">
-            <FileSpreadsheet className="w-4 h-4 text-emerald-600"/>
-            <span>{'Export Excel'}</span>
-          </button>
-          <button type="button" onClick={onPrint} className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-slate-900 text-white hover:bg-slate-800 transition-all shadow-2xs cursor-pointer" title="Print or Save as PDF">
-            <Printer className="w-4 h-4"/>
-            <span>{'Print / PDF'}</span>
-          </button>
+          {onExportExcel && (
+            <button type="button" onClick={onExportExcel} className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-all shadow-2xs cursor-pointer" title="Export this report to Microsoft Excel (.xlsx)">
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600"/>
+              <span>{'Export Excel'}</span>
+            </button>
+          )}
+          {onPrint && (
+            <button type="button" onClick={onPrint} className="flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-lg bg-slate-900 text-white hover:bg-slate-800 transition-all shadow-2xs cursor-pointer" title="Print or Save as PDF">
+              <Printer className="w-4 h-4"/>
+              <span>{'Print / PDF'}</span>
+            </button>
+          )}
         </div>
       </div>
 

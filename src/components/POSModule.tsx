@@ -10,7 +10,15 @@ interface POSModuleProps {
     }) => void;
 }
 export const POSModule: React.FC<POSModuleProps> = ({ onOpenInvoiceModal }) => {
-    const { products = [], customers = [], invoices = [], profile, language, activeLocation, paymentMethods = [], addInvoice, addCustomer, productCategories = [], } = useApp();
+    const { products = [], customers = [], invoices = [], profile, language, activeLocation, paymentMethods = [], addInvoice, addCustomer, productCategories = [], checkPermission, activeStaff } = useApp();
+
+    const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
+        (activeStaff?.name || '').toLowerCase().includes('super admin');
+    const canCreateSale = isSuperAdmin || Boolean(checkPermission && checkPermission('pos.create_sale'));
+    const canApplyDiscount = isSuperAdmin || Boolean(checkPermission && checkPermission('pos.discount'));
+
     const activePaymentMethods = useMemo(() => {
         const list = (paymentMethods || []).filter((p) => p.isEnabled);
         return list.length > 0 ? list : [{ id: 'pm-cash', name: 'Cash', nameBn: "Nagad Cash", type: 'cash' as const, isEnabled: true, isDefault: true }];
@@ -349,6 +357,13 @@ export const POSModule: React.FC<POSModuleProps> = ({ onOpenInvoiceModal }) => {
     // Checkout
     const handleCheckout = () => {
         setCheckoutFeedback(null);
+        if (!canCreateSale) {
+            setCheckoutFeedback({
+                type: 'error',
+                message: 'You do not have permission to create POS sales orders.',
+            });
+            return;
+        }
         if (cart.length === 0) {
             setCheckoutFeedback({
                 type: 'error',
@@ -383,18 +398,7 @@ export const POSModule: React.FC<POSModuleProps> = ({ onOpenInvoiceModal }) => {
             activePaymentMethods.forEach((pm) => {
                 const val = Number(splitAmounts[pm.id]) || 0;
                 if (val > 0) {
-                    const pmLower = pm.name.toLowerCase();
                     splitPaymentsRecord[pm.name] = (splitPaymentsRecord[pm.name] || 0) + val;
-                    splitPaymentsRecord[pm.id] = (splitPaymentsRecord[pm.id] || 0) + val;
-                    if (pm.type === 'cash' || pmLower.includes('cash')) {
-                        splitPaymentsRecord['cash'] = (splitPaymentsRecord['cash'] || 0) + val;
-                    } else if (pmLower.includes('card') || (pm.type === 'bank' && !pmLower.includes('bkash') && !pmLower.includes('nagad'))) {
-                        splitPaymentsRecord['card'] = (splitPaymentsRecord['card'] || 0) + val;
-                    } else if (pmLower.includes('bkash')) {
-                        splitPaymentsRecord['bkash'] = (splitPaymentsRecord['bkash'] || 0) + val;
-                    } else if (pmLower.includes('nagad')) {
-                        splitPaymentsRecord['nagad'] = (splitPaymentsRecord['nagad'] || 0) + val;
-                    }
                 }
                 calculatedTotalPaid += val;
                 if (val > maxPaidVal && val > 0) {
@@ -474,7 +478,7 @@ export const POSModule: React.FC<POSModuleProps> = ({ onOpenInvoiceModal }) => {
             if (!pc.isRawMaterialGroup) {
                 const count = nonRawProducts.filter(p => matchProductCategory(p, pc.name)).length;
                 if (count > 0) {
-                    const labelEn = pc.nameBn ? `${pc.name} (${pc.nameBn})` : pc.name;
+                    const labelEn = pc.name;
                     catMap.set(pc.name.trim().toLowerCase(), { id: pc.name, labelEn, count });
                 }
             }
@@ -1023,16 +1027,16 @@ export const POSModule: React.FC<POSModuleProps> = ({ onOpenInvoiceModal }) => {
                 </span>
                 <div className="flex items-center gap-1.5">
                   <div className="flex border border-slate-200 rounded-lg overflow-hidden shrink-0 bg-slate-50">
-                    <button type="button" onClick={() => setDiscountType('amount')} className={`px-2 py-0.5 text-[10px] font-extrabold transition-colors ${discountType === 'amount'
+                    <button type="button" disabled={!canApplyDiscount} onClick={() => setDiscountType('amount')} className={`px-2 py-0.5 text-[10px] font-extrabold transition-colors ${!canApplyDiscount ? 'opacity-40 cursor-not-allowed' : ''} ${discountType === 'amount'
                 ? 'bg-slate-900 text-white'
                 : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'}`}>Tk</button>
-                    <button type="button" onClick={() => setDiscountType('percent')} className={`px-2 py-0.5 text-[10px] font-extrabold transition-colors ${discountType === 'percent'
+                    <button type="button" disabled={!canApplyDiscount} onClick={() => setDiscountType('percent')} className={`px-2 py-0.5 text-[10px] font-extrabold transition-colors ${!canApplyDiscount ? 'opacity-40 cursor-not-allowed' : ''} ${discountType === 'percent'
                 ? 'bg-slate-900 text-white'
                 : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'}`}>
                       %
                     </button>
                   </div>
-                  <input type="number" step="any" min="0" max={discountType === 'percent' ? 100 : subtotal} value={discountAmount || ''} onChange={(e) => setDiscountAmount(Number(e.target.value))} placeholder="0" className="w-20 text-right px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg font-bold text-xs focus:ring-1 focus:ring-amber-500/30 focus:outline-hidden"/>
+                  <input type="number" step="any" min="0" max={discountType === 'percent' ? 100 : subtotal} disabled={!canApplyDiscount} value={discountAmount || ''} onChange={(e) => setDiscountAmount(Number(e.target.value))} placeholder="0" title={!canApplyDiscount ? 'Discount permission required' : undefined} className={`w-20 text-right px-2 py-1 bg-slate-50 border border-slate-200 rounded-lg font-bold text-xs focus:ring-1 focus:ring-amber-500/30 focus:outline-hidden ${!canApplyDiscount ? 'opacity-50 cursor-not-allowed' : ''}`}/>
                 </div>
               </div>
 
@@ -1179,12 +1183,19 @@ export const POSModule: React.FC<POSModuleProps> = ({ onOpenInvoiceModal }) => {
                 </div>)}
 
               {/* Checkout Button */}
-              <button type="button" id="pos-confirm-and-print-button" onClick={handleCheckout} disabled={isProcessingCheckout || cart.length === 0} className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl font-bold text-sm shadow-md transition-all flex items-center justify-center gap-2 group cursor-pointer">
+              <button
+                type="button"
+                id="pos-confirm-and-print-button"
+                onClick={handleCheckout}
+                disabled={isProcessingCheckout || cart.length === 0 || !canCreateSale}
+                className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white rounded-xl font-bold text-sm shadow-md transition-all flex items-center justify-center gap-2 group cursor-pointer"
+                title={!canCreateSale ? 'You do not have permission to create sales' : undefined}
+              >
                 <Printer className="w-4 h-4 text-amber-400 group-hover:scale-110 transition-transform"/>
                 <span>
                   {isProcessingCheckout
-                ? ('Processing Order...')
-                : ('Confirm Order & Print Invoice')}
+                    ? ('Processing Order...')
+                    : (!canCreateSale ? 'Permission Required to Create Sale' : 'Confirm Order & Print Invoice')}
                 </span>
               </button>
             </div>)}

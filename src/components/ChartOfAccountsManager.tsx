@@ -1,18 +1,24 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { ChartOfAccount, SalesInvoice } from '../types';
-import { BookOpen, Plus, Search, Filter, Edit2, Trash2, Lock, CheckCircle2, AlertCircle, X, FileText, Printer, Layers, ArrowUpDown, Download, Upload, } from 'lucide-react';
+import { BookOpen, Plus, Search, Filter, Edit2, Trash2, Lock, CheckCircle2, AlertCircle, X, FileText, Printer, ArrowUpDown, Download, Upload, } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { calculateSingleAccountBalance, calculateTotalCustomerReceivables, calculateTotalSupplierPayables, calculateInventoryValuation, isInvoiceTransaction, isProjectTransaction, isAdvanceAdjustmentTransaction, isAdvanceDepositTransaction, isProjectDueCollectionTransaction, isDueReceivableTransaction } from '../utils/accountUtils';
+import { calculateSingleAccountBalance, calculateTotalCustomerReceivables, calculateTotalSupplierPayables, calculateInventoryValuation, isInvoiceTransaction, isProjectTransaction, isAdvanceAdjustmentTransaction, isAdvanceDepositTransaction, isProjectDueCollectionTransaction, isDueReceivableTransaction, doesTransactionMatchExpenseAccount, resolveExpenseAccount, isSupplierPaymentTransaction } from '../utils/accountUtils';
 export const ChartOfAccountsManager: React.FC = () => {
-    const { chartOfAccounts, invoices = [], transactions = [], accountBalances, suppliers = [], customers = [], purchaseOrders = [], products = [], journalEntries = [], language, profile, addChartOfAccount, updateChartOfAccount, deleteChartOfAccount, checkPermission, projects = [], syncProjectsWithAccounting } = useApp();
+    const { chartOfAccounts, expenseHeads = [], invoices = [], transactions = [], accountBalances, suppliers = [], customers = [], purchaseOrders = [], products = [], journalEntries = [], language, profile, activeStaff, addChartOfAccount, updateChartOfAccount, deleteChartOfAccount, checkPermission, projects = [], syncProjectsWithAccounting } = useApp();
     const [searchQuery, setSearchQuery] = useState('');
     const [filterClassification, setFilterClassification] = useState<string>('ALL');
     const [showAddModal, setShowAddModal] = useState(false);
     const [editingAccount, setEditingAccount] = useState<ChartOfAccount | null>(null);
     const [accountToDelete, setAccountToDelete] = useState<ChartOfAccount | null>(null);
     const [deleteError, setDeleteError] = useState<string | null>(null);
-    const [syncSuccessMsg, setSyncSuccessMsg] = useState<string | null>(null);
+
+    // Auto-align projects on COA mount
+    useEffect(() => {
+        if (syncProjectsWithAccounting) {
+            syncProjectsWithAccounting();
+        }
+    }, []);
 
     // Form state
     const [formData, setFormData] = useState({
@@ -25,7 +31,13 @@ export const ChartOfAccountsManager: React.FC = () => {
         openingBalance: 0,
         description: '',
     });
-    const canManageCOA = checkPermission('accounting.chart_of_accounts') || checkPermission('ACCOUNTING_MANAGE_COA');
+    const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
+        (activeStaff?.name || '').toLowerCase().includes('super admin');
+    const canManageCOA = isSuperAdmin || Boolean(checkPermission && (checkPermission('accounting.chart_of_accounts') || checkPermission('ACCOUNTING_MANAGE_COA')));
+    const canEditAccount = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.edit_transaction'));
+    const canDeleteAccount = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.delete_transaction'));
 
     // Real-time dynamic Chart of Accounts synced with Ledger Transactions, Projects & Balances
     const liveAccounts = useMemo(() => {
@@ -33,8 +45,15 @@ export const ChartOfAccountsManager: React.FC = () => {
         const totalSupplierDue = calculateTotalSupplierPayables(suppliers, purchaseOrders);
         const totalCustomerDue = calculateTotalCustomerReceivables(invoices, customers, projects);
         const totalCustomerAdvance = (customers || []).reduce((s, c) => s + (Number(c.advanceBalance) || 0), 0);
-        const totalProjectSales = (projects || []).reduce((s, p) => s + (p.totalSales || 0), 0);
-        const totalProjectExpenses = (projects || []).reduce((s, p) => s + (p.totalExpenses || 0), 0);
+        const isInvLinkedToProject = (inv: SalesInvoice) => {
+            const invNo = (inv.invoiceNo || '').toLowerCase().trim();
+            return Boolean(
+                inv.projectId ||
+                inv.projectCode ||
+                projectLinkedInvoiceIds.has(inv.id) ||
+                (invNo && projectLinkedInvoiceNos.has(invNo))
+            );
+        };
 
         const projectLinkedInvoiceNos = new Set([
             ...(projects || []).map(p => (p.invoiceNo || '').toLowerCase().trim()).filter(Boolean),
@@ -45,15 +64,12 @@ export const ChartOfAccountsManager: React.FC = () => {
             ...(projects || []).map(p => p.invoiceId).filter(Boolean) as string[],
             ...(invoices || []).filter(inv => inv.projectId || inv.projectCode).map(inv => inv.id).filter(Boolean) as string[],
         ]);
-        const isInvLinkedToProject = (inv: SalesInvoice) => {
-            const invNo = (inv.invoiceNo || '').toLowerCase().trim();
-            return Boolean(
-                inv.projectId ||
-                inv.projectCode ||
-                projectLinkedInvoiceIds.has(inv.id) ||
-                (invNo && projectLinkedInvoiceNos.has(invNo))
-            );
-        };
+
+        const projectInvoicesTotal = (invoices || [])
+            .filter(inv => isInvLinkedToProject(inv))
+            .reduce((s, inv) => s + (Number(inv.grandTotal) || (Number(inv.paidAmount) + Number(inv.dueAmount)) || 0), 0);
+        const totalProjectSales = Math.max((projects || []).reduce((s, p) => s + (p.totalSales || 0), 0), projectInvoicesTotal);
+        const totalProjectExpenses = (projects || []).reduce((s, p) => s + (p.totalExpenses || 0), 0);
 
         const nonProjectInvoices = (invoices || []).filter(inv => !isInvLinkedToProject(inv));
         const totalNonProjectInvoiceSales = nonProjectInvoices.reduce((s, inv) => s + (Number(inv.grandTotal) || (Number(inv.paidAmount) + Number(inv.dueAmount)) || 0), 0);
@@ -136,7 +152,7 @@ export const ChartOfAccountsManager: React.FC = () => {
                     liveBal = calculateInventoryValuation(products, purchaseOrders, acc, journalEntries);
                 } else {
                     // Dynamic individual live balance calculation for Cash, City Bank PLC, Southeast Bank, Nagad, bKash, etc.
-                    liveBal = calculateSingleAccountBalance(acc, transactions, invoices, projects);
+                    liveBal = calculateSingleAccountBalance(acc, transactions, invoices, projects, journalEntries);
                 }
             } else if (acc.classification === 'Liability') {
                 const isPayable = acc.code === '2001' || acc.code === '2010' || nameLower.includes('payable') || nameLower.includes('supplier') || nameBn.includes('দেনা') || nameBn.includes('প্রদেয়');
@@ -196,6 +212,14 @@ export const ChartOfAccountsManager: React.FC = () => {
                     (isProjectRev && (!p.chartOfAccountId || p.chartOfAccountId === 'coa-4051' || p.chartOfAccountId === 'coa-4002' || p.chartOfAccountId === acc.id))
                 );
                 const matchingProjectSales = matchingProjects.reduce((s, p) => s + (p.totalSales || 0), 0);
+                const matchingProjectInvoices = (invoices || []).filter(inv => {
+                    if (!isInvLinkedToProject(inv)) return false;
+                    const invPrj = (projects || []).find(p => p.id === inv.projectId || p.code === inv.projectCode || p.code === inv.projectId);
+                    if (!invPrj) return isProjectRev;
+                    return invPrj.chartOfAccountId === acc.id || isProjectRev;
+                });
+                const matchingProjectInvoiceSales = matchingProjectInvoices.reduce((s, inv) => s + (Number(inv.grandTotal) || (Number(inv.paidAmount) + Number(inv.dueAmount)) || 0), 0);
+                const effectiveProjectSales = Math.max(matchingProjectSales, matchingProjectInvoiceSales);
 
                 if (isProjectRev || matchingProjects.length > 0) {
                     // Standalone project revenue transactions that are NOT due collections, NOT unpaid receivable due bookings, and NOT already part of matchingProjects
@@ -210,7 +234,21 @@ export const ChartOfAccountsManager: React.FC = () => {
                         )
                         .reduce((s, t) => s + (Number(t.amount) || 0), 0);
 
-                    liveBal = (acc.openingBalance || 0) + matchingProjectSales + standaloneProjectRevenue;
+                    const allPrjTxRevenue = (transactions || [])
+                        .filter(t => 
+                            t.type === 'INCOME' && 
+                            !isDueReceivableTransaction(t) && 
+                            !isAdvanceDepositTransaction(t) && 
+                            !isAdvanceAdjustmentTransaction(t) && (
+                                isProjectTransaction(t) || 
+                                (t.category && t.category.toLowerCase().includes('project')) ||
+                                (t.accountHead && t.accountHead.toLowerCase().includes('project')) ||
+                                (t.refNo && (t.refNo.toUpperCase().startsWith('PRJ-') || (projects || []).some(p => p.code === t.refNo)))
+                            )
+                        )
+                        .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+
+                    liveBal = (acc.openingBalance || 0) + Math.max(effectiveProjectSales + standaloneProjectRevenue, allPrjTxRevenue);
                 } else if (isSalesRev) {
                     // Non-project invoice sales
                     const invoiceSalesFromTx = (transactions || [])
@@ -296,8 +334,7 @@ export const ChartOfAccountsManager: React.FC = () => {
             } else if (acc.classification === 'Expense') {
                 const isProjectExp = (
                     acc.id === 'coa-5206' || 
-                    acc.code === '5206' || 
-                    acc.code === '5300' ||
+                    acc.code === '5206' ||
                     nameLower.includes('project') || 
                     nameBn.includes('প্রজেক্ট')
                 );
@@ -319,9 +356,14 @@ export const ChartOfAccountsManager: React.FC = () => {
                 );
 
                 // Calculate net impact from posted Journal Entries (Debit increases Expense, Credit decreases Expense)
+                // Exclude journal entries that originate from transactions already counted in ledger (EXPENSE, SALES, PURCHASE, LEDGER_SYNC, PROJECT_*)
                 let journalExpDelta = 0;
                 (journalEntries || []).forEach(j => {
-                    if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE') return;
+                    if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE' || j.source === 'EXPENSE' || j.source === 'SALES' || j.source === 'PURCHASE' || j.source === 'LEDGER_SYNC') return;
+                    if (j.refNo && (transactions || []).some(t => t.refNo && t.refNo.toLowerCase().trim() === j.refNo.toLowerCase().trim())) return;
+                    // Purchase orders are warehouse inventory receipts, not operational expenses
+                    const refUpper = `${j.refNo || ''} ${(j as any).reference || ''} ${j.narration || ''}`.toUpperCase();
+                    if (refUpper.includes('PO-') || refUpper.includes('DCC-PO-')) return;
                     const dName = (j.debitAccountName || '').toLowerCase().trim();
                     const cName = (j.creditAccountName || '').toLowerCase().trim();
                     const amt = Number(j.amount) || 0;
@@ -369,29 +411,140 @@ export const ChartOfAccountsManager: React.FC = () => {
                     liveBal = (acc.openingBalance || 0) + Math.max(projectMatching, totalProjectExpenses, journalExpDelta);
                 } else if (isCogs) {
                     const poExpenses = (transactions || [])
-                        .filter(t => t.type === 'EXPENSE' && !isPrjTx(t) && (
-                            (t.category && (t.category.toLowerCase().includes('raw') || t.category.toLowerCase().includes('purchase') || t.category.toLowerCase().includes('po'))) ||
-                            (t.description && (t.description.toLowerCase().includes('purchase') || t.description.toLowerCase().includes('po') || t.description.toLowerCase().includes('raw')))
+                        .filter(t => t.type === 'EXPENSE' && !isPrjTx(t) && !isSupplierPaymentTransaction(t) && (
+                            (t.category && (t.category.toLowerCase().includes('raw') || t.category.toLowerCase().includes('purchase'))) ||
+                            (t.description && (t.description.toLowerCase().includes('purchase') || t.description.toLowerCase().includes('raw')))
                         ))
                         .reduce((s, t) => s + t.amount, 0);
                     const baseCogs = (acc.currentBalance === totalProjectExpenses && totalProjectExpenses > 0)
                         ? (acc.openingBalance || 0)
                         : (acc.currentBalance > totalProjectExpenses ? acc.currentBalance - totalProjectExpenses : acc.currentBalance);
-                    liveBal = Math.max(baseCogs, poExpenses, (acc.openingBalance || 0) + journalExpDelta);
+                    const closingStockVal = (products || []).reduce((sum, p) => sum + ((Number(p.costPrice) || 0) * (Number(p.stockOffice || 0) + Number(p.stockFactory || 0))), 0);
+                    const rawPurchases = (purchaseOrders || []).filter(po => (po.status || '').toLowerCase() !== 'cancelled').reduce((s, po) => s + (Number(po.totalAmount) || Number((po as any).total) || 0), 0);
+                    const cogsFromStock = Math.max(0, rawPurchases - closingStockVal);
+                    liveBal = Math.max(baseCogs, cogsFromStock, poExpenses, (acc.openingBalance || 0) + journalExpDelta);
                 } else {
                     const matching = (transactions || [])
                         .filter(t => t.type === 'EXPENSE' && !isPrjTx(t) && (
-                            (t.category && (nameLower.includes(t.category.toLowerCase()) || t.category.toLowerCase().includes(nameLower))) ||
-                            (t.accountHead && (nameLower.includes(t.accountHead.toLowerCase()) || t.accountHead.toLowerCase().includes(nameLower)))
+                            doesTransactionMatchExpenseAccount(t, acc, expenseHeads, chartOfAccounts, journalEntries)
                         ))
                         .reduce((s, t) => s + t.amount, 0);
-                    // Reclaim if non-project account mistakenly absorbed project expenses
-                    const baseBal = (acc.currentBalance === totalProjectExpenses && totalProjectExpenses > 0)
-                        ? (acc.openingBalance || 0)
-                        : acc.currentBalance;
-                    liveBal = Math.max(baseBal, matching, (acc.openingBalance || 0) + journalExpDelta);
+
+                    liveBal = (acc.openingBalance || 0) + matching + journalExpDelta;
+                }
+            } else if (acc.classification === 'Equity') {
+                const isRetainedEarnings = (
+                    acc.id === 'coa-3020' ||
+                    nameLower.includes('retained') ||
+                    nameBn.includes('সংরক্ষিত')
+                );
+                const isDrawings = (
+                    acc.normalBalance === 'Debit' ||
+                    nameLower.includes('drawing') ||
+                    nameBn.includes('উত্তোলন')
+                );
+
+                if (isDrawings) {
+                    let journalDrawingsDelta = 0;
+                    (journalEntries || []).forEach(j => {
+                        if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE' || j.source === 'EXPENSE' || j.source === 'SALES' || j.source === 'PURCHASE' || j.source === 'LEDGER_SYNC') return;
+                        const isDebit = (
+                            j.debitAccountId === acc.id ||
+                            j.debitAccountId === acc.code ||
+                            (j.debitAccountName && j.debitAccountName.toLowerCase().trim() === nameLower)
+                        );
+                        const isCredit = (
+                            j.creditAccountId === acc.id ||
+                            j.creditAccountId === acc.code ||
+                            (j.creditAccountName && j.creditAccountName.toLowerCase().trim() === nameLower)
+                        );
+                        const amt = Number(j.amount) || 0;
+                        if (isDebit && !isCredit) journalDrawingsDelta += amt;
+                        else if (isCredit && !isDebit) journalDrawingsDelta -= amt;
+                    });
+                    const txDrawings = (transactions || [])
+                        .filter(t => t.type === 'EXPENSE' && ((t.category || '').toLowerCase().includes('drawing') || (t.description || '').toLowerCase().includes('drawing') || (t.accountHead || '').toLowerCase().includes('drawing')))
+                        .reduce((s, t) => s + t.amount, 0);
+                    liveBal = Math.max(0, (acc.openingBalance || 0) + journalDrawingsDelta + txDrawings);
+                } else {
+                    let journalEquityDelta = 0;
+                    (journalEntries || []).forEach(j => {
+                        if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE' || j.source === 'EXPENSE' || j.source === 'SALES' || j.source === 'PURCHASE' || j.source === 'LEDGER_SYNC') return;
+                        if (j.refNo && (transactions || []).some(t => t.refNo && t.refNo.toLowerCase().trim() === j.refNo.toLowerCase().trim())) return;
+                        const isDebit = (
+                            j.debitAccountId === acc.id ||
+                            j.debitAccountId === acc.code ||
+                            (j.debitAccountName && j.debitAccountName.toLowerCase().trim() === nameLower)
+                        );
+                        const isCredit = (
+                            j.creditAccountId === acc.id ||
+                            j.creditAccountId === acc.code ||
+                            (j.creditAccountName && j.creditAccountName.toLowerCase().trim() === nameLower)
+                        );
+                        const amt = Number(j.amount) || 0;
+                        if (isCredit && !isDebit) journalEquityDelta += amt;
+                        else if (isDebit && !isCredit) journalEquityDelta -= amt;
+                    });
+
+                    if (isRetainedEarnings) {
+                    const directIncomes = (transactions || [])
+                        .filter(t => t.type === 'INCOME' && 
+                            !isInvoiceTransaction(t) && 
+                            !isProjectTransaction(t) && 
+                            !isProjectDueCollectionTransaction(t) && 
+                            !isAdvanceDepositTransaction(t) && 
+                            !isAdvanceAdjustmentTransaction(t) &&
+                            !(t.category || '').toLowerCase().includes('advance') &&
+                            !(t.category || '').includes('অগ্রিম') &&
+                            !(t.category || '').toLowerCase().includes('project') &&
+                            !(t.description || '').toLowerCase().includes('project')
+                        )
+                        .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    const totalOperationalRevenue = totalNonProjectInvoiceSales + totalProjectSales + directIncomes;
+
+                    // Resolve Cost of Goods Sold so Retained Earnings matches IFRS Net Operating Profit
+                    const cogsAccObj = (chartOfAccounts || []).find(a => a.classification === 'Expense' && (
+                        a.code === '5001' || a.code === '5010' || a.id === 'coa-5001' || a.id === 'coa-5010' ||
+                        (a.name || '').toLowerCase().includes('cost of goods') ||
+                        (a.name || '').toLowerCase().includes('cogs') ||
+                        ((a.name || '').toLowerCase().includes('raw material') && a.classification === 'Expense')
+                    ));
+                    let liveCogsBal = 0;
+                    if (cogsAccObj) {
+                        let journalCogsDelta = 0;
+                        (journalEntries || []).forEach(j => {
+                            if (j.source === 'PROJECT_SALES' || j.source === 'PROJECT_EXPENSE' || j.source === 'EXPENSE' || j.source === 'SALES' || j.source === 'PURCHASE' || j.source === 'LEDGER_SYNC') return;
+                            if (j.refNo && (transactions || []).some(t => t.refNo && t.refNo.toLowerCase().trim() === j.refNo.toLowerCase().trim())) return;
+                            const dName = (j.debitAccountName || '').toLowerCase().trim();
+                            const cName = (j.creditAccountName || '').toLowerCase().trim();
+                            const amt = Number(j.amount) || 0;
+                            const isDebit = Boolean(
+                                (cogsAccObj.id && j.debitAccountId === cogsAccObj.id) ||
+                                (cogsAccObj.code && (j.debitAccountId === cogsAccObj.code || (j as any).debitAccountCode === cogsAccObj.code)) ||
+                                dName.includes('cost of goods') || dName.includes('cogs')
+                            );
+                            const isCredit = Boolean(
+                                (cogsAccObj.id && j.creditAccountId === cogsAccObj.id) ||
+                                (cogsAccObj.code && (j.creditAccountId === cogsAccObj.code || (j as any).creditAccountCode === cogsAccObj.code)) ||
+                                cName.includes('cost of goods') || cName.includes('cogs')
+                            );
+                            if (isDebit && !isCredit) journalCogsDelta += amt;
+                            else if (isCredit && !isDebit) journalCogsDelta -= amt;
+                        });
+                        liveCogsBal = Math.max(cogsAccObj.currentBalance || 0, (cogsAccObj.openingBalance || 0) + journalCogsDelta);
+                    }
+
+                    const generalExpensesTotal = (transactions || [])
+                        .filter(t => t.type === 'EXPENSE' && !isSupplierPaymentTransaction(t))
+                        .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+                    const totalOperationalExpenses = generalExpensesTotal + liveCogsBal;
+                    const netOperatingProfit = totalOperationalRevenue - totalOperationalExpenses;
+                    liveBal = (acc.openingBalance || 0) + netOperatingProfit + journalEquityDelta;
+                } else {
+                    liveBal = Math.max(0, (acc.openingBalance || 0) + journalEquityDelta);
                 }
             }
+        }
 
             return {
                 ...acc,
@@ -416,8 +569,14 @@ export const ChartOfAccountsManager: React.FC = () => {
                 totalAssets += acc.currentBalance;
             else if (acc.classification === 'Liability')
                 totalLiabilities += acc.currentBalance;
-            else if (acc.classification === 'Equity')
-                totalEquity += acc.currentBalance;
+            else if (acc.classification === 'Equity') {
+                const isContra = acc.normalBalance === 'Debit' || acc.code === '3002' || (acc.name || '').toLowerCase().includes('drawing') || (acc.nameBn || '').includes('উত্তোলন');
+                if (isContra) {
+                    totalEquity -= acc.currentBalance;
+                } else {
+                    totalEquity += acc.currentBalance;
+                }
+            }
             else if (acc.classification === 'Revenue') {
                 totalRevenue += acc.currentBalance;
                 const isPrj = (
@@ -439,7 +598,6 @@ export const ChartOfAccountsManager: React.FC = () => {
                 totalExpenses += acc.currentBalance;
                 const isPrj = (
                     acc.code === '5206' || 
-                    acc.code === '5300' || 
                     acc.id === 'coa-5206' || 
                     (acc.name || '').toLowerCase().includes('project') || 
                     (acc.nameBn || '').includes('প্রজেক্ট')
@@ -452,7 +610,7 @@ export const ChartOfAccountsManager: React.FC = () => {
             }
         });
 
-        const txExpense = (transactions || []).filter(t => t.type === 'EXPENSE').reduce((s, t) => s + t.amount, 0);
+        const txExpense = (transactions || []).filter(t => t.type === 'EXPENSE' && !isSupplierPaymentTransaction(t)).reduce((s, t) => s + t.amount, 0);
 
         return { 
             totalAssets, 
@@ -723,15 +881,6 @@ export const ChartOfAccountsManager: React.FC = () => {
         </div>
       </div>
 
-      {/* Floating Sync Toaster (Auto-dismisses in 1.5s) */}
-      {syncSuccessMsg && (
-        <div className="fixed top-20 right-6 z-50 bg-emerald-900/95 backdrop-blur-md text-white px-4 py-3 rounded-2xl shadow-2xl border border-emerald-500/40 flex items-center gap-2.5 text-xs font-bold animate-in fade-in slide-in-from-top-4 transition-all duration-300">
-          <CheckCircle2 className="w-4 h-4 text-emerald-300 shrink-0" />
-          <span>{syncSuccessMsg}</span>
-          <button type="button" onClick={() => setSyncSuccessMsg(null)} className="ml-2 text-emerald-300 hover:text-white font-bold text-sm cursor-pointer">✕</button>
-        </div>
-      )}
-
       {/* Action Header & Filters */}
       <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex flex-col sm:flex-row items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
@@ -752,22 +901,6 @@ export const ChartOfAccountsManager: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
-          <button
-            type="button"
-            onClick={() => {
-              if (syncProjectsWithAccounting) {
-                const res = syncProjectsWithAccounting();
-                setSyncSuccessMsg(`Projects Aligned: ${res.salesSynced} sales & ${res.expensesSynced} expenses synced (Tk ${res.totalAmount.toLocaleString()})`);
-                setTimeout(() => setSyncSuccessMsg(null), 1500);
-              }
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-emerald-300 bg-emerald-50 text-emerald-800 rounded-xl hover:bg-emerald-100 transition-all cursor-pointer shadow-2xs"
-            title="Click to dynamically synchronize all projects with Chart of Accounts"
-          >
-            <Layers className="w-3.5 h-3.5 text-emerald-600"/>
-            <span>{'Sync Projects'}</span>
-          </button>
-
           <input type="file" accept=".xlsx, .xls, .csv" id="coa-upload" className="hidden" onChange={handleImportExcel}/>
           <label htmlFor="coa-upload" className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 cursor-pointer">
             <Upload className="w-3.5 h-3.5"/>
@@ -844,12 +977,20 @@ export const ChartOfAccountsManager: React.FC = () => {
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
-                        <button type="button" onClick={() => handleOpenEdit(acc)} className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg" title="Edit">
-                          <Edit2 className="w-3.5 h-3.5"/>
-                        </button>
-                        <button type="button" onClick={() => { setDeleteError(null); setAccountToDelete(acc); }} className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer" title="Delete">
-                          <Trash2 className="w-3.5 h-3.5"/>
-                        </button>
+                        {canEditAccount && (
+                          <button type="button" onClick={() => handleOpenEdit(acc)} className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg" title="Edit">
+                            <Edit2 className="w-3.5 h-3.5"/>
+                          </button>
+                        )}
+                        {acc.isSystem ? (
+                          <span className="p-1.5 text-slate-300 cursor-not-allowed" title="System account is core to the ERP and cannot be deleted">
+                            <Lock className="w-3.5 h-3.5"/>
+                          </span>
+                        ) : canDeleteAccount ? (
+                          <button type="button" onClick={() => { setDeleteError(null); setAccountToDelete(acc); }} className="p-1.5 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer" title="Delete">
+                            <Trash2 className="w-3.5 h-3.5"/>
+                          </button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>)))}

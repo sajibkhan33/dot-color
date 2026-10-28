@@ -23,7 +23,13 @@ export interface ProjectManagementModuleProps {
     onOpenInvoiceModal?: (id: string, mode?: 'invoice' | 'challan' | 'pos', options?: { autoPrint?: boolean; isPadMode?: boolean }) => void;
 }
 export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = ({ onOpenInvoiceModal }) => {
-    const { projects, addProject, updateProject, deleteProject, addProjectSales, collectProjectDue, addProjectExpense, addProjectExpenses, deleteProjectSales, deleteProjectExpense, syncProjectsWithAccounting, journalEntries = [], chartOfAccounts = [], expenseHeads = [], language, profile, paymentMethods = [], invoices = [], linkInvoiceToProject, unlinkInvoiceFromProject, createProjectFromInvoice, generateInvoiceForProject, syncProjectInvoice, customers = [], transactions = [], accountBalances, } = useApp();
+    const { projects, addProject, updateProject, deleteProject, addProjectSales, collectProjectDue, addProjectExpense, addProjectExpenses, deleteProjectSales, deleteProjectExpense, syncProjectsWithAccounting, journalEntries = [], chartOfAccounts = [], expenseHeads = [], language, profile, paymentMethods = [], invoices = [], linkInvoiceToProject, unlinkInvoiceFromProject, createProjectFromInvoice, generateInvoiceForProject, syncProjectInvoice, customers = [], transactions = [], accountBalances, checkPermission, activeStaff } = useApp();
+
+    const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
+        (activeStaff?.name || '').toLowerCase().includes('super admin');
+    const canManageProjects = isSuperAdmin || Boolean(checkPermission && checkPermission('projects.manage'));
     const isBn = language === 'bn';
     const [searchTerm, setSearchType] = useState(() => {
         try {
@@ -47,6 +53,13 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
             }
         }
     }, [searchTerm, projects]);
+
+    // Background auto-alignment with Accounting COA on module mount
+    useEffect(() => {
+        if (syncProjectsWithAccounting) {
+            syncProjectsWithAccounting();
+        }
+    }, []);
     const [syncNotice, setSyncNotice] = useState<string | null>(null);
     // Modals state
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -70,7 +83,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
     const [linkingProject, setLinkingProject] = useState<Project | null>(null);
     const [linkInvoiceForm, setLinkInvoiceForm] = useState({
         invoiceId: '',
-        chartOfAccountId: 'coa-4051',
+        chartOfAccountId: 'coa-4002',
         syncSalesItem: true,
     });
     // New Project Form State
@@ -85,7 +98,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
         endDate: '',
         notes: '',
         invoiceId: '',
-        chartOfAccountId: 'coa-4051',
+        chartOfAccountId: 'coa-4002',
         includeSalesItem: true,
         autoGenerateInvoice: true,
     });
@@ -157,24 +170,55 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
     }, [expenseRows]);
     const [breakdownSearchTerm, setBreakdownSearchTerm] = useState('');
 
+    const activeProjectForExpense = useMemo(() => {
+        if (!showExpenseModal) return null;
+        return (projects || []).find(p => p.id === showExpenseModal) || null;
+    }, [showExpenseModal, projects]);
+
+    const isSalesRevenueProject = useMemo(() => {
+        if (!activeProjectForExpense) return false;
+        const coaId = activeProjectForExpense.chartOfAccountId;
+        const matchedCoa = (chartOfAccounts || []).find(a => a.id === coaId || a.code === coaId);
+        const code = matchedCoa?.code || activeProjectForExpense.projectAccountCode || '';
+        const name = (matchedCoa?.name || '').toLowerCase();
+        return code === '4001' || name.includes('sales revenue') || (name.includes('বিক্রয় আয়') && !name.includes('প্রজেক্ট'));
+    }, [activeProjectForExpense, chartOfAccounts]);
+
     const availableExpenseAccounts = useMemo(() => {
-        const list = (chartOfAccounts || []).filter(a => a.classification === 'Expense' && a.isActive !== false);
-        if (list.length === 0) {
-            return [
-                { id: 'coa-5206', code: '5206', name: 'Project Expense', nameBn: '' },
-                { id: 'coa-5100', code: '5100', name: 'Conveyance, Courier & Delivery Logistics', nameBn: '' },
-                { id: 'coa-5201', code: '5201', name: 'Staff Salaries, Wages & Overtime', nameBn: '' },
-                { id: 'coa-5001', code: '5001', name: 'Cost of Goods Sold - Raw Materials', nameBn: '' },
-            ];
+        const allExpenseAccounts = (chartOfAccounts || []).filter(a => a.classification === 'Expense' && a.isActive !== false);
+
+        if (isSalesRevenueProject) {
+            // Case 2: Project uses Sales Revenue -> Show general company expenses, strictly EXCLUDE [5206] Project Expense
+            const generalList = allExpenseAccounts.filter(a => {
+                const isProjectExp = a.code === '5206' || a.id === 'coa-5206' || a.name.toLowerCase().includes('project') || (a.nameBn && a.nameBn.includes('প্রজেক্ট'));
+                return !isProjectExp;
+            });
+            if (generalList.length > 0) {
+                return [...generalList].sort((a, b) => a.code.localeCompare(b.code));
+            }
+            return allExpenseAccounts;
         }
-        return [...list].sort((a, b) => {
-            const isPrjA = a.code === '5206' || a.code === '5300' || a.name.toLowerCase().includes('project');
-            const isPrjB = b.code === '5206' || b.code === '5300' || b.name.toLowerCase().includes('project');
-            if (isPrjA && !isPrjB) return -1;
-            if (!isPrjA && isPrjB) return 1;
-            return a.code.localeCompare(b.code);
+
+        // Case 1 (Default): Project uses Project Sales (4002) -> ONLY show [5206] Project Expense
+        const projectSpecificList = allExpenseAccounts.filter(a => {
+            return a.code === '5206' || a.id === 'coa-5206' || a.name.toLowerCase().includes('project') || (a.nameBn && a.nameBn.includes('প্রজেক্ট'));
         });
-    }, [chartOfAccounts]);
+
+        if (projectSpecificList.length > 0) {
+            return projectSpecificList;
+        }
+
+        return [
+            { id: 'coa-5206', code: '5206', name: 'Project Expense', nameBn: 'প্রজেক্ট খরচ' } as any,
+        ];
+    }, [chartOfAccounts, isSalesRevenueProject]);
+
+    const defaultProjectExpAcc = useMemo(() => {
+        if (availableExpenseAccounts.length > 0) {
+            return availableExpenseAccounts[0];
+        }
+        return { code: '5206', name: 'Project Expense', id: 'coa-5206' };
+    }, [availableExpenseAccounts]);
 
     const availablePaymentAccounts = useMemo(() => {
         const list = (chartOfAccounts || []).filter(a => a.classification === 'Asset' && !a.name.toLowerCase().includes('receivable') && (
@@ -215,23 +259,55 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
         const revs = (chartOfAccounts || []).filter(a => a.classification === 'Revenue' && a.isActive !== false);
         if (revs.length === 0) {
             return [
+                { id: 'coa-4002', code: '4002', name: 'Project Sales', nameBn: 'প্রজেক্ট সেলস' },
                 { id: 'coa-4051', code: '4051', name: 'Project Sales Income', nameBn: 'প্রজেক্ট সেলস ইনকাম' },
                 { id: 'coa-4010', code: '4010', name: 'Digital Printing & Flex Banner Sales', nameBn: 'ডিজিটাল প্রিন্টিং বিক্রয়' },
             ];
         }
         return [...revs].sort((a, b) => {
-            if (a.code === '4051' || a.id === 'coa-4051') return -1;
-            if (b.code === '4051' || b.id === 'coa-4051') return 1;
+            const isPrjA = a.code === '4002' || a.code === '4051' || a.id === 'coa-4002' || a.id === 'coa-4051' || a.name.toLowerCase().includes('project');
+            const isPrjB = b.code === '4002' || b.code === '4051' || b.id === 'coa-4002' || b.id === 'coa-4051' || b.name.toLowerCase().includes('project');
+            if (isPrjA && !isPrjB) return -1;
+            if (!isPrjA && isPrjB) return 1;
             return a.code.localeCompare(b.code);
         });
     }, [chartOfAccounts]);
+
+    const defaultProjectRevAccId = useMemo(() => {
+        const found = availableRevenueAccounts.find(a => 
+            a.code === '4002' || 
+            a.code === '4051' || 
+            a.id === 'coa-4002' || 
+            a.id === 'coa-4051' || 
+            a.name.toLowerCase().includes('project') || 
+            (a.nameBn && a.nameBn.includes('প্রজেক্ট'))
+        );
+        return found ? found.id : (availableRevenueAccounts[0]?.id || 'coa-4002');
+    }, [availableRevenueAccounts]);
+
+    useEffect(() => {
+        if (defaultProjectRevAccId) {
+            setNewProject(prev => {
+                if (!prev.chartOfAccountId || prev.chartOfAccountId === 'coa-4051' || prev.chartOfAccountId === 'coa-4001') {
+                    return { ...prev, chartOfAccountId: defaultProjectRevAccId };
+                }
+                return prev;
+            });
+            setLinkInvoiceForm(prev => {
+                if (!prev.chartOfAccountId || prev.chartOfAccountId === 'coa-4051' || prev.chartOfAccountId === 'coa-4001') {
+                    return { ...prev, chartOfAccountId: defaultProjectRevAccId };
+                }
+                return prev;
+            });
+        }
+    }, [defaultProjectRevAccId]);
 
     const projectRevAcc = useMemo(() => {
         return chartOfAccounts.find(a => a.classification === 'Revenue' && (a.code === '4002' || a.code === '4051' || a.id === 'coa-4002' || a.id === 'coa-4051' || a.name.toLowerCase().includes('project') || a.code === '4060')) || { code: '4002', name: 'Project Sales', id: 'coa-4002' };
     }, [chartOfAccounts]);
 
     const projectExpAcc = useMemo(() => {
-        return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5206' || a.code === '5300' || a.id === 'coa-5206' || a.name.toLowerCase().includes('project'))) ||
+        return chartOfAccounts.find(a => a.classification === 'Expense' && (a.code === '5206' || a.id === 'coa-5206' || a.name.toLowerCase().includes('project'))) ||
                chartOfAccounts.find(a => a.classification === 'Expense' && a.code === '5100' && a.name.toLowerCase().includes('project')) ||
                chartOfAccounts.find(a => a.classification === 'Expense') ||
                { code: '5206', name: 'Project Expense', id: 'coa-5206' };
@@ -385,7 +461,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
             endDate: '',
             notes: '',
             invoiceId: '',
-            chartOfAccountId: 'coa-4051',
+            chartOfAccountId: defaultProjectRevAccId || 'coa-4002',
             includeSalesItem: true,
             autoGenerateInvoice: true,
         });
@@ -500,7 +576,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                 amount: '',
                 note: '',
                 isDropdownOpen: false,
-                linkedAccountId: projectExpAcc.id,
+                linkedAccountId: defaultProjectExpAcc.id,
                 paymentMethod: 'Cash in Hand',
             },
         ]);
@@ -522,8 +598,10 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
             return;
         const batchId = `exp-batch-${Date.now()}`;
         const itemsToSave: Omit<ProjectExpenseItem, 'id'>[] = validRows.map((r) => {
-            const defaultCOA = projectExpAcc;
-            const resolvedAccountId = r.linkedAccountId || defaultCOA.id;
+            const defaultCOA = defaultProjectExpAcc;
+            const resolvedAccountId = (r.linkedAccountId && availableExpenseAccounts.some(a => a.id === r.linkedAccountId))
+                ? r.linkedAccountId
+                : defaultCOA.id;
             const targetCOA = chartOfAccounts.find(a => a.id === resolvedAccountId) || defaultCOA;
             const finalCategory = r.category?.trim() || r.categorySearch?.trim() || targetCOA.name || 'Project Expense';
             const payMethod = r.paymentMethod || 'Cash in Hand';
@@ -560,6 +638,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
             invoiceId: p.invoiceId || '',
             chartOfAccountId: p.chartOfAccountId || 'coa-4051',
             includeSalesItem: false,
+            autoGenerateInvoice: false,
         });
         setShowCreateModal(true);
     };
@@ -578,43 +657,30 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              if (syncProjectsWithAccounting) {
-                const res = syncProjectsWithAccounting();
-                setSyncNotice(`Projects Aligned: ${res.salesSynced} sales & ${res.expensesSynced} expenses synced (Tk ${res.totalAmount.toLocaleString()})`);
-                setTimeout(() => setSyncNotice(null), 1500);
-              }
-            }}
-            className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 rounded-xl font-bold text-xs transition-all cursor-pointer shadow-2xs"
-            title="Click to dynamically synchronize all project vouchers with Chart of Accounts"
-          >
-            <Layers className="w-3.5 h-3.5 text-emerald-600" />
-            <span>{'Sync COA'}</span>
-          </button>
-
-          <button type="button" onClick={() => {
-            setEditingProject(null);
-            setNewProject({
-                name: '',
-                nameBn: '',
-                clientName: '',
-                clientPhone: '',
-                budget: 0,
-                status: 'In Progress',
-                startDate: new Date().toISOString().split('T')[0],
-                endDate: '',
-                notes: '',
-                invoiceId: '',
-                chartOfAccountId: 'coa-4051',
-                includeSalesItem: true,
-            });
-            setShowCreateModal(true);
-        }} className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-sm transition-all cursor-pointer">
-            <Plus className="w-4 h-4"/>
-            <span>{'Create New Project'}</span>
-          </button>
+          {canManageProjects && (
+            <button type="button" onClick={() => {
+              setEditingProject(null);
+              setNewProject({
+                  name: '',
+                  nameBn: '',
+                  clientName: '',
+                  clientPhone: '',
+                  budget: 0,
+                  status: 'In Progress',
+                  startDate: new Date().toISOString().split('T')[0],
+                  endDate: '',
+                  notes: '',
+                  invoiceId: '',
+                  chartOfAccountId: defaultProjectRevAccId || 'coa-4002',
+                  includeSalesItem: true,
+                  autoGenerateInvoice: true,
+              });
+              setShowCreateModal(true);
+            }} className="flex items-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl shadow-sm transition-all cursor-pointer">
+              <Plus className="w-4 h-4"/>
+              <span>{'Create New Project'}</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -1001,49 +1067,68 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                         </div>
                       )}
 
-                      <button type="button" onClick={() => {
-                    setShowSalesModal(project.id);
-                    setSalesForm({
-                        invoiceNo: project.invoiceNo || '',
-                        description: '',
-                        date: new Date().toISOString().split('T')[0],
-                        clientName: project.clientName,
-                        generalNote: '',
-                        paymentRows: [
-                            { id: `pay-${Date.now()}-1`, method: 'Cash', amount: '', note: '' },
-                        ],
-                    });
-                }} className="px-2 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-colors cursor-pointer">
-                        + {'Add Sales'}
-                      </button>
+                      {canManageProjects && (
+                        <button type="button" onClick={() => {
+                          setShowSalesModal(project.id);
+                          setSalesForm({
+                              invoiceNo: project.invoiceNo || '',
+                              description: '',
+                              date: new Date().toISOString().split('T')[0],
+                              clientName: project.clientName,
+                              generalNote: '',
+                              paymentRows: [
+                                  { id: `pay-${Date.now()}-1`, method: 'Cash', amount: '', note: '' },
+                              ],
+                          });
+                        }} className="px-2 py-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-colors cursor-pointer">
+                          + {'Add Sales'}
+                        </button>
+                      )}
 
-                      <button type="button" onClick={() => {
-                    setShowExpenseModal(project.id);
-                    setExpenseDate(new Date().toISOString().split('T')[0]);
-                    setExpenseGeneralNote('');
-                    setExpenseRows([
-                        {
-                            id: `exp-${Date.now()}-1`,
-                            category: '',
-                            categorySearch: '',
-                            amount: '',
-                            note: '',
-                            isDropdownOpen: false,
-                            linkedAccountId: projectExpAcc.id,
-                            paymentMethod: 'Cash in Hand',
-                        },
-                    ]);
-                }} className="px-2 py-1 text-[11px] font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors cursor-pointer">
-                        + {'Add Expense'}
-                      </button>
+                      {canManageProjects && (
+                        <button type="button" onClick={() => {
+                          const isSalesRevProj = (() => {
+                              const coaId = project.chartOfAccountId;
+                              const matched = (chartOfAccounts || []).find(a => a.id === coaId || a.code === coaId);
+                              const code = matched?.code || project.projectAccountCode || '';
+                              const name = (matched?.name || '').toLowerCase();
+                              return code === '4001' || name.includes('sales revenue') || (name.includes('বিক্রয় আয়') && !name.includes('প্রজেক্ট'));
+                          })();
+                          const initialCoa = isSalesRevProj
+                              ? ((chartOfAccounts || []).find(a => a.classification === 'Expense' && a.code !== '5206' && !a.name.toLowerCase().includes('project') && a.isActive !== false) || projectExpAcc)
+                              : projectExpAcc;
 
-                      <button type="button" onClick={() => handleOpenEdit(project)} className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer" title="Edit Project">
-                        <Edit2 className="w-3.5 h-3.5"/>
-                      </button>
+                          setShowExpenseModal(project.id);
+                          setExpenseDate(new Date().toISOString().split('T')[0]);
+                          setExpenseGeneralNote('');
+                          setExpenseRows([
+                              {
+                                  id: `exp-${Date.now()}-1`,
+                                  category: '',
+                                  categorySearch: '',
+                                  amount: '',
+                                  note: '',
+                                  isDropdownOpen: false,
+                                  linkedAccountId: initialCoa.id,
+                                  paymentMethod: 'Cash in Hand',
+                              },
+                          ]);
+                        }} className="px-2 py-1 text-[11px] font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors cursor-pointer">
+                          + {'Add Expense'}
+                        </button>
+                      )}
 
-                      <button type="button" onClick={() => setProjectToDelete(project)} className="p-1 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer" title="Delete Project">
-                        <Trash2 className="w-3.5 h-3.5"/>
-                      </button>
+                      {canManageProjects && (
+                        <button type="button" onClick={() => handleOpenEdit(project)} className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer" title="Edit Project">
+                          <Edit2 className="w-3.5 h-3.5"/>
+                        </button>
+                      )}
+
+                      {canManageProjects && (
+                        <button type="button" onClick={() => setProjectToDelete(project)} className="p-1 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer" title="Delete Project">
+                          <Trash2 className="w-3.5 h-3.5"/>
+                        </button>
+                      )}
 
                       <button type="button" onClick={() => setExpandedProjectId(isExpanded ? null : project.id)} className="p-1 text-slate-500 hover:text-slate-800 hover:bg-slate-200 rounded-lg border border-slate-200 transition-colors cursor-pointer" title={isExpanded ? 'Collapse' : 'Expand full details'}>
                         {isExpanded ? <ChevronUp className="w-3.5 h-3.5"/> : <ChevronDown className="w-3.5 h-3.5"/>}
@@ -1335,7 +1420,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                   <div className="flex items-center justify-between">
                     <label className="font-bold text-indigo-950 flex items-center gap-1.5 text-xs">
                       <Receipt className="w-4 h-4 text-indigo-600" />
-                      <span>Create Against Sales Invoice (Optional) / বিক্রয় চালানের বিপরীতে প্রজেক্ট</span>
+                      <span>Create Against Sales Invoice (Optional)</span>
                     </label>
                     <span className="text-[10px] font-semibold text-indigo-600 bg-white px-2 py-0.5 rounded-full border border-indigo-200">
                       Unified COA
@@ -1422,10 +1507,10 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                         />
                         <div className="text-xs">
                           <span className="font-bold text-indigo-950 block">
-                            Auto-generate Official Sales Invoice in Sales & Orders / বিক্রয় চালানের তালিকাভুক্ত করুন
+                            Auto-generate Official Sales Invoice in Sales & Orders
                           </span>
                           <span className="text-[11px] text-indigo-700">
-                            প্রজেক্ট সেভ করার সাথে সাথে Sales & Orders ট্যাবে অফিসিয়াল চালান (DCC-INV) তৈরি হয়ে লিঙ্ক হয়ে যাবে।
+                            An official invoice (DCC-INV) will be automatically created and linked in Sales & Orders upon saving.
                           </span>
                         </div>
                       </label>
@@ -1439,14 +1524,14 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                 <div className="flex items-center justify-between">
                   <label className="font-bold text-emerald-950 flex items-center gap-1.5 text-xs">
                     <Landmark className="w-4 h-4 text-emerald-600" />
-                    <span>Unified Chart of Accounts Head (সমন্বিত এক হিসাব) *</span>
+                    <span>Unified Chart of Accounts Head *</span>
                   </label>
                   <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
                     Single COA Entry
                   </span>
                 </div>
                 <p className="text-[11px] text-emerald-800 font-medium">
-                  এই প্রজেক্ট এবং সংশ্লিষ্ট বিক্রয় চালানের হিসাব এই একক COA রেভিনিউ হেডে জমা হবে (কোনো বিভাজন বা ডুপ্লিকেট হবে না)।
+                  Project revenue and linked sales invoice will be recorded under this single COA revenue head.
                 </p>
                 <select
                   value={newProject.chartOfAccountId}
@@ -1455,7 +1540,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                 >
                   {availableRevenueAccounts.map((acc) => (
                     <option key={acc.id} value={acc.id}>
-                      [{acc.code}] {acc.name} {acc.nameBn ? `(${acc.nameBn})` : ''}
+                      [{acc.code}] {acc.name}
                     </option>
                   ))}
                 </select>
@@ -1473,7 +1558,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                   <label className="font-bold text-slate-700 block mb-1">
                     {'Bengali Name'}
                   </label>
-                  <input type="text" value={newProject.nameBn} onChange={(e) => setNewProject({ ...newProject, nameBn: e.target.value })} placeholder="যেমন: বন্দর নগরী প্রজেক্ট" className="w-full px-3 py-2 border border-slate-200 rounded-xl"/>
+                  <input type="text" value={newProject.nameBn} onChange={(e) => setNewProject({ ...newProject, nameBn: e.target.value })} placeholder="Project name in Bengali (optional)" className="w-full px-3 py-2 border border-slate-200 rounded-xl"/>
                 </div>
               </div>
 
@@ -1778,7 +1863,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                         <div className="sm:col-span-2">
                           <label className="text-[10px] font-bold text-slate-600 block mb-1">
-                            {'Expense Name / Category (খরচের বিবরণ - ঐচ্ছিক)'}
+                            {'Expense Name / Category (Optional)'}
                           </label>
                           <input
                             type="text"
@@ -1812,7 +1897,10 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
 
                       {/* Dynamic COA & Payment Account Linking */}
                       {(() => {
-                        const selectedCOAId = eRow.linkedAccountId || projectExpAcc.id;
+                        const defaultCOAId = defaultProjectExpAcc.id;
+                        const selectedCOAId = (eRow.linkedAccountId && availableExpenseAccounts.some(a => a.id === eRow.linkedAccountId))
+                            ? eRow.linkedAccountId
+                            : defaultCOAId;
                         const currentPayment = eRow.paymentMethod || 'Cash in Hand';
 
                         return (
@@ -1820,10 +1908,10 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                             <div className="flex items-center justify-between">
                               <span className="text-[10px] font-extrabold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
                                 <Layers className="w-3.5 h-3.5 text-amber-600" />
-                                <span>🔗 Linked Accounting Accounts (হিসাব খাতের সাথে লিঙ্ক)</span>
+                                <span>🔗 Linked Accounting Accounts</span>
                               </span>
                               <span className="text-[9px] text-amber-800 font-bold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                                Default: [5206] Project Expense
+                                Default: [{defaultProjectExpAcc.code}] {defaultProjectExpAcc.name}
                               </span>
                             </div>
 
@@ -1831,7 +1919,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                               {/* Debit Account: COA Expense Head */}
                               <div>
                                 <label className="text-[10px] font-bold text-rose-700 flex items-center gap-1 mb-1">
-                                  <span>Debit Account (খরচের খাত) *</span>
+                                  <span>Debit Account (Expense Head) *</span>
                                 </label>
                                 <select
                                   value={selectedCOAId}
@@ -1842,7 +1930,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                                 >
                                   {availableExpenseAccounts.map((acc) => (
                                     <option key={acc.id} value={acc.id}>
-                                      [{acc.code}] {acc.name} {acc.nameBn ? `(${acc.nameBn})` : ''}
+                                      [{acc.code}] {acc.name}
                                     </option>
                                   ))}
                                 </select>
@@ -1851,7 +1939,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                               {/* Credit Account: Payment Source */}
                               <div>
                                 <label className="text-[10px] font-bold text-emerald-700 flex items-center gap-1 mb-1">
-                                  <span>Paid Via / Credit (টাকা কোথা থেকে খরচ হয়েছে) *</span>
+                                  <span>Paid Via / Credit (Payment Source) *</span>
                                 </label>
                                 <select
                                   value={currentPayment}
@@ -1969,7 +2057,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
         const totalPaidSoFar = Math.max(0, (Number(collectingDueSale.sale.amount) || 0) - collectingDueSale.dueAmount);
 
         const selectedPm = depositPaymentMethods.find(p => p.name === collectDueForm.paymentMethod || p.id === collectDueForm.paymentMethod) || depositPaymentMethods[0];
-        const selectedBal = selectedPm ? getPaymentMethodLiveBalance(selectedPm, chartOfAccounts, transactions, invoices, accountBalances) : 0;
+        const selectedBal = selectedPm ? getPaymentMethodLiveBalance(selectedPm, chartOfAccounts, transactions, invoices, accountBalances, projects, journalEntries) : 0;
 
         return (
           <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
@@ -1978,7 +2066,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                 <div>
                   <h3 className="font-black text-slate-900 text-base flex items-center gap-2">
                     <Receipt className="w-5 h-5 text-emerald-600" />
-                    <span>Collect Project Due / বকেয়া আদায়</span>
+                    <span>Collect Project Due</span>
                   </h3>
                   <div className="text-[11px] text-slate-500 font-mono mt-0.5">
                     Project: {collectingDueSale.project.code} • {collectingDueSale.project.name}
@@ -2251,10 +2339,10 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                       className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium text-xs bg-white cursor-pointer disabled:bg-slate-100 disabled:text-slate-400"
                     >
                       {depositPaymentMethods.map((pm) => {
-                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, projects, journalEntries);
                         return (
                           <option key={pm.id} value={pm.name}>
-                            {pm.name} {pm.nameBn ? `(${pm.nameBn})` : ''} — [{profile.currencySymbol}{bal.toLocaleString()}]
+                            {pm.name} — [{profile.currencySymbol}{bal.toLocaleString()}]
                           </option>
                         );
                       })}
@@ -2391,7 +2479,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
               {/* Select Invoice */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Select Sales Invoice (চালান নির্বাচন করুন) *
+                  Select Sales Invoice *
                 </label>
                 <select
                   required
@@ -2440,14 +2528,14 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                 <div className="flex items-center justify-between">
                   <label className="font-bold text-emerald-950 flex items-center gap-1.5 text-xs">
                     <Landmark className="w-4 h-4 text-emerald-600" />
-                    <span>Unified Chart of Accounts Head (সমন্বিত এক হিসাব) *</span>
+                    <span>Unified Chart of Accounts Head *</span>
                   </label>
                   <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full">
                     Single Account
                   </span>
                 </div>
                 <p className="text-[11px] text-emerald-800 font-medium">
-                  এই প্রজেক্ট এবং নির্বাচিত বিক্রয় চালানটির মোট আয় একক এই একাউন্ট হেডে সংকলিত হবে। আলাদা কোনো ডুপ্লিকেট খতিয়ান হবে না।
+                  Project revenue and linked invoice will be recorded under this single COA head without duplicate entries.
                 </p>
                 <select
                   value={linkInvoiceForm.chartOfAccountId}
@@ -2456,7 +2544,7 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                 >
                   {availableRevenueAccounts.map((acc) => (
                     <option key={acc.id} value={acc.id}>
-                      [{acc.code}] {acc.name} {acc.nameBn ? `(${acc.nameBn})` : ''}
+                      [{acc.code}] {acc.name}
                     </option>
                   ))}
                 </select>
@@ -2472,10 +2560,10 @@ export const ProjectManagementModule: React.FC<ProjectManagementModuleProps> = (
                 />
                 <div className="space-y-0.5">
                   <span className="font-bold text-slate-900 block text-xs">
-                    Import invoice billing into project sales / প্রজেক্ট সেলসে চালানের টাকা যোগ করুন
+                    Import invoice billing into project sales
                   </span>
                   <span className="text-[11px] text-slate-500 block leading-tight">
-                    চালানের মোট টাকা ও বর্তমান বকেয়া প্রজেক্টের Sales Income এবং Accounts Receivable এ সমন্বয় করবে।
+                    Invoice total and balance due will be synchronized with Project Sales Income and Accounts Receivable.
                   </span>
                 </div>
               </label>

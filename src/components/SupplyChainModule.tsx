@@ -1,10 +1,20 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
 import { PurchaseOrder, Supplier, PaymentMethod, PurchaseItem } from '../types';
-import { getPaymentMethodLiveBalance, calculateSingleAccountBalance, matchChannelToAccount } from '../utils/accountUtils';
-import { Truck, Plus, Search, CheckCircle2, Clock, Building2, DollarSign, AlertCircle, FileCheck, UserCheck, Package, Calendar, Phone, Factory, ArrowRight, Edit2, Trash2, CreditCard, Wallet, Landmark, Smartphone, Receipt, ExternalLink, MapPin, Mail, User, PackageCheck, } from 'lucide-react';
+import { getPaymentMethodLiveBalance, calculateSingleAccountBalance, matchChannelToAccount, getPurchaseOrderPayments } from '../utils/accountUtils';
+import { Truck, Plus, Search, CheckCircle2, Clock, Building2, DollarSign, AlertCircle, FileCheck, UserCheck, Package, Calendar, Phone, Factory, ArrowRight, Edit2, Trash2, CreditCard, Wallet, Landmark, Smartphone, Receipt, ExternalLink, MapPin, Mail, User, PackageCheck, Banknote, History, } from 'lucide-react';
 export const SupplyChainModule: React.FC = () => {
-    const { purchaseOrders = [], suppliers = [], products = [], profile, language, accountBalances, paymentMethods = [], chartOfAccounts = [], transactions = [], invoices = [], addPurchaseOrder, updatePurchaseOrder, deletePurchaseOrder, receivePurchaseOrder, payPurchaseOrder, paySupplier, paySupplierDue, addSupplier, updateSupplier, deleteSupplier, } = useApp();
+    const { purchaseOrders = [], suppliers = [], products = [], profile, language, accountBalances, paymentMethods = [], chartOfAccounts = [], transactions = [], invoices = [], journalEntries = [], addPurchaseOrder, updatePurchaseOrder, deletePurchaseOrder, receivePurchaseOrder, payPurchaseOrder, paySupplier, paySupplierDue, addSupplier, updateSupplier, deleteSupplier, checkPermission, activeStaff } = useApp();
+
+    const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
+        (activeStaff?.name || '').toLowerCase().includes('super admin');
+    const canCreatePO = isSuperAdmin || Boolean(checkPermission && checkPermission('supply.create_po'));
+    const canReceiveStock = isSuperAdmin || Boolean(checkPermission && checkPermission('supply.receive_stock'));
+    const canManageSuppliers = isSuperAdmin || Boolean(checkPermission && checkPermission('supply.manage_suppliers'));
+    const canPaySupplier = isSuperAdmin || Boolean(checkPermission && checkPermission('supply.pay_supplier'));
+
     const activePaymentMethods = useMemo(() => {
         const list = (paymentMethods || []).filter((p) => p.isEnabled);
         return list.length > 0 ? list : [{ id: 'pm-cash', name: 'Cash', nameBn: 'নগদ', type: 'cash' as const, isEnabled: true }];
@@ -34,6 +44,7 @@ export const SupplyChainModule: React.FC = () => {
     const [supplierPayAccount, setSupplierPayAccount] = useState<string>(() => activePaymentMethods[0]?.name || 'Cash');
     const [paySupplierTargetPoId, setPaySupplierTargetPoId] = useState<string>('all');
     const [selectedVendorProfile, setSelectedVendorProfile] = useState<Supplier | null>(null);
+    const [viewingPaymentDetailsPO, setViewingPaymentDetailsPO] = useState<PurchaseOrder | null>(null);
     // Specific PO Payment Modal
     const [poToPay, setPoToPay] = useState<PurchaseOrder | null>(null);
     const [poPayAmount, setPoPayAmount] = useState<number>(0);
@@ -150,12 +161,12 @@ export const SupplyChainModule: React.FC = () => {
             (p) => p.name.toLowerCase().trim() === lower || p.id.toLowerCase().trim() === lower
         );
         if (matchedPm) {
-            return getPaymentMethodLiveBalance(matchedPm, chartOfAccounts, transactions, invoices, accountBalances);
+            return getPaymentMethodLiveBalance(matchedPm, chartOfAccounts, transactions, invoices, accountBalances, [], journalEntries);
         }
         // 2. Match directly with Chart of Accounts
         const coaAcc = matchChannelToAccount(accountOrMethodName, chartOfAccounts, activePaymentMethods);
         if (coaAcc) {
-            return calculateSingleAccountBalance(coaAcc, transactions, invoices);
+            return calculateSingleAccountBalance(coaAcc, transactions, invoices, [], journalEntries);
         }
         // 3. Fallbacks based on keyword
         if (lower.includes('bank') || lower.includes('city') || lower.includes('southeast') || lower.includes('brac')) {
@@ -498,7 +509,7 @@ export const SupplyChainModule: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 w-full md:w-auto">
-          {activeSubTab === 'suppliers' && (<button type="button" onClick={() => {
+          {activeSubTab === 'suppliers' && canManageSuppliers && (<button type="button" onClick={() => {
                 setEditingSupplier(null);
                 setNewSupName('');
                 setNewSupContact('');
@@ -518,7 +529,7 @@ export const SupplyChainModule: React.FC = () => {
               <span>{'Add Vendor'}</span>
             </button>)}
 
-          {activeSubTab === 'orders' && (<button type="button" onClick={() => openCreatePOModal()} className="w-full md:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer">
+          {activeSubTab === 'orders' && canCreatePO && (<button type="button" onClick={() => openCreatePOModal()} className="w-full md:w-auto px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer">
               <Truck className="w-4 h-4"/>
               <span>{'+ Create Purchase Order'}</span>
             </button>)}
@@ -615,29 +626,68 @@ export const SupplyChainModule: React.FC = () => {
                             <span className="text-[9px] text-slate-400 font-medium">
                               {'Due upon receiving'}
                             </span>
-                          </div>) : (<>
-                            <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${(po.paymentStatus === 'Paid' || po.dueAmount <= 0)
-                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                        : (po.paymentStatus === 'Partial' || po.paidAmount > 0)
-                            ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                            : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
-                              {(po.paymentStatus === 'Paid' || po.dueAmount <= 0)
-                        ? ('Paid')
-                        : (po.paymentStatus === 'Partial' || po.paidAmount > 0)
-                            ? ('Partial')
-                            : ('Due')}
-                            </span>
-                            {po.dueAmount > 0 && (<button type="button" onClick={() => {
-                            setPoToPay(po);
-                            setPoPayAmount(po.dueAmount);
-                            const defMethod = activePaymentMethods[0]?.name || 'Cash';
-                            setPoPayAccount(defMethod);
-                            setPoPayMethod(defMethod);
-                        }} className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded text-[10px] font-bold cursor-pointer transition-colors shadow-2xs" title={`Pay bill for ${po.poNo}`}>
-                                <CreditCard className="w-3 h-3 text-slate-950"/>
-                                <span>{'Pay Bill'}</span>
-                              </button>)}
-                          </>)}
+                          </div>) : (() => {
+                            const poPayments = getPurchaseOrderPayments(po, transactions, journalEntries, paymentMethods);
+                            return (
+                              <>
+                                <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${(po.paymentStatus === 'Paid' || po.dueAmount <= 0)
+                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                  : (po.paymentStatus === 'Partial' || po.paidAmount > 0)
+                                      ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                      : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
+                                  {(po.paymentStatus === 'Paid' || po.dueAmount <= 0)
+                                    ? 'Paid'
+                                    : (po.paymentStatus === 'Partial' || po.paidAmount > 0)
+                                        ? 'Partial'
+                                        : 'Due'}
+                                </span>
+
+                                {poPayments.length > 1 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => setViewingPaymentDetailsPO(po)}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-[10px] font-extrabold cursor-pointer transition-colors shadow-2xs"
+                                    title={poPayments.map(p => `${p.channel}: ${profile.currencySymbol}${(Number(p.amount) || 0).toLocaleString()}`).join(' • ')}
+                                  >
+                                    <span>{poPayments.length} Channels</span>
+                                    <span className="text-[9px]">▾</span>
+                                  </button>
+                                ) : poPayments.length === 1 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => setViewingPaymentDetailsPO(po)}
+                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 hover:bg-slate-200 border border-slate-200 text-[10px] text-slate-700 font-semibold cursor-pointer transition-colors"
+                                    title={`Click to view payment breakdown (${poPayments[0].channel})`}
+                                  >
+                                    <span>{poPayments[0].channel}</span>
+                                    <span className="text-[9px] text-slate-400">▾</span>
+                                  </button>
+                                ) : po.paymentMethod ? (
+                                  <span className="text-[10px] text-slate-500 font-medium">
+                                    {po.paymentMethod}
+                                  </span>
+                                ) : null}
+
+                                {po.dueAmount > 0 && canPaySupplier && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setPoToPay(po);
+                                      setPoPayAmount(po.dueAmount);
+                                      const defMethod = activePaymentMethods[0]?.name || 'Cash';
+                                      setPoPayAccount(defMethod);
+                                      setPoPayMethod(defMethod);
+                                    }}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded text-[10px] font-bold cursor-pointer transition-colors shadow-2xs mt-0.5"
+                                    title={`Pay bill for ${po.poNo}`}
+                                  >
+                                    <CreditCard className="w-3 h-3 text-slate-950"/>
+                                    <span>{'Pay Bill'}</span>
+                                  </button>
+                                )}
+                              </>
+                            );
+                          })()}
                       </div>
                     </td>
 
@@ -657,7 +707,7 @@ export const SupplyChainModule: React.FC = () => {
 
                      <td className="py-3.5 px-4 text-center">
                       <div className="flex items-center justify-center gap-2">
-                        {po.status === 'Ordered' ? (<button type="button" onClick={() => {
+                        {po.status === 'Ordered' ? (canReceiveStock ? (<button type="button" onClick={() => {
                         setPoToReceive(po);
                         setReceiveItemsState(po.items.map(i => ({
                             productId: i.productId,
@@ -669,13 +719,13 @@ export const SupplyChainModule: React.FC = () => {
                     }} className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold flex items-center gap-1 shadow-2xs cursor-pointer">
                             <CheckCircle2 className="w-3.5 h-3.5"/>
                             <span>{'Receive'}</span>
-                          </button>) : (<span className="text-slate-400 text-[10px] flex items-center gap-1 font-semibold">
+                          </button>) : (<span className="text-slate-400 text-[10px] font-semibold">{'Ordered'}</span>)) : (<span className="text-slate-400 text-[10px] flex items-center gap-1 font-semibold">
                             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600"/>
                             {'Done'}
                           </span>)}
 
                         {/* Direct Pay button if PO has due */}
-                        {po.dueAmount > 0 && (<button type="button" onClick={() => {
+                        {po.dueAmount > 0 && canPaySupplier && (<button type="button" onClick={() => {
                         setPoToPay(po);
                         setPoPayAmount(po.dueAmount);
                         const defMethod = activePaymentMethods[0]?.name || 'Cash';
@@ -686,7 +736,7 @@ export const SupplyChainModule: React.FC = () => {
                             <span>{'Pay'}</span>
                           </button>)}
 
-                        {po.status !== 'Received' && (<button type="button" onClick={() => {
+                        {po.status !== 'Received' && canCreatePO && (<button type="button" onClick={() => {
                         setEditingPO(po);
                         setPoFormError(null);
                         setSelectedSupplierId(po.supplierId);
@@ -708,7 +758,7 @@ export const SupplyChainModule: React.FC = () => {
                             <Edit2 className="w-3.5 h-3.5"/>
                           </button>)}
 
-                        {po.status !== 'Received' && (<button type="button" onClick={() => setPoToDelete(po)} className="p-1 text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 rounded-lg transition-all inline-flex items-center justify-center cursor-pointer" title={'Delete'}>
+                        {po.status !== 'Received' && canCreatePO && (<button type="button" onClick={() => setPoToDelete(po)} className="p-1 text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 rounded-lg transition-all inline-flex items-center justify-center cursor-pointer" title={'Delete'}>
                             <Trash2 className="w-3.5 h-3.5"/>
                           </button>)}
                       </div>
@@ -812,7 +862,7 @@ export const SupplyChainModule: React.FC = () => {
                           </button>
 
                           {/* Quick Pay button if balanceDue > 0 */}
-                          {balanceDue > 0 && (<button type="button" onClick={() => {
+                          {balanceDue > 0 && canPaySupplier && (<button type="button" onClick={() => {
                             setPaySupplierModal(s);
                             setSupplierPayAmount(balanceDue);
                             const defMethod = activePaymentMethods[0]?.name || 'Cash';
@@ -823,7 +873,7 @@ export const SupplyChainModule: React.FC = () => {
                               <span>{'Pay'}</span>
                             </button>)}
 
-                          <button type="button" onClick={() => {
+                          {canManageSuppliers && (<button type="button" onClick={() => {
                         setEditingSupplier(s);
                         setNewSupName(s.name);
                         setNewSupContact(s.contactPerson || '');
@@ -851,11 +901,11 @@ export const SupplyChainModule: React.FC = () => {
                         setShowSupplierModal(true);
                     }} className="p-1 text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg transition-all inline-flex items-center justify-center cursor-pointer" title={'Edit'}>
                             <Edit2 className="w-3.5 h-3.5"/>
-                          </button>
+                          </button>)}
 
-                          <button type="button" onClick={() => setSupplierToDelete(s)} className="p-1 text-slate-600 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 rounded-lg transition-all inline-flex items-center justify-center cursor-pointer" title={'Delete'}>
+                          {canManageSuppliers && (<button type="button" onClick={() => setSupplierToDelete(s)} className="p-1 text-slate-600 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 rounded-lg transition-all inline-flex items-center justify-center cursor-pointer" title={'Delete'}>
                             <Trash2 className="w-3.5 h-3.5"/>
-                          </button>
+                          </button>)}
                         </div>
                       </td>
                     </tr>);
@@ -1066,7 +1116,7 @@ export const SupplyChainModule: React.FC = () => {
                     </label>
                     <select value={poPaymentMethod} onChange={(e) => setPoPaymentMethod(e.target.value)} className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-semibold">
                       {activePaymentMethods.map((pm) => {
-                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, [], journalEntries);
                         return (
                           <option key={pm.id} value={pm.name}>
                             {pm.type === 'bank' ? '🏦' : pm.type === 'mfs' ? '📱' : '💵'} {pm.name} {pm.accountNumber ? `(${pm.accountNumber})` : ''} — [{profile.currencySymbol}{bal.toLocaleString()}]
@@ -1374,7 +1424,7 @@ export const SupplyChainModule: React.FC = () => {
                         {'Pending orders: '}
                         {profile.currencySymbol}{pendingTotal.toLocaleString()}
                       </span>)}
-                    {balanceDue > 0 ? (<button type="button" onClick={() => {
+                    {balanceDue > 0 ? (canPaySupplier ? (<button type="button" onClick={() => {
                         setPaySupplierModal(liveVendor);
                         setSupplierPayAmount(balanceDue);
                         const defMethod = activePaymentMethods[0]?.name || 'Cash';
@@ -1383,7 +1433,7 @@ export const SupplyChainModule: React.FC = () => {
                     }} className="mt-2 w-full py-1.5 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold shadow-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer">
                         <CreditCard className="w-3.5 h-3.5"/>
                         <span>{'Pay All Dues'}</span>
-                      </button>) : (<span className="text-[10px] text-emerald-600 mt-0.5 block font-semibold">
+                      </button>) : null) : (<span className="text-[10px] text-emerald-600 mt-0.5 block font-semibold">
                         ✓ {'All dues cleared'}
                       </span>)}
                   </div>
@@ -1416,13 +1466,13 @@ export const SupplyChainModule: React.FC = () => {
                     <p className="text-xs font-medium text-slate-500">
                       {'No purchase orders found for this vendor.'}
                     </p>
-                    <button type="button" onClick={() => {
+                    {canCreatePO && (<button type="button" onClick={() => {
                         setSelectedVendorProfile(null);
                         openCreatePOModal(liveVendor.id);
                     }} className="mt-3 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer">
                       <Plus className="w-3.5 h-3.5"/>
                       <span>{'Create New Purchase Bill'}</span>
-                    </button>
+                    </button>)}
                   </div>) : (<div className="overflow-x-auto rounded-xl border border-slate-200 shadow-2xs">
                     <table className="w-full text-left text-xs border-collapse">
                       <thead>
@@ -1486,7 +1536,7 @@ export const SupplyChainModule: React.FC = () => {
                                   </span>)}
                               </td>
                               <td className="py-3 px-3 text-center">
-                                {!isReceived ? (<button type="button" onClick={() => {
+                                {!isReceived ? (canReceiveStock ? (<button type="button" onClick={() => {
                                     setSelectedVendorProfile(null);
                                     setPoToReceive(po);
                                     setReceiveItemsState(po.items.map((it) => ({
@@ -1499,7 +1549,7 @@ export const SupplyChainModule: React.FC = () => {
                                 }} className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-2xs inline-flex items-center gap-1 cursor-pointer transition-colors whitespace-nowrap" title={'Receive items into stock'}>
                                     <PackageCheck className="w-3.5 h-3.5"/>
                                     <span>{'Receive'}</span>
-                                  </button>) : poDue > 0 ? (<button type="button" onClick={() => {
+                                  </button>) : (<span className="text-slate-400 text-[10px] font-semibold">{'Ordered'}</span>)) : poDue > 0 ? (canPaySupplier ? (<button type="button" onClick={() => {
                                     setPoToPay(po);
                                     setPoPayAmount(poDue);
                                     const defMethod = activePaymentMethods[0]?.name || 'Cash';
@@ -1508,7 +1558,7 @@ export const SupplyChainModule: React.FC = () => {
                                 }} className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold shadow-2xs inline-flex items-center gap-1 cursor-pointer transition-colors whitespace-nowrap">
                                     <CreditCard className="w-3.5 h-3.5"/>
                                     <span>{'Pay Bill'}</span>
-                                  </button>) : (<span className="text-[11px] text-emerald-600 font-bold flex items-center justify-center gap-1">
+                                  </button>) : (<span className="text-rose-600 text-[10px] font-bold">Due</span>)) : (<span className="text-[11px] text-emerald-600 font-bold flex items-center justify-center gap-1">
                                     <CheckCircle2 className="w-3.5 h-3.5"/>
                                     {'Done'}
                                   </span>)}
@@ -1641,7 +1691,7 @@ export const SupplyChainModule: React.FC = () => {
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-2">
                     {activePaymentMethods.map((pm) => {
                       const isSelected = supplierPayAccount.toLowerCase().trim() === pm.name.toLowerCase().trim();
-                      const liveBal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                      const liveBal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, [], journalEntries);
                       const isBank = pm.type === 'bank';
                       const isMfs = pm.type === 'mfs';
                       const isCash = pm.type === 'cash';
@@ -1681,7 +1731,7 @@ export const SupplyChainModule: React.FC = () => {
                   >
                     <optgroup label="Active Payment Methods">
                       {activePaymentMethods.map((pm) => {
-                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, [], journalEntries);
                         return (
                           <option key={pm.id} value={pm.name}>
                             {pm.type === 'bank' ? '🏦' : pm.type === 'mfs' ? '📱' : '💵'} {pm.name} {pm.accountNumber ? `(${pm.accountNumber})` : ''} — [{profile.currencySymbol}{bal.toLocaleString()}]
@@ -1811,6 +1861,45 @@ export const SupplyChainModule: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Prior Payments Breakdown / Channels Used */}
+                {(() => {
+                  const modalPoPayments = getPurchaseOrderPayments(poToPay, transactions, journalEntries, paymentMethods);
+                  if (modalPoPayments.length === 0) return null;
+                  return (
+                    <div className="space-y-1.5 p-2.5 bg-slate-50 rounded-xl border border-slate-200">
+                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-700">
+                        <span className="flex items-center gap-1.5">
+                          <History className="w-3.5 h-3.5 text-indigo-600" />
+                          <span>Previous Payments ({modalPoPayments.length})</span>
+                        </span>
+                        <span className="text-emerald-700 font-extrabold text-[10.5px]">
+                          Paid: {profile.currencySymbol}{(poToPay.paidAmount || 0).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="space-y-1 max-h-28 overflow-y-auto pr-1 scrollbar-thin">
+                        {modalPoPayments.map((p, idx) => (
+                          <div key={p.id || idx} className="flex items-center justify-between text-[10.5px] bg-white p-2 rounded-lg border border-slate-200 shadow-2xs">
+                            <span className="font-semibold text-slate-800 flex items-center gap-1.5">
+                              {p.channel.toLowerCase().includes('cash') ? (
+                                <Banknote className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : p.channel.toLowerCase().includes('bkash') || p.channel.toLowerCase().includes('nagad') || p.channel.toLowerCase().includes('rocket') ? (
+                                <Smartphone className="w-3.5 h-3.5 text-pink-600" />
+                              ) : (
+                                <Landmark className="w-3.5 h-3.5 text-blue-600" />
+                              )}
+                              <span>{p.channel}</span>
+                              <span className="text-slate-400 text-[9.5px]">({p.date})</span>
+                            </span>
+                            <span className="font-black text-emerald-700">
+                              {profile.currencySymbol}{(Number(p.amount) || 0).toLocaleString()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="font-bold text-slate-700">
@@ -1832,7 +1921,7 @@ export const SupplyChainModule: React.FC = () => {
                     {activePaymentMethods.map((pm) => {
                       const isSelected = poPayAccount.toLowerCase().trim() === pm.name.toLowerCase().trim() ||
                                          poPayMethod.toLowerCase().trim() === pm.name.toLowerCase().trim();
-                      const liveBal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                      const liveBal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, [], journalEntries);
                       const isBank = pm.type === 'bank';
                       const isMfs = pm.type === 'mfs';
                       const isCash = pm.type === 'cash';
@@ -1884,7 +1973,7 @@ export const SupplyChainModule: React.FC = () => {
                       className="w-full px-2.5 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-hidden bg-white"
                     >
                       {activePaymentMethods.map((pm) => {
-                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                        const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, [], journalEntries);
                         return (
                           <option key={pm.id} value={pm.name}>
                             {pm.type === 'bank' ? '🏦' : pm.type === 'mfs' ? '📱' : '💵'} {pm.name} {pm.accountNumber ? `(${pm.accountNumber})` : ''} — [{profile.currencySymbol}{bal.toLocaleString()}]
@@ -1912,7 +2001,7 @@ export const SupplyChainModule: React.FC = () => {
                     >
                       <optgroup label="Active Payment Methods">
                         {activePaymentMethods.map((pm) => {
-                          const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances);
+                          const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, [], journalEntries);
                           return (
                             <option key={pm.id} value={pm.name}>
                               {pm.type === 'bank' ? '🏦' : pm.type === 'mfs' ? '📱' : '💵'} {pm.name} — [{profile.currencySymbol}{bal.toLocaleString()}]
@@ -1923,7 +2012,7 @@ export const SupplyChainModule: React.FC = () => {
                       {chartOfAccounts.filter((a) => a.classification === 'Asset').length > 0 && (
                         <optgroup label="Chart of Accounts (Assets)">
                           {chartOfAccounts.filter((a) => a.classification === 'Asset').map((acc) => {
-                            const bal = calculateSingleAccountBalance(acc, transactions, invoices);
+                            const bal = calculateSingleAccountBalance(acc, transactions, invoices, [], journalEntries);
                             return (
                               <option key={acc.id} value={acc.name}>
                                 #{acc.code} {acc.name} — [{profile.currencySymbol}{bal.toLocaleString()}]
@@ -2002,6 +2091,137 @@ export const SupplyChainModule: React.FC = () => {
             </form>
           </div>);
         })()}
+
+      {/* PURCHASE ORDER PAYMENT CHANNELS BREAKDOWN MODAL */}
+      {viewingPaymentDetailsPO && (() => {
+        const poPayments = getPurchaseOrderPayments(viewingPaymentDetailsPO, transactions, journalEntries, paymentMethods);
+        const poGrand = Number(viewingPaymentDetailsPO.grandTotal ?? viewingPaymentDetailsPO.totalAmount ?? 0);
+        const poPaid = Number(viewingPaymentDetailsPO.paidAmount || 0);
+        const poDue = Number(viewingPaymentDetailsPO.dueAmount ?? Math.max(0, poGrand - poPaid));
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+            <div className="bg-white rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in-95 duration-150 space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600">
+                    <Receipt className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-slate-900 text-sm sm:text-base">
+                      Payment Channels Breakdown
+                    </h3>
+                    <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+                      #{viewingPaymentDetailsPO.poNo || viewingPaymentDetailsPO.poNumber} • {viewingPaymentDetailsPO.supplierName}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setViewingPaymentDetailsPO(null)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 font-bold text-sm cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Financial summary banner */}
+              <div className="grid grid-cols-3 gap-2 p-3 bg-slate-50 rounded-xl border border-slate-200 text-center">
+                <div>
+                  <div className="text-[10px] text-slate-500 font-bold uppercase">Total Bill</div>
+                  <div className="text-xs sm:text-sm font-black text-slate-900 mt-0.5">
+                    {profile.currencySymbol}{poGrand.toLocaleString()}
+                  </div>
+                </div>
+                <div className="border-x border-slate-200">
+                  <div className="text-[10px] text-emerald-600 font-bold uppercase">Total Paid</div>
+                  <div className="text-xs sm:text-sm font-black text-emerald-700 mt-0.5">
+                    {profile.currencySymbol}{poPaid.toLocaleString()}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-rose-600 font-bold uppercase">Due Remaining</div>
+                  <div className="text-xs sm:text-sm font-black text-rose-600 mt-0.5">
+                    {profile.currencySymbol}{poDue.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+
+              {/* Itemized payments list */}
+              <div className="space-y-2">
+                <div className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                  <span>Disbursed Payments ({poPayments.length})</span>
+                  <span className="text-[10.5px] font-semibold text-slate-500">
+                    Paid: {profile.currencySymbol}{poPaid.toLocaleString()}
+                  </span>
+                </div>
+                {poPayments.length === 0 ? (
+                  <div className="p-4 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200 text-slate-400 text-xs">
+                    No payment transactions recorded for this purchase order.
+                  </div>
+                ) : (
+                  <div className="max-h-56 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                    {poPayments.map((p, idx) => (
+                      <div key={p.id || idx} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 hover:bg-slate-100/70 border border-slate-200 transition-colors">
+                        <div className="flex items-center gap-2.5">
+                          <span className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-700">
+                            {p.channel.toLowerCase().includes('cash') ? (
+                              <Banknote className="w-4 h-4 text-emerald-600" />
+                            ) : p.channel.toLowerCase().includes('bkash') || p.channel.toLowerCase().includes('nagad') || p.channel.toLowerCase().includes('rocket') ? (
+                              <Smartphone className="w-4 h-4 text-pink-600" />
+                            ) : (
+                              <Landmark className="w-4 h-4 text-blue-600" />
+                            )}
+                          </span>
+                          <div>
+                            <div className="font-black text-slate-800 text-xs">
+                              {p.channel}
+                            </div>
+                            <div className="text-[10.5px] text-slate-400">
+                              {p.date} {p.description ? `• ${p.description}` : ''}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="font-black text-emerald-700 text-sm whitespace-nowrap">
+                          {profile.currencySymbol}{(Number(p.amount) || 0).toLocaleString()}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-between items-center pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setViewingPaymentDetailsPO(null)}
+                  className="px-4 py-2 border border-slate-200 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-50 cursor-pointer"
+                >
+                  Close
+                </button>
+                {poDue > 0 && canPaySupplier && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const targetPo = viewingPaymentDetailsPO;
+                      setViewingPaymentDetailsPO(null);
+                      setPoToPay(targetPo);
+                      setPoPayAmount(targetPo.dueAmount);
+                      const defMethod = activePaymentMethods[0]?.name || 'Cash';
+                      setPoPayAccount(defMethod);
+                      setPoPayMethod(defMethod);
+                    }}
+                    className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-xl text-xs font-bold cursor-pointer transition-colors shadow-2xs flex items-center gap-1.5"
+                  >
+                    <CreditCard className="w-3.5 h-3.5" />
+                    <span>Pay Due Balance</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* CUSTOM CONFIRM PO RECEIVE MODAL */}
       {poToReceive && (<div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">

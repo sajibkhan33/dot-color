@@ -29,6 +29,7 @@ export const INITIAL_COMPANY_PROFILE: CompanyProfile = {
     currency: 'BDT',
     currencySymbol: "Tk",
     vatTaxNumber: 'BIN: 004829104-0503',
+    incomeTaxRate: 0,
     tradeLicense: 'TRAD/DSCC/012948/2021',
     website: 'www.dotcolorcommunication.com',
     bankName: 'BRAC Bank PLC',

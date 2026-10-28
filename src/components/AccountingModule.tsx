@@ -1,15 +1,28 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { AccountType, TransactionType } from '../types';
-import { Wallet, Building, Smartphone, TrendingUp, TrendingDown, Plus, ArrowUpRight, ArrowDownLeft, Search, Filter, DollarSign, Calendar, Layers, FileSpreadsheet, Printer, SlidersHorizontal, RefreshCw, BookOpen, Trash2, Edit2, Eye, AlertCircle, Briefcase, FolderKanban, Receipt, CheckCircle2 } from 'lucide-react';
+import { Wallet, Building, Smartphone, TrendingUp, TrendingDown, Plus, ArrowUpRight, ArrowDownLeft, Search, Filter, DollarSign, Calendar, Layers, FileSpreadsheet, Printer, SlidersHorizontal, RefreshCw, BookOpen, Trash2, Edit2, Eye, AlertCircle, Briefcase, FolderKanban, Receipt, CheckCircle2, CreditCard } from 'lucide-react';
 import { exportAccountingToExcel } from '../utils/exportUtils';
 import { ReportPrintModal } from './ReportPrintModal';
 import { ChartOfAccountsManager } from './ChartOfAccountsManager';
 import { ExpenseHeadManager } from './ExpenseHeadManager';
 import { JournalEntriesManager } from './JournalEntriesManager';
-import { getBankAccountsBreakdown, getMfsAccountsBreakdown, getPaymentMethodLiveBalance, calculateSingleAccountBalance, isAdvanceAdjustmentTransaction, isDueReceivableTransaction } from '../utils/accountUtils';
+import { getBankAccountsBreakdown, getMfsAccountsBreakdown, getPaymentMethodLiveBalance, calculateSingleAccountBalance, isAdvanceAdjustmentTransaction, isDueReceivableTransaction, resolveExpenseAccount, matchChannelToAccount, isSupplierPaymentTransaction } from '../utils/accountUtils';
 export const AccountingModule: React.FC = () => {
-    const { accountBalances: rawBalances, transactions, chartOfAccounts, expenseHeads, journalEntries, profile, language, invoices = [], paymentMethods = [], customers = [], updateCustomer, addTransaction, updateTransaction, deleteTransaction, projects = [], addProjectExpense, addProject, addProjectSales, collectProjectDue, generateInvoiceForProject } = useApp();
+    const { accountBalances: rawBalances, transactions, chartOfAccounts, expenseHeads, journalEntries, profile, language, invoices = [], paymentMethods = [], customers = [], updateCustomer, addTransaction, updateTransaction, deleteTransaction, projects = [], addProjectExpense, addProject, addProjectSales, collectProjectDue, generateInvoiceForProject, checkPermission, activeStaff, addJournalEntry } = useApp();
+
+    const isSuperAdmin = (activeStaff?.role || '').toLowerCase() === 'super admin' ||
+        (activeStaff?.role || '').toLowerCase() === 'superadmin' ||
+        activeStaff?.customRoleId === 'role-superadmin' ||
+        (activeStaff?.name || '').toLowerCase().includes('super admin');
+    const canAddIncome = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.add_income'));
+    const canAddExpense = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.add_expense'));
+    const canEditTransaction = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.edit_transaction'));
+    const canDeleteTransaction = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.delete_transaction'));
+    const canManageCOA = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.chart_of_accounts'));
+    const canManageExpenseHeads = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.manage_expense_heads'));
+    const canExportReports = isSuperAdmin || Boolean(checkPermission && checkPermission('accounting.export_reports'));
+
     const accountBalances = {
         cash: rawBalances?.cash ?? 0,
         bank: rawBalances?.bank ?? 0,
@@ -19,12 +32,12 @@ export const AccountingModule: React.FC = () => {
     };
 
     const mfsInfo = useMemo(() => {
-        return getMfsAccountsBreakdown(chartOfAccounts, transactions, invoices);
-    }, [chartOfAccounts, transactions, invoices]);
+        return getMfsAccountsBreakdown(chartOfAccounts, transactions, invoices, projects, journalEntries);
+    }, [chartOfAccounts, transactions, invoices, projects, journalEntries]);
 
     const bankInfo = useMemo(() => {
-        return getBankAccountsBreakdown(chartOfAccounts, transactions, invoices);
-    }, [chartOfAccounts, transactions, invoices]);
+        return getBankAccountsBreakdown(chartOfAccounts, transactions, invoices, projects, journalEntries);
+    }, [chartOfAccounts, transactions, invoices, projects, journalEntries]);
 
     const bankBreakdownText = bankInfo.length > 0
         ? bankInfo.map(b => `${b.name.replace(/ PLC| Bank/gi, '')}: ${profile.currencySymbol}${b.balance.toLocaleString()}`).join(' • ')
@@ -68,7 +81,7 @@ export const AccountingModule: React.FC = () => {
                     seen.add('ফ্যাক্টরি ক্যাশ');
                     seen.add('factory cash in hand');
                 }
-                const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, projects);
+                const bal = getPaymentMethodLiveBalance(pm, chartOfAccounts, transactions, invoices, accountBalances, projects, journalEntries);
                 list.push({
                     id: pm.id,
                     name: pm.name,
@@ -185,8 +198,14 @@ export const AccountingModule: React.FC = () => {
     }, [expenseCategory]);
 
     useEffect(() => {
-        if (isProjectExpense && !selectedProjectId && projects.length === 1) {
-            setSelectedProjectId(projects[0].id);
+        if (!isProjectExpense) {
+            if (selectedProjectId) {
+                setSelectedProjectId('');
+            }
+        } else {
+            if (!selectedProjectId && projects.length === 1) {
+                setSelectedProjectId(projects[0].id);
+            }
         }
     }, [isProjectExpense, projects, selectedProjectId]);
 
@@ -204,7 +223,7 @@ export const AccountingModule: React.FC = () => {
                 n.includes('project') ||
                 bn.includes('প্রজেক্ট') ||
                 c === '5206' ||
-                c === '5100' ||
+                c === 'EH-PRJ' ||
                 c === 'EH-PROJ'
             );
         };
@@ -499,7 +518,13 @@ export const AccountingModule: React.FC = () => {
     const totalFunds = accountBalances.cash + accountBalances.bank + accountBalances.mobile;
     // Filtered transactions
     const filteredTransactions = transactions.filter((tx) => {
-        const matchType = filterType === 'ALL' ? true : tx.type === filterType;
+        const matchType = filterType === 'ALL' 
+            ? true 
+            : filterType === 'PAYMENT'
+                ? (tx.type === 'EXPENSE' && isSupplierPaymentTransaction(tx))
+                : filterType === 'EXPENSE'
+                    ? (tx.type === 'EXPENSE' && !isSupplierPaymentTransaction(tx))
+                    : tx.type === filterType;
         const txAcct = (tx.paymentAccount || tx.account || tx.accountHead || tx.paymentMethod || '').toLowerCase();
         const fAcct = filterAccount.toLowerCase();
         const matchAccount = filterAccount === 'ALL' ? true : (
@@ -545,10 +570,46 @@ export const AccountingModule: React.FC = () => {
         .reduce((acc, tx) => acc + tx.amount, 0);
 
     const totalIncome = txIncome + unrecordedInvoiceIncome;
-    const totalExpense = filteredTransactions
-        .filter((tx) => tx.type === 'EXPENSE')
+
+    // Supplier & Product Payments (Procurement Outflow - Assets/Payables settlement until journaled to expense)
+    const totalSupplierPayments = filteredTransactions
+        .filter((tx) => tx.type === 'EXPENSE' && isSupplierPaymentTransaction(tx))
         .reduce((acc, tx) => acc + tx.amount, 0);
-    const netOperatingBalance = totalIncome - totalExpense;
+
+    // Direct Operating Expenses (Office rent, utilities, overheads)
+    const directOperatingExpenses = filteredTransactions
+        .filter((tx) => tx.type === 'EXPENSE' && !isSupplierPaymentTransaction(tx))
+        .reduce((acc, tx) => acc + tx.amount, 0);
+
+    // Journal Voucher adjustments that merged/recognized expenses (e.g. raw materials consumed -> COGS)
+    let journalExpenseDelta = 0;
+    (journalEntries || []).forEach((j) => {
+        if (
+            j.source === 'PROJECT_EXPENSE' || 
+            j.source === 'EXPENSE' || 
+            j.source === 'SALES' || 
+            j.source === 'PURCHASE' || 
+            j.source === 'LEDGER_SYNC'
+        ) return;
+        const jRef = (j.refNo || '').toLowerCase().trim();
+        if (jRef && recordedInvoiceRefs.has(jRef)) return;
+        const matchDate = (!startDate || j.date >= startDate) && (!endDate || j.date <= endDate);
+        if (!matchDate) return;
+
+        const debitAcc = (chartOfAccounts || []).find(a => 
+            a.id === j.debitAccountId || 
+            a.code === j.debitAccountId || 
+            (a.name && a.name.toLowerCase().trim() === (j.debitAccountName || '').toLowerCase().trim())
+        );
+        if (debitAcc && debitAcc.classification === 'Expense') {
+            journalExpenseDelta += Number(j.amount) || 0;
+        }
+    });
+
+    const totalOperatingExpense = directOperatingExpenses + journalExpenseDelta;
+    const totalOutflow = totalSupplierPayments + directOperatingExpenses;
+    const totalExpense = totalOperatingExpense;
+    const netOperatingBalance = totalIncome - totalOutflow;
     const dateRangeLabel = startDate && endDate
         ? `${startDate} to ${endDate}`
         : startDate
@@ -559,7 +620,7 @@ export const AccountingModule: React.FC = () => {
     const handleExcelExport = () => {
         exportAccountingToExcel(filteredTransactions, profile, dateRangeLabel, {
             income: totalIncome,
-            expense: totalExpense,
+            expense: totalOutflow,
             net: netOperatingBalance,
         });
     };
@@ -574,11 +635,12 @@ export const AccountingModule: React.FC = () => {
             return;
         }
 
-        if (selectedProjectId) {
-            const matchedExpCoa = chartOfAccounts.find(a => 
-                a.name.toLowerCase() === expenseCategory.toLowerCase() ||
-                (isProjectExpense && (a.code === '5206' || a.code === '5100' || a.name.toLowerCase().includes('project')))
-            );
+        if (isProjectExpense && selectedProjectId) {
+            const matchedExpCoa = resolveExpenseAccount(expenseCategory, expenseTitle, chartOfAccounts, expenseHeads) ||
+                chartOfAccounts.find(a => 
+                    a.name.toLowerCase() === expenseCategory.toLowerCase() ||
+                    (isProjectExpense && (a.code === '5206' || a.name.toLowerCase().includes('project')))
+                );
             const matchedPayCoa = chartOfAccounts.find(a => 
                 a.name.toLowerCase() === selectedAccount.toLowerCase() ||
                 (selectedAccount.toLowerCase().includes('cash') && (a.code === '1001' || a.code === '1010' || a.name.toLowerCase().includes('cash')))
@@ -594,6 +656,9 @@ export const AccountingModule: React.FC = () => {
                 paymentAccountId: matchedPayCoa?.id,
             });
         } else {
+            const expRef = `EXP-${Date.now().toString().slice(-4)}`;
+            const debitExp = resolveExpenseAccount(expenseCategory, expenseTitle, chartOfAccounts, expenseHeads, true);
+
             addTransaction({
                 date: new Date().toISOString().slice(0, 10),
                 type: 'EXPENSE',
@@ -602,10 +667,36 @@ export const AccountingModule: React.FC = () => {
                 amount: expenseAmount,
                 account: selectedAccount,
                 paymentAccount: selectedAccount,
-                accountHead: selectedAccount,
+                accountHead: debitExp?.name || selectedAccount,
                 paymentMethod: selectedAccount,
-                refNo: `EXP-${Date.now().toString().slice(-4)}`,
+                refNo: expRef,
             });
+
+            const creditAsset = matchChannelToAccount(selectedAccount, chartOfAccounts, paymentMethods) ||
+                chartOfAccounts.find(a => a.classification === 'Asset' && (
+                    a.name.toLowerCase() === selectedAccount.toLowerCase() ||
+                    (selectedAccount.toLowerCase().includes('cash') && (a.code === '1001' || a.code === '1010' || a.name.toLowerCase().includes('cash'))) ||
+                    (selectedAccount.toLowerCase().includes('bkash') && a.code === '1007') ||
+                    (selectedAccount.toLowerCase().includes('nagad') && a.code === '1006') ||
+                    (selectedAccount.toLowerCase().includes('city') && a.name.toLowerCase().includes('city')) ||
+                    (selectedAccount.toLowerCase().includes('southeast') && a.name.toLowerCase().includes('southeast'))
+                )) ||
+                chartOfAccounts.find(a => a.classification === 'Asset');
+
+            if (debitExp && creditAsset && addJournalEntry) {
+                addJournalEntry({
+                    date: new Date().toISOString().slice(0, 10),
+                    refNo: expRef,
+                    debitAccountId: debitExp.id,
+                    debitAccountName: debitExp.name,
+                    creditAccountId: creditAsset.id,
+                    creditAccountName: creditAsset.name,
+                    amount: expenseAmount,
+                    narration: expenseTitle + (expenseNote ? ` • ${expenseNote}` : ''),
+                    source: 'EXPENSE',
+                    createdBy: activeStaff?.name || 'Managing Director',
+                });
+            }
         }
 
         setShowExpenseModal(false);
@@ -713,6 +804,7 @@ export const AccountingModule: React.FC = () => {
             }
         } else {
             if (!incomeTitle) return;
+            const incRef = `INC-${Date.now().toString().slice(-4)}`;
             addTransaction({
                 date: today,
                 type: 'INCOME',
@@ -723,8 +815,42 @@ export const AccountingModule: React.FC = () => {
                 paymentAccount: selectedAccount,
                 accountHead: selectedAccount,
                 paymentMethod: selectedAccount,
-                refNo: `INC-${Date.now().toString().slice(-4)}`,
+                refNo: incRef,
             });
+
+            // Automatically post matching double-entry Journal Voucher immediately!
+            const debitAsset = chartOfAccounts.find(a => 
+                a.name.toLowerCase() === selectedAccount.toLowerCase() ||
+                (selectedAccount.toLowerCase().includes('cash') && (a.code === '1001' || a.code === '1010' || a.name.toLowerCase().includes('cash'))) ||
+                (selectedAccount.toLowerCase().includes('bkash') && a.code === '1007') ||
+                (selectedAccount.toLowerCase().includes('nagad') && a.code === '1006')
+            ) || chartOfAccounts.find(a => a.classification === 'Asset') || chartOfAccounts[0];
+
+            const isAdv = incomeCategory.toLowerCase().includes('advance') || incomeCategory.includes('অগ্রিম');
+            const creditHead = chartOfAccounts.find(a => {
+                if (isAdv) {
+                    return a.classification === 'Liability' && (a.code === '2002' || a.code === '2020' || a.name.toLowerCase().includes('advance'));
+                }
+                return a.classification === 'Revenue' && (
+                    a.name.toLowerCase() === incomeCategory.toLowerCase() ||
+                    (incomeCategory.toLowerCase().includes('sales') && (a.code === '4001' || a.code === '4010'))
+                );
+            }) || chartOfAccounts.find(a => a.classification === (isAdv ? 'Liability' : 'Revenue')) || chartOfAccounts[0];
+
+            if (debitAsset && creditHead && addJournalEntry) {
+                addJournalEntry({
+                    date: today,
+                    refNo: incRef,
+                    debitAccountId: debitAsset.id,
+                    debitAccountName: debitAsset.name,
+                    creditAccountId: creditHead.id,
+                    creditAccountName: creditHead.name,
+                    amount: numAmount,
+                    narration: incomeTitle,
+                    source: isAdv ? 'CUSTOMER_PAYMENT' : 'SALES',
+                    createdBy: activeStaff?.name || 'Managing Director',
+                });
+            }
 
             if (incomeCustomerId) {
                 const cust = customers.find((c) => c.id === incomeCustomerId);
@@ -860,7 +986,7 @@ export const AccountingModule: React.FC = () => {
       </div>
 
       {/* P&L Performance Banner */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs grid grid-cols-1 sm:grid-cols-3 gap-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-100">
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-100">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
             <ArrowDownLeft className="w-5 h-5"/>
@@ -873,6 +999,28 @@ export const AccountingModule: React.FC = () => {
               +{profile.currencySymbol}
               {totalIncome.toLocaleString()}
             </div>
+            <span className="text-[10px] text-slate-400">Sales & Due Collections</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 pt-3 sm:pt-0 sm:pl-4">
+          <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+            <CreditCard className="w-5 h-5"/>
+          </div>
+          <div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-slate-500 font-semibold">
+                {'Supplier & Product Payments'}
+              </span>
+              <span className="text-[10px] bg-blue-100 text-blue-700 font-bold px-1.5 py-0.2 rounded">
+                Payment
+              </span>
+            </div>
+            <div className="text-lg font-black text-blue-600">
+              -{profile.currencySymbol}
+              {totalSupplierPayments.toLocaleString()}
+            </div>
+            <span className="text-[10px] text-slate-400">Awaiting JV Expense Merge</span>
           </div>
         </div>
 
@@ -882,12 +1030,13 @@ export const AccountingModule: React.FC = () => {
           </div>
           <div>
             <span className="text-xs text-slate-500 font-semibold">
-              {'Total Outflow / Expense'}
+              {'Operating Expenses'}
             </span>
             <div className="text-lg font-black text-rose-600">
               -{profile.currencySymbol}
-              {totalExpense.toLocaleString()}
+              {totalOperatingExpense.toLocaleString()}
             </div>
+            <span className="text-[10px] text-slate-400">Office & Direct Expenses</span>
           </div>
         </div>
 
@@ -903,6 +1052,7 @@ export const AccountingModule: React.FC = () => {
               {profile.currencySymbol}
               {netOperatingBalance.toLocaleString()}
             </div>
+            <span className="text-[10px] text-slate-400">Total Outflow: -{profile.currencySymbol}{totalOutflow.toLocaleString()}</span>
           </div>
         </div>
       </div>
@@ -919,25 +1069,29 @@ export const AccountingModule: React.FC = () => {
           </span>
         </button>
 
-        <button type="button" id="tab-accounting-coa" onClick={() => setAccountingTab('coa')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all ${accountingTab === 'coa'
-            ? 'bg-slate-900 text-white shadow-xs'
-            : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200'}`}>
-          <Layers className={`w-4 h-4 ${accountingTab === 'coa' ? 'text-amber-400' : 'text-slate-500'}`}/>
-          <span>{'Chart of Accounts'}</span>
-          <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${accountingTab === 'coa' ? 'bg-slate-800 text-amber-300' : 'bg-slate-100 text-slate-600'}`}>
-            {chartOfAccounts.length}
-          </span>
-        </button>
+        {canManageCOA && (
+          <button type="button" id="tab-accounting-coa" onClick={() => setAccountingTab('coa')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all ${accountingTab === 'coa'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200'}`}>
+            <Layers className={`w-4 h-4 ${accountingTab === 'coa' ? 'text-amber-400' : 'text-slate-500'}`}/>
+            <span>{'Chart of Accounts'}</span>
+            <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${accountingTab === 'coa' ? 'bg-slate-800 text-amber-300' : 'bg-slate-100 text-slate-600'}`}>
+              {chartOfAccounts.length}
+            </span>
+          </button>
+        )}
 
-        <button type="button" id="tab-accounting-expense-heads" onClick={() => setAccountingTab('expense-heads')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all ${accountingTab === 'expense-heads'
-            ? 'bg-slate-900 text-white shadow-xs'
-            : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200'}`}>
-          <DollarSign className={`w-4 h-4 ${accountingTab === 'expense-heads' ? 'text-amber-400' : 'text-slate-500'}`}/>
-          <span>{'Expense Heads'}</span>
-          <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${accountingTab === 'expense-heads' ? 'bg-slate-800 text-amber-300' : 'bg-slate-100 text-slate-600'}`}>
-            {expenseHeads.length}
-          </span>
-        </button>
+        {canManageExpenseHeads && (
+          <button type="button" id="tab-accounting-expense-heads" onClick={() => setAccountingTab('expense-heads')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all ${accountingTab === 'expense-heads'
+              ? 'bg-slate-900 text-white shadow-xs'
+              : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200'}`}>
+            <DollarSign className={`w-4 h-4 ${accountingTab === 'expense-heads' ? 'text-amber-400' : 'text-slate-500'}`}/>
+            <span>{'Expense Heads'}</span>
+            <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${accountingTab === 'expense-heads' ? 'bg-slate-800 text-amber-300' : 'bg-slate-100 text-slate-600'}`}>
+              {expenseHeads.length}
+            </span>
+          </button>
+        )}
 
         <button type="button" id="tab-accounting-journals" onClick={() => setAccountingTab('journals')} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all ${accountingTab === 'journals'
             ? 'bg-slate-900 text-white shadow-xs'
@@ -950,11 +1104,11 @@ export const AccountingModule: React.FC = () => {
         </button>
       </div>
 
-      {accountingTab === 'coa' && <ChartOfAccountsManager />}
-      {accountingTab === 'expense-heads' && <ExpenseHeadManager />}
+      {accountingTab === 'coa' && canManageCOA && <ChartOfAccountsManager />}
+      {accountingTab === 'expense-heads' && canManageExpenseHeads && <ExpenseHeadManager />}
       {accountingTab === 'journals' && <JournalEntriesManager />}
 
-      {accountingTab === 'ledger' && (
+      {(accountingTab === 'ledger' || (!canManageCOA && accountingTab === 'coa') || (!canManageExpenseHeads && accountingTab === 'expense-heads')) && (
         /* General Ledger Section */
         <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
         {/* Header & Controls */}
@@ -970,26 +1124,34 @@ export const AccountingModule: React.FC = () => {
 
           <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
             {/* Export Excel (.xlsx) */}
-            <button type="button" onClick={handleExcelExport} className="px-3 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs flex items-center gap-1.5 transition-all" title={'Download Excel Ledger'}>
-              <FileSpreadsheet className="w-4 h-4"/>
-              <span>{'Excel'}</span>
-            </button>
+            {canExportReports && (
+              <button type="button" onClick={handleExcelExport} className="px-3 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs flex items-center gap-1.5 transition-all" title={'Download Excel Ledger'}>
+                <FileSpreadsheet className="w-4 h-4"/>
+                <span>{'Excel'}</span>
+              </button>
+            )}
 
             {/* Print / PDF Report */}
-            <button type="button" onClick={() => setShowReportModal(true)} className="px-3 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-900 text-white shadow-2xs flex items-center gap-1.5 transition-all" title={'Print / Save PDF Report'}>
-              <Printer className="w-4 h-4 text-amber-400"/>
-              <span>{'PDF / Print'}</span>
-            </button>
+            {canExportReports && (
+              <button type="button" onClick={() => setShowReportModal(true)} className="px-3 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-900 text-white shadow-2xs flex items-center gap-1.5 transition-all" title={'Print / Save PDF Report'}>
+                <Printer className="w-4 h-4 text-amber-400"/>
+                <span>{'PDF / Print'}</span>
+              </button>
+            )}
 
-             <button type="button" onClick={() => setShowIncomeModal(true)} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all">
-              <Plus className="w-4 h-4"/>
-              <span>{'+ Record Income'}</span>
-            </button>
+            {canAddIncome && (
+              <button type="button" onClick={() => setShowIncomeModal(true)} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all">
+                <Plus className="w-4 h-4"/>
+                <span>{'+ Record Income'}</span>
+              </button>
+            )}
 
-            <button type="button" onClick={() => setShowExpenseModal(true)} className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all">
-              <Plus className="w-4 h-4 text-amber-400"/>
-              <span>{'+ Record Expense'}</span>
-            </button>
+            {canAddExpense && (
+              <button type="button" onClick={() => setShowExpenseModal(true)} className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all">
+                <Plus className="w-4 h-4 text-amber-400"/>
+                <span>{'+ Record Expense'}</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -1020,6 +1182,7 @@ export const AccountingModule: React.FC = () => {
               <option value="ALL">{'All Types'}</option>
               <option value="INCOME">Income</option>
               <option value="EXPENSE">Expense</option>
+              <option value="PAYMENT">Supplier / PO Payment</option>
               <option value="TRANSFER">Transfer</option>
             </select>
 
@@ -1027,7 +1190,7 @@ export const AccountingModule: React.FC = () => {
               <option value="ALL">{'All Accounts'}</option>
               {availablePaymentAccounts.map((acc) => (
                 <option key={acc.id} value={acc.name}>
-                  {acc.name} {acc.nameBn ? `(${acc.nameBn})` : ''}
+                  {acc.name}
                 </option>
               ))}
             </select>
@@ -1101,21 +1264,33 @@ export const AccountingModule: React.FC = () => {
                   </td>
                   <td className="py-3 px-4 font-medium text-slate-700">{tx.paymentAccount || tx.account || tx.accountHead || 'Cash in Hand'}</td>
                   <td className="py-3 px-4 text-center">
-                    <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${tx.type === 'INCOME'
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : tx.type === 'EXPENSE'
-                        ? 'bg-rose-100 text-rose-800'
-                        : 'bg-blue-100 text-blue-800'}`}>
-                      {tx.type}
-                    </span>
+                    {tx.type === 'INCOME' ? (
+                      <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800">
+                        INCOME
+                      </span>
+                    ) : isSupplierPaymentTransaction(tx) ? (
+                      <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-100 text-blue-800" title="Supplier / Product Payment (Awaiting JV Expense Merge)">
+                        PAYMENT
+                      </span>
+                    ) : tx.type === 'EXPENSE' ? (
+                      <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-100 text-rose-800">
+                        EXPENSE
+                      </span>
+                    ) : (
+                      <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-100 text-blue-800">
+                        {tx.type}
+                      </span>
+                    )}
                   </td>
                   <td className="py-3 px-4 text-right">
                     <span className={`font-black text-sm ${tx.type === 'INCOME'
                     ? 'text-emerald-700'
-                    : tx.type === 'EXPENSE'
-                        ? 'text-rose-600'
-                        : 'text-slate-900'}`}>
-                      {tx.type === 'INCOME' ? '+' : tx.type === 'EXPENSE' ? '-' : ''}
+                    : isSupplierPaymentTransaction(tx)
+                        ? 'text-blue-700'
+                        : tx.type === 'EXPENSE'
+                            ? 'text-rose-600'
+                            : 'text-slate-900'}`}>
+                      {tx.type === 'INCOME' ? '+' : '-'}
                       {profile.currencySymbol}
                       {tx.amount.toLocaleString()}
                     </span>
@@ -1125,13 +1300,17 @@ export const AccountingModule: React.FC = () => {
                       <Eye className="w-3.5 h-3.5"/>
                     </button>
 
-                    <button type="button" onClick={() => handleOpenEditTx(tx)} className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors animate-fade-in" title={'Edit Transaction'}>
-                      <Edit2 className="w-3.5 h-3.5"/>
-                    </button>
+                    {canEditTransaction && (
+                      <button type="button" onClick={() => handleOpenEditTx(tx)} className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors animate-fade-in" title={'Edit Transaction'}>
+                        <Edit2 className="w-3.5 h-3.5"/>
+                      </button>
+                    )}
 
-                    <button type="button" onClick={() => setTxToDelete(tx)} className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors" title="Delete">
-                      <Trash2 className="w-3.5 h-3.5"/>
-                    </button>
+                    {canDeleteTransaction && (
+                      <button type="button" onClick={() => setTxToDelete(tx)} className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors" title="Delete">
+                        <Trash2 className="w-3.5 h-3.5"/>
+                      </button>
+                    )}
                   </td>
                 </tr>))}
 
@@ -1174,7 +1353,7 @@ export const AccountingModule: React.FC = () => {
                     {availableExpenseOptions && availableExpenseOptions.length > 0 ? (
                       availableExpenseOptions.map((opt) => (
                         <option key={opt.id} value={opt.name}>
-                          {opt.name} {opt.nameBn ? `(${opt.nameBn})` : ''}
+                          {opt.name}
                         </option>
                       ))
                     ) : (
@@ -1215,25 +1394,20 @@ export const AccountingModule: React.FC = () => {
                   <select value={expenseAccount} onChange={(e) => setExpenseAccount(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium text-xs">
                     {availablePaymentAccounts.map((acc) => (
                       <option key={acc.id} value={acc.name}>
-                        {acc.name} {acc.nameBn ? `(${acc.nameBn})` : ''} — [{profile.currencySymbol}{acc.balance.toLocaleString()}]
+                        {acc.name} — [{profile.currencySymbol}{acc.balance.toLocaleString()}]
                       </option>
                     ))}
                   </select>
                 </div>
               </div>
 
-              {/* Project Linking Section */}
-              <div className={`p-3.5 rounded-xl border transition-all ${
-                isProjectExpense
-                  ? 'bg-amber-50/70 border-amber-300 ring-1 ring-amber-300/40'
-                  : selectedProjectId
-                  ? 'bg-indigo-50/60 border-indigo-200'
-                  : 'bg-slate-50 border-slate-200/80'
-              }`}>
+              {/* Project Linking Section (Only visible when Category is Project Expense) */}
+              {isProjectExpense && (
+                <div className="p-3.5 rounded-xl border transition-all bg-amber-50/70 border-amber-300 ring-1 ring-amber-300/40">
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
                     <Briefcase className="w-4 h-4 text-amber-600" />
-                    <span>Link to Project / সংশ্লিষ্ট প্রজেক্ট নির্বাচন</span>
+                    <span>Link to Project (Optional)</span>
                     {isProjectExpense && (
                       <span className="text-amber-800 text-[10px] bg-amber-100 font-extrabold px-1.5 py-0.5 rounded border border-amber-300">
                         Project Expense
@@ -1258,8 +1432,8 @@ export const AccountingModule: React.FC = () => {
                 >
                   <option value="">
                     {isProjectExpense
-                      ? '-- Select a Project / প্রজেক্ট সিলেক্ট করুন --'
-                      : '-- No Project Linked (General Operating Expense) / সাধারণ খরচ --'}
+                      ? '-- Select a Project --'
+                      : '-- No Project Linked (General Operating Expense) --'}
                   </option>
                   {projects.map((proj) => {
                     const isCompleted = proj.status === 'Completed';
@@ -1280,7 +1454,7 @@ export const AccountingModule: React.FC = () => {
                         <p className="text-[10.5px] text-amber-800 mt-2 flex items-center gap-1.5 font-medium">
                           <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                           <span>
-                            টিপস: প্রজেক্ট সিলেক্ট করলে খরচটি স্বয়ংক্রিয়ভাবে উক্ত প্রজেক্টের খরচের তালিকায় যুক্ত হবে এবং নিট প্রফিট আপডেট হবে।
+                            Tip: Linking a project will automatically add this expense to the project cost sheet and update its net profit.
                           </span>
                         </p>
                       );
@@ -1330,12 +1504,13 @@ export const AccountingModule: React.FC = () => {
                       </div>
 
                       <p className="text-[10.5px] text-emerald-700 font-semibold pt-1 flex items-center gap-1 border-t border-slate-100">
-                        <span>✓ এই খরচটি সরাসরি [{p.code}] {p.name} প্রজেক্টের খরচে যুক্ত হয়ে প্রজেক্ট ম্যানেজমেন্টের সাথে সিঙ্ক থাকবে।</span>
+                        <span>✓ This expense is linked directly to [{p.code}] {p.name} and synced with Project Management.</span>
                       </p>
                     </div>
                   );
                 })()}
               </div>
+            )}
             </div>
 
             {(() => {
@@ -1366,7 +1541,7 @@ export const AccountingModule: React.FC = () => {
                     >
                       {isOverdraft
                         ? 'Insufficient Account Balance'
-                        : selectedProjectId
+                        : isProjectExpense && selectedProjectId
                         ? `Confirm & Link to Project (${profile.currencySymbol}${(Number(expenseAmount) || 0).toLocaleString()})`
                         : 'Confirm Expense'}
                     </button>
@@ -1407,7 +1582,7 @@ export const AccountingModule: React.FC = () => {
                   <select value={incomeCategory} onChange={(e) => setIncomeCategory(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium">
                     {availableIncomeOptions.map((opt) => (
                       <option key={opt.id} value={opt.name}>
-                        {opt.name} {opt.nameBn ? `(${opt.nameBn})` : ''}
+                        {opt.name}
                       </option>
                     ))}
                   </select>
@@ -1438,7 +1613,7 @@ export const AccountingModule: React.FC = () => {
                   <select value={incomeAccount} onChange={(e) => setIncomeAccount(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium text-xs">
                     {availablePaymentAccounts.map((acc) => (
                       <option key={acc.id} value={acc.name}>
-                        {acc.name} {acc.nameBn ? `(${acc.nameBn})` : ''} — [{profile.currencySymbol}{acc.balance.toLocaleString()}]
+                        {acc.name} — [{profile.currencySymbol}{acc.balance.toLocaleString()}]
                       </option>
                     ))}
                   </select>
@@ -1482,7 +1657,7 @@ export const AccountingModule: React.FC = () => {
                   <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-emerald-200/70">
                     <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
                       <Briefcase className="w-4 h-4 text-emerald-600" />
-                      <span>Project Sales & Due Management / প্রজেক্ট নির্বাচন ও বকেয়া আদায়</span>
+                      <span>Project Sales & Due Management</span>
                     </div>
 
                     <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-emerald-200 shadow-2xs">
@@ -1530,7 +1705,7 @@ export const AccountingModule: React.FC = () => {
                       <div>
                         <div className="flex items-center justify-between mb-1">
                           <label className="font-bold text-slate-700 text-xs">
-                            Select Existing Project / প্রজেক্ট বাছাই করুন *
+                            Select Existing Project *
                           </label>
                           {selectedIncomeProjectId && (
                             <button
@@ -1547,7 +1722,7 @@ export const AccountingModule: React.FC = () => {
                           onChange={(e) => setSelectedIncomeProjectId(e.target.value)}
                           className="w-full px-3 py-2 border border-emerald-300 rounded-xl font-medium text-xs bg-white cursor-pointer focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
                         >
-                          <option value="">-- Choose a Project to Link / প্রজেক্ট সিলেক্ট করুন --</option>
+                          <option value="">-- Choose a Project to Link --</option>
                           {projects.map((proj) => {
                             const due = (proj.salesItems || []).reduce((s, si) => {
                               const d = si.dueAmount !== undefined
@@ -1619,7 +1794,7 @@ export const AccountingModule: React.FC = () => {
                                     onChange={() => setProjectIncomeAction('collect_due')}
                                     className="text-emerald-600 focus:ring-emerald-500"
                                   />
-                                  <span>Collect Due (বকেয়া আদায়)</span>
+                                  <span>Collect Due</span>
                                 </label>
                                 <label className="flex items-center gap-1.5 text-xs font-semibold cursor-pointer text-slate-800">
                                   <input
@@ -1630,7 +1805,7 @@ export const AccountingModule: React.FC = () => {
                                     onChange={() => setProjectIncomeAction('new_sales')}
                                     className="text-emerald-600 focus:ring-emerald-500"
                                   />
-                                  <span>New Sales Billing (নতুন বিলিং)</span>
+                                  <span>New Sales Billing</span>
                                 </label>
                               </div>
                             </div>
@@ -1639,7 +1814,7 @@ export const AccountingModule: React.FC = () => {
                               <div className="bg-rose-50/70 p-3 rounded-xl border border-rose-200 text-xs space-y-2">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                   <span className="text-rose-900 font-semibold">
-                                    💡 বর্তমান বকেয়া: <strong className="text-rose-700 font-black">{profile.currencySymbol}{selectedProjectDue.toLocaleString()}</strong>
+                                    💡 Current Due: <strong className="text-rose-700 font-black">{profile.currencySymbol}{selectedProjectDue.toLocaleString()}</strong>
                                   </span>
                                   {selectedProjectDue > 0 && (
                                     <button
@@ -1655,7 +1830,7 @@ export const AccountingModule: React.FC = () => {
                                   )}
                                 </div>
                                 <div className="text-[11px] text-slate-600 flex items-center justify-between pt-1.5 border-t border-rose-200/60">
-                                  <span>আদায় পরবর্তী অবশিষ্ট বকেয়া:</span>
+                                  <span>Remaining Due After Collection:</span>
                                   <span className="font-bold text-slate-800 font-mono">
                                     {profile.currencySymbol}{Math.max(0, selectedProjectDue - (Number(incomeAmount) || 0)).toLocaleString()}
                                   </span>
@@ -1664,7 +1839,7 @@ export const AccountingModule: React.FC = () => {
                             ) : (
                               <div className="bg-emerald-50/70 p-2.5 rounded-lg border border-emerald-200 text-xs">
                                 <span className="text-emerald-900 font-medium">
-                                  ✓ এই টাকাটি [{selectedIncomeProject.code}] {selectedIncomeProject.name} প্রজেক্টের নতুন বিক্রয় আয় হিসেবে যুক্ত হবে।
+                                  ✓ This amount will be recorded as new sales revenue for [{selectedIncomeProject.code}] {selectedIncomeProject.name}.
                                 </span>
                               </div>
                             )}
@@ -1756,12 +1931,12 @@ export const AccountingModule: React.FC = () => {
                       {/* Calculation summary */}
                       <div className="p-2.5 bg-emerald-50/70 rounded-lg border border-emerald-200 text-xs flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-3">
-                          <span>মোট চুক্তি মূল্য: <strong className="font-mono text-slate-900">{profile.currencySymbol}{(Number(newProjBudget) || 0).toLocaleString()}</strong></span>
-                          <span>নগদ জমা: <strong className="font-mono text-emerald-700">{profile.currencySymbol}{(Number(incomeAmount) || 0).toLocaleString()}</strong></span>
+                          <span>Total Budget: <strong className="font-mono text-slate-900">{profile.currencySymbol}{(Number(newProjBudget) || 0).toLocaleString()}</strong></span>
+                          <span>Paid / Deposit: <strong className="font-mono text-emerald-700">{profile.currencySymbol}{(Number(incomeAmount) || 0).toLocaleString()}</strong></span>
                         </div>
                         <div>
                           <span className="text-rose-700 font-bold">
-                            প্রজেক্টের অবশিষ্ট বকেয়া: {profile.currencySymbol}{Math.max(0, (Number(newProjBudget) || 0) - (Number(incomeAmount) || 0)).toLocaleString()}
+                            Remaining Due: {profile.currencySymbol}{Math.max(0, (Number(newProjBudget) || 0) - (Number(incomeAmount) || 0)).toLocaleString()}
                           </span>
                         </div>
                       </div>
@@ -1769,7 +1944,7 @@ export const AccountingModule: React.FC = () => {
                       {/* Auto-generate Sales Invoice Notice */}
                       <div className="flex items-center gap-2 p-2 bg-indigo-50/80 rounded-lg border border-indigo-200 text-[11px] text-indigo-900 font-medium">
                         <Receipt className="w-4 h-4 text-indigo-600 shrink-0" />
-                        <span>সেভ করার সাথে সাথে <strong>Sales & Orders</strong> ট্যাবে এই প্রজেক্টের নামে স্বয়ংক্রিয়ভাবে অফিসিয়াল বিক্রয় চালান (Sales Invoice) তৈরি হবে।</span>
+                        <span>An official Sales Invoice (DCC-INV) will be automatically created and linked in <strong>Sales & Orders</strong> upon saving.</span>
                       </div>
                     </div>
                   )}
@@ -1777,7 +1952,7 @@ export const AccountingModule: React.FC = () => {
                   {/* MODE 3: DIRECT SALES */}
                   {projectIncomeMode === 'direct' && (
                     <p className="text-[11px] text-slate-500 italic p-2 bg-white rounded-lg border border-slate-200">
-                      ℹ️ সাধারণ প্রজেক্ট সেলস হিসেবে লেজারে ইনকাম ট্রানজেকশন যুক্ত হবে (কোনো নির্দিষ্ট প্রজেক্ট ফোল্ডারে লিঙ্ক করা হবে না)।
+                      ℹ️ Will be recorded as general project sales in the ledger without linking to a specific project.
                     </p>
                   )}
                 </div>
@@ -1858,12 +2033,14 @@ export const AccountingModule: React.FC = () => {
             </div>
 
             <div className="flex justify-end gap-2 pt-1">
-              <button type="button" onClick={() => {
-                handleOpenEditTx(viewingTransaction);
-                setViewingTransaction(null);
-            }} className="px-4 py-2 border border-blue-200 bg-blue-50 text-blue-700 rounded-xl font-bold hover:bg-blue-100">
-                {'Edit'}
-              </button>
+              {canEditTransaction && (
+                <button type="button" onClick={() => {
+                  handleOpenEditTx(viewingTransaction);
+                  setViewingTransaction(null);
+                }} className="px-4 py-2 border border-blue-200 bg-blue-50 text-blue-700 rounded-xl font-bold hover:bg-blue-100">
+                  {'Edit'}
+                </button>
+              )}
               <button type="button" onClick={() => setViewingTransaction(null)} className="px-5 py-2 bg-slate-900 text-white rounded-xl font-bold">
                 {'Close'}
               </button>
@@ -1953,7 +2130,7 @@ export const AccountingModule: React.FC = () => {
                   <select value={editTxAccount} onChange={(e) => setEditTxAccount(e.target.value)} className="w-full px-3 py-2 border border-slate-200 rounded-xl font-medium text-xs">
                     {availablePaymentAccounts.map((acc) => (
                       <option key={acc.id} value={acc.name}>
-                        {acc.name} {acc.nameBn ? `(${acc.nameBn})` : ''} — [{profile.currencySymbol}{acc.balance.toLocaleString()}]
+                        {acc.name} — [{profile.currencySymbol}{acc.balance.toLocaleString()}]
                       </option>
                     ))}
                   </select>

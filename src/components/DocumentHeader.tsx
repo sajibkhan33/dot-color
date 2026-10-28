@@ -37,7 +37,7 @@ export const DocumentHeader: React.FC<DocumentHeaderProps> = ({ documentTitle, d
                 .then((url) => setPosQrDataUrl(url))
                 .catch((err) => console.error('Failed to generate POS QR Code:', err));
         }
-    }, [compact, invoiceId, documentNo]);
+    }, [compact, invoiceId, documentNo, documentTitle]);
     // Compact layout for 80mm POS thermal slips
     if (compact) {
         return (<div className={`pb-3 border-b border-dashed border-black text-black ${className}`}>
