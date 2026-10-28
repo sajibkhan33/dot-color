@@ -194,10 +194,13 @@ app.post("/api/state", requireAuth, async (req, res) => {
       data.auditLogs = data.auditLogs.slice(-500);
     }
     const existing = await ErpState.findOne({ id: "singleton" });
+    const isRestore = Boolean(
+      req.body.isRestore || req.body.forceRestore || data?.isBackupRestore || data?._isRestore
+    );
     let currentRev = 0;
     if (existing) {
       currentRev = existing.revision || existing.data?._rev || 1;
-      if (!force && typeof clientRev === "number" && clientRev < currentRev) {
+      if (!force && !isRestore && typeof clientRev === "number" && clientRev < currentRev) {
         return res.status(409).json({
           success: false,
           conflict: true,
@@ -209,8 +212,38 @@ app.post("/api/state", requireAuth, async (req, res) => {
     }
     const nextRev = Math.max(currentRev, typeof clientRev === "number" ? clientRev : 0) + 1;
     data._rev = nextRev;
-    const effectivePurgeTime = existing?.data?.lastPurgedAt ? new Date(existing.data.lastPurgedAt).getTime() : 0;
-    if (effectivePurgeTime > 0) {
+    let effectivePurgeTime = 0;
+    if (isRestore) {
+      data.lastPurgedAt = null;
+      data.lastPurgeMode = null;
+      delete data.isBackupRestore;
+      delete data._isRestore;
+      if (existing?.data) {
+        existing.data.lastPurgedAt = null;
+        existing.data.lastPurgeMode = null;
+      }
+      if (!Array.isArray(data.auditLogs)) data.auditLogs = [];
+      data.auditLogs.unshift({
+        id: `audit-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+        staffId: "admin",
+        staffName: "Admin",
+        staffRole: "Super Admin",
+        location: "All",
+        actionType: "DATA_RESTORED",
+        entityType: "System",
+        details: "System restored from database backup. Purge quarantine reset.",
+        detailsBn: "\u09A1\u09BE\u099F\u09BE\u09AC\u09C7\u09B8 \u09AC\u09CD\u09AF\u09BE\u0995\u0986\u09AA \u09A5\u09C7\u0995\u09C7 \u09B8\u09AB\u09B2\u09AD\u09BE\u09AC\u09C7 \u09B0\u09BF\u09B8\u09CD\u099F\u09CB\u09B0 \u0995\u09B0\u09BE \u09B9\u09DF\u09C7\u099B\u09C7\u0964",
+        timestamp: `${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)} ${(/* @__PURE__ */ new Date()).toTimeString().slice(0, 5)}`,
+        severity: "info"
+      });
+      if (data.auditLogs.length > 500) {
+        data.auditLogs = data.auditLogs.slice(0, 500);
+      }
+      console.log(`[RESTORE] Manual database backup restored successfully. Purge quarantine cleared (rev: ${nextRev}).`);
+    } else {
+      effectivePurgeTime = existing?.data?.lastPurgedAt ? new Date(existing.data.lastPurgedAt).getTime() : 0;
+    }
+    if (!isRestore && effectivePurgeTime > 0) {
       data.lastPurgedAt = existing.data.lastPurgedAt;
       data.lastPurgeMode = existing.data.lastPurgeMode;
       if (Array.isArray(data.invoices)) {

@@ -2,7 +2,12 @@
 $ErrorActionPreference = "Stop"
 $rootDir = (Get-Item $PSScriptRoot).Parent.FullName
 $stagingDir = Join-Path $rootDir "cpanel-deploy"
-$zipPath = Join-Path $rootDir "dotcolor-cpanel-fullstack.zip"
+$zipPath = Join-Path $rootDir "deploy.zip"
+$legacyZip = Join-Path $rootDir "dotcolor-cpanel-fullstack.zip"
+
+if (Test-Path $legacyZip) {
+    Remove-Item $legacyZip -Force
+}
 
 if (Test-Path $stagingDir) {
     Remove-Item $stagingDir -Recurse -Force
@@ -11,13 +16,13 @@ New-Item -ItemType Directory -Path $stagingDir | Out-Null
 
 Write-Host "Copying fresh build artifacts to staging..."
 Copy-Item (Join-Path $rootDir "dist") (Join-Path $stagingDir "dist") -Recurse -Force
-Copy-Item (Join-Path $rootDir "src") (Join-Path $stagingDir "src") -Recurse -Force
-Copy-Item (Join-Path $rootDir "public") (Join-Path $stagingDir "public") -Recurse -Force
-Copy-Item (Join-Path $rootDir "scripts") (Join-Path $stagingDir "scripts") -Recurse -Force
 Copy-Item (Join-Path $rootDir "server.js") (Join-Path $stagingDir "server.js") -Force
-Copy-Item (Join-Path $rootDir "server.ts") (Join-Path $stagingDir "server.ts") -Force
-Copy-Item (Join-Path $rootDir "app.js") (Join-Path $stagingDir "app.js") -Force
-Copy-Item (Join-Path $rootDir ".env") (Join-Path $stagingDir ".env") -Force
+if (Test-Path (Join-Path $rootDir "app.js")) {
+    Copy-Item (Join-Path $rootDir "app.js") (Join-Path $stagingDir "app.js") -Force
+}
+if (Test-Path (Join-Path $rootDir ".env")) {
+    Copy-Item (Join-Path $rootDir ".env") (Join-Path $stagingDir ".env") -Force
+}
 
 # Create production package.json for cPanel Node.js App
 $prodPkg = @{

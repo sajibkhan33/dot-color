@@ -257,10 +257,17 @@ app.post('/api/state', requireAuth, async (req, res) => {
 
     // CON-03: Optimistic Concurrency Control (bypassed if force === true, e.g. admin data purge / reset)
     const existing = await ErpState.findOne({ id: 'singleton' });
+    const isRestore = Boolean(
+      req.body.isRestore ||
+      req.body.forceRestore ||
+      data?.isBackupRestore ||
+      data?._isRestore
+    );
+
     let currentRev = 0;
     if (existing) {
       currentRev = (existing as any).revision || existing.data?._rev || 1;
-      if (!force && typeof clientRev === 'number' && clientRev < currentRev) {
+      if (!force && !isRestore && typeof clientRev === 'number' && clientRev < currentRev) {
         return res.status(409).json({
           success: false,
           conflict: true,
@@ -277,8 +284,40 @@ app.post('/api/state', requireAuth, async (req, res) => {
     // ANTI-RESURRECTION QUARANTINE:
     // If remote state was purged, strictly reject any transactional records created prior to lastPurgedAt.
     // This blocks background tabs, mobile devices, or stale clients running old code from re-injecting purged records!
-    const effectivePurgeTime = existing?.data?.lastPurgedAt ? new Date(existing.data.lastPurgedAt).getTime() : 0;
-    if (effectivePurgeTime > 0) {
+    // EXCEPTION: When an admin explicitly performs a backup restore (isRestore), clear purge quarantine.
+    let effectivePurgeTime = 0;
+    if (isRestore) {
+      data.lastPurgedAt = null;
+      data.lastPurgeMode = null;
+      delete data.isBackupRestore;
+      delete data._isRestore;
+      if (existing?.data) {
+        existing.data.lastPurgedAt = null;
+        existing.data.lastPurgeMode = null;
+      }
+      if (!Array.isArray(data.auditLogs)) data.auditLogs = [];
+      data.auditLogs.unshift({
+        id: `audit-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`,
+        staffId: 'admin',
+        staffName: 'Admin',
+        staffRole: 'Super Admin',
+        location: 'All',
+        actionType: 'DATA_RESTORED',
+        entityType: 'System',
+        details: 'System restored from database backup. Purge quarantine reset.',
+        detailsBn: 'ডাটাবেস ব্যাকআপ থেকে সফলভাবে রিস্টোর করা হয়েছে।',
+        timestamp: `${new Date().toISOString().slice(0, 10)} ${new Date().toTimeString().slice(0, 5)}`,
+        severity: 'info',
+      });
+      if (data.auditLogs.length > 500) {
+        data.auditLogs = data.auditLogs.slice(0, 500);
+      }
+      console.log(`[RESTORE] Manual database backup restored successfully. Purge quarantine cleared (rev: ${nextRev}).`);
+    } else {
+      effectivePurgeTime = existing?.data?.lastPurgedAt ? new Date(existing.data.lastPurgedAt).getTime() : 0;
+    }
+
+    if (!isRestore && effectivePurgeTime > 0) {
       data.lastPurgedAt = existing.data.lastPurgedAt;
       data.lastPurgeMode = existing.data.lastPurgeMode;
 
